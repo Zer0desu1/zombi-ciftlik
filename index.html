@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hasat & Hayatta Kal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Pixelify+Sans:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="game"></div>
+
+  <div id="ui">
+    <!-- Üst bar -->
+    <header id="hud-top" class="glass">
+      <div class="block time">
+        <span id="hud-phase" class="phase">☀️</span>
+        <div><div id="hud-clock" class="big">07:00</div><div id="hud-day" class="sub">Gün 1</div></div>
+      </div>
+      <div class="sep"></div>
+      <div class="block stat">
+        <span class="lbl">❤</span>
+        <div class="bar hp"><i id="hud-hp"></i></div><span id="hud-hp-txt" class="num">100</span>
+      </div>
+      <div class="block stat">
+        <span class="lbl">⚡</span>
+        <div class="bar en"><i id="hud-en"></i></div><span id="hud-en-txt" class="num">100</span>
+      </div>
+      <div class="sep"></div>
+      <div class="block"><span class="lbl">🪙</span><span id="hud-coins" class="num big">0</span></div>
+      <div class="sep"></div>
+      <div class="block"><span class="lbl">🌊</span><span id="hud-wave" class="num">Sonraki: 1</span></div>
+      <div class="block"><span class="lbl">🧟</span><span id="hud-zombies" class="num">—</span></div>
+      <div class="sep"></div>
+      <div class="block stat" title="Sığınak dayanıklılığı — sıfırlanırsa oyun biter">
+        <span class="lbl">🏠</span><div class="bar shelter"><i id="hud-shelter"></i></div>
+      </div>
+      <div id="hud-extra" class="block"></div>
+    </header>
+
+    <aside id="quest-tracker" class="glass"></aside>
+    <div id="toasts"></div>
+    <div id="banner"><h2></h2><p></p></div>
+
+    <div id="hint" class="glass"></div>
+    <div id="item-name"></div>
+    <nav id="hotbar" class="glass"></nav>
+    <div id="keys" class="glass">WASD hareket · Tık/Boşluk kullan · 1-8 eşya · E konuş · I envanter · K kaydet · M ses</div>
+
+    <div id="feature-ui"></div>
+    <div id="backdrop"></div>
+
+    <!-- Envanter + üretim -->
+    <section id="modal-inventory" class="modal glass">
+      <header><h3>Envanter</h3><button class="x" data-close>✕</button></header>
+      <div class="inv-wrap">
+        <div>
+          <div id="inv-grid"></div>
+          <div id="inv-info"><span class="muted">Bir eşyanın üzerine gel. Yer değiştirmek için iki slota sırayla tıkla.</span></div>
+        </div>
+        <div class="craft"><h4>Üretim</h4><div id="craft-list"></div></div>
+      </div>
+    </section>
+
+    <!-- NPC diyaloğu -->
+    <section id="modal-dialog" class="modal glass">
+      <div class="dlg">
+        <img class="portrait" alt="">
+        <div class="dlg-body">
+          <div class="npc-name"></div><div class="npc-role"></div>
+          <p class="npc-text"></p>
+          <div class="options"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Dükkân -->
+    <section id="modal-shop" class="modal glass">
+      <header><h3 class="shop-title"></h3><span class="shop-coins"></span><button class="x" data-close>✕</button></header>
+      <div class="tabs"><button class="tab active" data-tab="buy">Satın al</button><button class="tab" data-tab="sell">Sat</button></div>
+      <div class="shop-list"></div>
+    </section>
+
+    <!-- Özellik modülleri için genel panel (hud.openPanel) -->
+    <section id="modal-feature" class="modal glass">
+      <header><h3 class="feature-title"></h3><button class="x" data-close>✕</button></header>
+      <div class="feature-body"></div>
+    </section>
+
+    <!-- Ana menü -->
+    <section id="menu">
+      <div class="menu-card glass">
+        <h1>Hasat <span>&</span> Hayatta Kal</h1>
+        <p class="tag">Gündüz ek, sula, hasat et. Gece kasabanı zombi dalgalarına karşı savun.</p>
+        <div class="menu-btns">
+          <button id="btn-continue" class="primary">Devam Et</button>
+          <button id="btn-new">Yeni Oyun</button>
+        </div>
+        <ul class="howto">
+          <li><b>Çapa</b> ile tarlayı sür → <b>tohum</b> ek → <b>sula</b>. Sulanmayan ekin büyümez.</li>
+          <li>Olgun ekine tıklayarak hasat et; ürünü <b>Kemal</b>'e sat.</li>
+          <li>Odun/taş topla, <b>I</b> menüsünden barikat ve taret üret.</li>
+          <li>20:00'de dalga başlar. <b>Sığınak</b> düşerse oyun biter!</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="gameover">
+      <div class="menu-card glass">
+        <h1>Kasaba Düştü</h1>
+        <p class="stats"></p>
+        <div class="menu-btns"><button class="primary">Yeniden Başla</button></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Phaser 3 (global) + modüler ES6 oyun kodu -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

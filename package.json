@@ -1,0 +1,10 @@
+{
+  "name": "hasat-hayatta-kal",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Phaser 3 ile pixel art çiftçilik + zombi savunma oyunu",
+  "scripts": {
+    "start": "npx --yes http-server . -p 8080 -c-1 -o"
+  }
+}
