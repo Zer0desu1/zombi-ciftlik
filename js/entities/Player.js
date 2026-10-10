@@ -57,7 +57,8 @@ export class Player extends Actor {
       const v = new Phaser.Math.Vector2(vx, vy).normalize();
       this.facing.copy(v);
       v.scale(mag);
-      const speed = PLAYER_STATS.speed * (this.energy <= 0 ? 0.6 : 1) * (this.speedMul ?? 1);
+      // buffSpeed: yemek güçlendirmesi (harvest modülü)
+      const speed = PLAYER_STATS.speed * (this.energy <= 0 ? 0.6 : 1) * (this.speedMul ?? 1) * (1 + (this.buffSpeed || 0));
       this.setVelocity(v.x * speed, v.y * speed);
       if (vx !== 0) this.setFlipX(vx < 0);
     } else {
@@ -113,7 +114,7 @@ export class Player extends Actor {
 
   takeDamage(n, source) {
     if (!this.alive || this.invuln > 0) return;
-    this.hp -= n;
+    this.hp -= n * (this.dmgTakenMul ?? 1); // yemek güçlendirmesiyle azalabilir
     this.invuln = 0.5;
     this.flash(0xff4444);
     if (source) this.knockback(source.x, source.y, 140);

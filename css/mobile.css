@@ -209,3 +209,6 @@ body.is-touch.portrait .menu-card { padding: 24px 20px; }
 body.is-touch.portrait .menu-card h1 { font-size: 34px; }
 body.is-touch .menu-btns { flex-wrap: wrap; }
 body.is-touch .menu-btns button { min-height: 48px; flex: 1 1 140px; }
+
+/* Kiler rozeti dar ekranda küçük */
+body.is-touch.portrait .hv-badge { padding: 3px 7px; font-size: 11px; }

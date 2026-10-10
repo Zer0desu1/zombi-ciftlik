@@ -49,6 +49,13 @@ Kurulacak bir bağımlılık yok. Phaser 3.80.1 CDN'den (cdnjs), fontlar Google 
 - **Ana hedef:** Sığınağın yanındaki **Radyo Kulesi**'ni 4 aşamada kur. Her aşama kalıcı bir avantaj verir (ışık, kule tüfeği, sığınak canı). Son aşamadan 3 gün sonra **Son Gece** gelir; onu atlatırsan kurtarılırsın ve oyunu kazanırsın.
 - **Zorluk ve rekorlar:** Yeni oyunda Kolay/Normal/Zor seçilir. Her oyun sonunda puan hesaplanır, en iyi skorlar ana menüde görünür.
 
+## Çiftlik = hayatta kalma
+
+- **Güç yemekleri:** Pişmiş yemekler bir sonraki şafağa kadar güçlendirme verir (en fazla 2 aynı anda). Ekmek +20 can, Balkabağı Çorbası +%30 hasar, Mısır Ekmeği %25 az hasar, Domates Salatası hız + kritik, Fırın Patates gece can yenileme, Havuç Suyu geniş gece görüşü, Savaşçı Güveci +%40 hasar +30 can.
+- **Kiler ve moral:** Sığınak kapısının sağındaki sandığa yiyecek bağışla. Kasaba her şafakta NPC başına 2 erzak tüketir. Gece başında kiler doluysa moral **Tok** (savunucular +%30 hasar) ya da **Ziyafet** (+%60 hasar, şafakta sığınak onarımı); boşsa **Aç** (savunucular zayıflar).
+- **Tarladan silah ve savunma:** Balkabağı Bombası (1 balkabağı + 2 mermi → 2 bomba, alan hasarı), buğdaydan barikat (5 buğday).
+- **Tarla tehlikede:** Gece tarlaya giren zombiler ekinleri çiğner ve büyümeyi bir aşama geri atar.
+
 ## Telefonda (dikey) oynanış
 
 - Sol altta sürüklenebilir joystick, sağ altta büyük **eylem** butonu. Eylem butonu seçili eşyayı otomatik hedefe uygular; basılı tutunca tekrarlar, sürükleyince elle nişan alırsın.

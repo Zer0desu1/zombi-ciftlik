@@ -379,8 +379,11 @@ export default {
     scene.combat = {
       critBonus: 0,
       dmgBonus: 0,
-      critChance() { return Math.min(0.9, 0.1 + (this.critBonus || 0)); },
-      damageMult(id) { return (1 + 0.25 * (lvl(id) - 1)) * (1 + (this.dmgBonus || 0)); },
+      // buffDmg/buffCrit: yemek güçlendirmeleri (harvest modülü), kalıcı bonuslardan ayrı tutulur
+      buffDmg: 0,
+      buffCrit: 0,
+      critChance() { return Math.min(0.9, 0.1 + (this.critBonus || 0) + (this.buffCrit || 0)); },
+      damageMult(id) { return (1 + 0.25 * (lvl(id) - 1)) * (1 + (this.dmgBonus || 0) + (this.buffDmg || 0)); },
       weaponLevel: (id) => lvl(id),
       dodge: () => scene.player.dodge(),
       reload: () => startReload(scene, false),

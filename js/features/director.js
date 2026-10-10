@@ -16,6 +16,8 @@ const OBJECTIVES = [
   { id: 'night1',    text: 'İlk geceyi atlat',                        hint: 'Sığınağı koru; sürüler kenarlardan gelir',    goal: 1, prog: (s) => s.waves.wave - (s.waves.active ? 1 : 0), reward: 25 },
   { id: 'harvest',   text: 'İlk hasadını yap',                        hint: 'Olgun ekine tıkla',                          goal: 1, prog: (s, st) => (st.harvested ? 1 : 0), reward: 15 },
   { id: 'sell',      text: 'Kemal\'e ürün sat',                       hint: 'Pazar tezgâhındaki Kemal ile konuş → Ticaret → Sat', goal: 1, prog: (s, st) => (st.sold ? 1 : 0), reward: 15 },
+  { id: 'pantry',    text: 'Kilere yiyecek bağışla',                 hint: 'Sığınak kapısının sağındaki sandık: kasaba toksa savunucular güçlenir', goal: 1, prog: (s) => (s.pantry?.donated > 0 ? 1 : 0), reward: 15 },
+  { id: 'meal',      text: 'Gece öncesi bir güç yemeği ye',          hint: 'Ekmek (3 buğday) veya çorba: şafağa kadar savaş güçlendirmesi verir', goal: 1, prog: (s) => (s.pantry?.eaten > 0 ? 1 : 0), reward: 15 },
   { id: 'turret',    text: 'Taret kur',                               hint: 'Taret: 4 odun + 6 taş + 10 mermi (veya Zeynep\'ten al)', goal: 1, prog: (s) => s.turrets.countActive(true), reward: 30 },
   { id: 'tower1',    text: 'Radyo Kulesi\'nin 1. aşamasını kur',      hint: 'Sığınağın solundaki kule temeline git',       goal: 1, prog: (s, st) => Math.min(1, st.tower), reward: 0 }
 ];

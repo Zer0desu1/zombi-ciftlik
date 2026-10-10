@@ -362,8 +362,10 @@ export class Guard extends NPC {
           else if (d < 40) n.moveToward(n.x - (z.x - n.x), n.y - (z.y - n.y), n.speed * 0.8);
           else { n.halt(); n.setFlipX(z.x < n.x); }
           if (d < 120 && n.shootCd <= 0) {
-            n.shootCd = 1.1;
-            n.scene.fireBullet(n.x, n.y - 2, Phaser.Math.Angle.Between(n.x, n.y, z.x, z.y), 1, 240);
+            // Kasaba morali (kiler doluluğu) savunucuların atış hızını ve hasarını etkiler
+            const mo = n.scene.morale;
+            n.shootCd = 1.1 / (mo?.rate ?? 1);
+            n.scene.fireBullet(n.x, n.y - 2, Phaser.Math.Angle.Between(n.x, n.y, z.x, z.y), 1 * (mo?.dmg ?? 1), 240);
             audio.sfx('turret');
           }
         }
@@ -513,10 +515,12 @@ export class Fighter extends NPC {
           else if (far && d > n.range * 0.9) { n.foe = null; n.sm.set('post'); return; }
           else { n.halt(); n.setFlipX(z.x < n.x); }
           if (d < n.range && n.shootCd <= 0) {
-            n.shootCd = n.fireRate;
+            const mo = n.scene.morale;
+            n.shootCd = n.fireRate / (mo?.rate ?? 1);
+            const dmg = n.dmg * (mo?.dmg ?? 1);
             const a = Phaser.Math.Angle.Between(n.x, n.y - 2, z.x, z.y);
-            if (n.projectile === 'arrow') { fireArrow(n.scene, n.x, n.y - 2, a, n.dmg, n.range + 20); audio.sfx('swing'); }
-            else { n.scene.fireBullet(n.x, n.y - 2, a, n.dmg, 240); audio.sfx('turret'); }
+            if (n.projectile === 'arrow') { fireArrow(n.scene, n.x, n.y - 2, a, dmg, n.range + 20); audio.sfx('swing'); }
+            else { n.scene.fireBullet(n.x, n.y - 2, a, dmg, 240); audio.sfx('turret'); }
           }
         }
       },
