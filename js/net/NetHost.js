@@ -5,7 +5,7 @@
 // Özellik modülleri için ağ sözleşmesi (registry.js): netState/netApply (ortak HUD durumu), netPlayerState/
 // netApplyPlayer (oyuncuya özel HUD), playerState {get,set,fresh,save,load} (oyuncu başına kalıcı durum: yetenek,
 // silah seviyesi, yemek güçlendirmesi — misafir bağlamında takas edilir), guestUpdate (misafirde görsel kare).
-import { START_INVENTORY, PLAYER_STATS, MAP_W, MAP_H, TILE } from '../config.js';
+import { START_INVENTORY, PLAYER_STATS, MAP_W, MAP_H, TILE, ITEMS } from '../config.js';
 import { features } from '../features/registry.js';
 import { audio } from '../audio.js';
 import { Player } from '../entities/Player.js';
@@ -202,6 +202,23 @@ export class NetHost {
     };
     const onDawn = () => { for (const g of this.guests.values()) { const p = g.player; p.energy = Math.max(p.energy, p.maxEnergy * 0.8); } };
     s.netHostPlayer = s.player;
+    this.hostInv = s.inventory; // misafir bağlamında s.inventory takas edilir: eşya verme için host'unki
+    // Takım arkadaşının yanında E: envanteri aç (eşya/para verme satırı orada)
+    const giveNear = (sc) => {
+      const me = sc.player;
+      if (!me?.alive || !this.guests.size || sc.hud.modal) return null;
+      let best = null, bd = 18;
+      for (const q of [sc.netHostPlayer, ...sc.netPlayers]) {
+        if (!q || q === me || !q.alive) continue;
+        const d = Phaser.Math.Distance.Between(me.x, me.y, q.x, q.y);
+        if (d < bd) { bd = d; best = q; }
+      }
+      if (!best) return null;
+      const name = best === sc.netHostPlayer ? this.name : this.guestOf(best)?.name;
+      // Ceza payı: kapı/NPC gibi gerçek etkileşimler yakınsa onlar önce gelsin
+      return { dist: bd + 12, label: `🎁 ${name || 'Arkadaşına'} eşya ver`, run: () => { if (sc.hud.modal !== 'inventory') sc.hud.toggleInventory(); } };
+    };
+    s.addInteraction(giveNear);
     // Parçacık ve uçan yazılar aynalanmaz: misafirde yerel olarak (akıcı) yeniden üretilir
     const undo = [];
     const origP = s.spawnParticles, origT = s.floatText;
@@ -235,6 +252,7 @@ export class NetHost {
       s.events.off('zombieKilled', onKill);
       s.events.off('waveEnd', onWaveEnd);
       s.timeSys.off('dawn', onDawn);
+      s.interactions = s.interactions.filter((f) => f !== giveNear);
     };
   }
 
@@ -259,10 +277,10 @@ export class NetHost {
         try {
           // Aynı oyuncu (oturum kimliği / aynı ad + eski bağlantı sessiz) yeni bağlantıyla döndü: karakteri devral
           const old = this.findReturning(m);
-          if (old) { g = this.takeover(old, conn); return; }
+          if (old) { old.gender = (m.gender === 'f' ? 'f' : 'm'); old.player.setGender?.(old.gender); g = this.takeover(old, conn); return; } // karakter cinsiyeti (town/charPick)
           if (this.guests.size >= MAX_GUESTS) { conn.send({ t: 'full' }); setTimeout(() => conn.close('manual'), 300); return; }
           if (this.scene.gameOver) { conn.send({ t: 'over', stats: null }); setTimeout(() => conn.close('manual'), 300); return; }
-          g = this.addGuest(conn, m.name, m.sid);
+          g = this.addGuest(conn, m.name, m.sid, (m.gender === 'f' ? 'f' : 'm'));
         } catch (e) {
           console.warn('Misafir eklenemedi', e);
           netLog('host', 'handler-error', `hello: ${e?.message || e}`);
@@ -316,7 +334,7 @@ export class NetHost {
     this.sendMe(g, true);
   }
 
-  addGuest(conn, rawName, sid) {
+  addGuest(conn, rawName, sid, gender = 'm') {
     const s = this.scene;
     let name = String(rawName || 'Misafir').trim().slice(0, 14) || 'Misafir';
     const taken = new Set([this.name, ...[...this.guests.values()].map((x) => x.name)]);
@@ -329,8 +347,9 @@ export class NetHost {
     const g = {
       id, slot, conn, name, sid: sid || null, hidden: false, color: PLAYER_COLORS[slot] || 0xffffff, player: p, inv: new Inventory(), selected: 0,
       hud: null, out: [], sfx: [], lastMe: '', invDirty: true, uiInvDirty: false, uiModal: null, uiHtml: '',
-      lastSeen: performance.now(), ping: 0, tx: p.x, ty: p.y, flip: false, moving: false, angle: 0, hint: '', hintT: 0, sentTp: -1
+      lastSeen: performance.now(), ping: 0, tx: p.x, ty: p.y, flip: false, moving: false, angle: 0, hint: '', hintT: 0, sentTp: -1, gender
     };
+    p.setGender?.(gender);
     p.netRemote = {
       hurt: (dmg, src) => this.send(g, { t: 'hurt', d: r1(dmg), x: src ? r1(src.x) : null, y: src ? r1(src.y) : null }),
       send: (m) => this.send(g, m) // özellik modüllerinin misafire özel mesajları (balık, buz yavaşlatma…)
@@ -442,6 +461,67 @@ export class NetHost {
     return g ? this.withGuest(g, fn) : fn();
   }
 
+  // ---------------- Takım arkadaşına eşya / para verme ----------------
+  // Host otoriter: misafirin "Ver" tıklaması 'ui' click olarak gelir ve burada misafir bağlamında çalışır;
+  // veren = o anki bağlam (s.player / s.inventory). Envanter değişiklikleri mevcut 'me' akışıyla gider.
+  teammates() {
+    const me = this.ctx, out = [];
+    if (me) out.push({ id: 'h', name: this.name, color: PLAYER_COLORS[0] });
+    for (const g of this.guests.values()) if (g !== me) out.push({ id: g.id, name: g.name, color: g.color });
+    return out;
+  }
+
+  mate(id) {
+    if (id === 'h') return this.ctx ? { name: this.name, player: this.scene.netHostPlayer, inv: this.hostInv, g: null } : null;
+    const g = this.guests.get(id);
+    return g && g !== this.ctx ? { name: g.name, player: g.player, inv: g.inv, g } : null;
+  }
+
+  // Alıcıya bildirim: misafirse doğrudan mesaj; host ise bağlam bittikten sonra (toast/HUD takaslı olabilir)
+  notifyMate(to, msg) {
+    if (to.g) { this.send(to.g, { t: 'toast', m: msg, ty: 'ok' }); this.send(to.g, { t: 'sfx', l: ['coin'] }); return; }
+    const s = this.scene;
+    queueMicrotask(() => {
+      if (this.closed || !s.hud) return;
+      if (this.ctx) return; // (olası değil) hâlâ bir bağlamın içindeysek atla
+      s.hud.toast(msg, 'ok');
+      audio.sfx('coin');
+      this.hostInv?.emit(); // dinleyiciler (hotbar, cephane, panel) misafir bağlamında yanlış envanteri gördü: host bağlamında yenile
+    });
+  }
+
+  giverName() { return this.ctx ? this.ctx.name : this.name; }
+
+  giveItem(toId, idx, n) {
+    const s = this.scene, inv = s.inventory, to = this.mate(toId);
+    const it = Number.isInteger(idx) ? inv.slots[idx] : null;
+    if (!to || !to.inv || to.inv === inv || !it || !ITEMS[it.id]) { s.hud.toast('Eşya verilemedi (oyuncu ayrılmış olabilir).', 'warn'); return 0; }
+    n = Math.max(1, Math.min(it.count, Math.floor(+n) || 1));
+    const id = it.id, name = ITEMS[id].name;
+    const moved = n - to.inv.add(id, n); // alıcının çantası doluysa yalnızca sığan kadar
+    if (moved <= 0) { s.hud.toast(`${to.name} adlı oyuncunun çantası dolu.`, 'warn'); return 0; }
+    if (moved >= it.count) s.hud.pickedSlot = null;
+    inv.removeAt(idx, moved);
+    s.hud.toast(`🎁 ${to.name} oyuncusuna ${moved} ${name} verdin${moved < n ? ` (çantası doldu, ${n - moved} sende kaldı)` : ''}`, 'ok');
+    this.notifyMate(to, `🎁 ${this.giverName()} sana ${moved} ${name} verdi`);
+    return moved;
+  }
+
+  giveCoins(toId, n) {
+    const s = this.scene, from = s.player, to = this.mate(toId);
+    n = Math.min(Math.floor(+n) || 0, Math.floor(from?.coins || 0));
+    if (!to || !to.player || to.player === from) { s.hud.toast('Para verilemedi (oyuncu ayrılmış olabilir).', 'warn'); return 0; }
+    if (n <= 0) { s.hud.toast('Yeterli paran yok.', 'warn'); return 0; }
+    from.coins -= n;
+    to.player.coins += n;
+    s.hud.toast(`🪙 ${to.name} oyuncusuna ${n} para verdin`, 'ok');
+    this.notifyMate(to, `🪙 ${this.giverName()} sana ${n} para verdi`);
+    // Panellerdeki para düğmeleri (yetersiz bakiye → pasif) yenilensin
+    if (this.ctx) this.ctx.uiInvDirty = true; else s.hud.refreshInventory();
+    if (to.g) to.g.uiInvDirty = true;
+    return n;
+  }
+
   // Konumlu ekran sarsıntısı: yakındaki misafirlerin kamerası da sarsılsın
   shakeAt(x, y, range, dur, intensity) {
     for (const g of this.guests.values()) {
@@ -490,8 +570,8 @@ export class NetHost {
   }
 
   rosterList() {
-    return [{ id: 'h', name: this.name, color: PLAYER_COLORS[0], ping: 0, host: true },
-      ...[...this.guests.values()].map((g) => ({ id: g.id, name: g.name, color: g.color, ping: Math.round(g.ping) }))];
+    return [{ id: 'h', name: this.name, color: PLAYER_COLORS[0], ping: 0, host: true, gender: this.scene.player?.gender || 'm' },
+      ...[...this.guests.values()].map((g) => ({ id: g.id, name: g.name, color: g.color, ping: Math.round(g.ping), gender: g.gender || 'm' }))];
   }
 
   refreshRoster() {

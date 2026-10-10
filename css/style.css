@@ -232,6 +232,13 @@ button.ghost { background: transparent; }
 #inv-grid .slot.picked { border-color: var(--blue); background: rgba(90, 176, 255, 0.24); box-shadow: 0 0 0 1px var(--blue), 0 0 16px rgba(90, 176, 255, 0.4); animation: picked 1s ease-in-out infinite; }
 @keyframes picked { 50% { box-shadow: 0 0 0 1px var(--blue), 0 0 4px rgba(90, 176, 255, 0.2); } }
 #inv-info { margin-top: 12px; font-size: 13px; min-height: 58px; max-width: 350px; line-height: 1.5; padding: 8px 10px; border-radius: var(--r-md); background: rgba(0, 0, 0, 0.18); }
+/* Co-op: takım arkadaşına eşya / para verme */
+.inv-give { margin-top: 8px; max-width: 350px; padding: 8px 10px; border-radius: var(--r-md); background: rgba(90, 176, 255, 0.08); border: 1px solid rgba(90, 176, 255, 0.25); font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
+.inv-give .give-h { line-height: 1.4; }
+.inv-give .give-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.inv-give .give-name { flex: 1 1 70px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.inv-give .give-btn { min-height: 28px; padding: 2px 8px; font-size: 12px; }
+.inv-give .give-btn.coin { border-color: rgba(255, 209, 102, 0.45); }
 .craft { min-width: 300px; }
 #craft-list { display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow: auto; padding-right: 4px; }
 .craft-tabs { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: 4px; padding-bottom: 6px; background: var(--glass-strong, rgba(14,16,26,.92)); }

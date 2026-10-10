@@ -21,10 +21,25 @@ export class Player extends Actor {
     this.rollT = 0;      // yuvarlanma kalan süresi
     this.rollCd = 0;     // yuvarlanma bekleme süresi
     this.rollDir = new Phaser.Math.Vector2(1, 0);
+    this.gender = 'm';
     this.setCollideWorldBounds(true);
   }
 
   get rolling() { return this.rollT > 0; }
+
+  // Karakter cinsiyeti: 'm' (varsayılan, 'player' dokusu) | 'f' ('player_f' dokusu; aynı kare/animasyon düzeni)
+  setGender(g) {
+    this.gender = g === 'f' ? 'f' : 'm';
+    const key = this.gender === 'f' && this.scene.textures.exists('player_f') ? 'player_f' : 'player';
+    if (this.texKey !== key) {
+      const playing = this.anims?.isPlaying;
+      this.texKey = key;
+      this.anims?.stop();
+      this.setTexture(key, 0);
+      if (playing) this.walk(true);
+    }
+    return this;
+  }
 
   update(dt, keys, blocked) {
     this.invuln = Math.max(0, this.invuln - dt);

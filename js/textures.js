@@ -173,6 +173,19 @@ function makeCharacters(scene) {
     R(ctx, ox + 6, 8, 1, 3, '#7a4a30'); R(ctx, ox + 9, 8, 1, 3, '#7a4a30');   // sırt çantası askıları
     R(ctx, ox + 5, 2, 2, 1, '#6b5040');                                       // saç parlaması
   });
+  // Kadın oyuncu: omuzlara inen uzun kızıl-kahve saç, mor gömlek, saç tokası (aynı 2 kare + '_walk' animasyonu)
+  const FH = '#8a4a22';
+  makeHumanoid(scene, 'player_f', basePal({ H: FH, C: '#9a5fd0', D: '#7444a8', P: '#2f4a7a' }), (ctx, ox) => {
+    R(ctx, ox + 3, 3, 2, 6, FH); R(ctx, ox + 11, 3, 2, 6, FH);              // yanlardan inen saç
+    R(ctx, ox + 3, 3, 1, 6, '#a8602e'); R(ctx, ox + 12, 3, 1, 6, '#6a3818'); // ışık / gölge
+    R(ctx, ox + 3, 9, 1, 1, FH); R(ctx, ox + 12, 9, 1, 1, FH);              // uçlar
+    R(ctx, ox + 5, 11, 6, 1, '#6b4a2f'); R(ctx, ox + 7, 11, 2, 1, '#feae34'); // kemer + toka
+    R(ctx, ox + 5, 2, 2, 1, '#b06a3a');                                       // saç parlaması
+    R(ctx, ox + 10, 1, 2, 2, '#ff7ab6'); R(ctx, ox + 10, 1, 1, 1, '#ffc2dc'); // saç tokası
+  });
+  if (scene.anims && !scene.anims.exists('player_f_walk')) {
+    scene.anims.create({ key: 'player_f_walk', frames: [{ key: 'player_f', frame: 0 }, { key: 'player_f', frame: 1 }], frameRate: 7, repeat: -1 });
+  }
   // Çiftçi: hasır şapka
   makeHumanoid(scene, 'npc_farmer', basePal({ H: '#c98b3a', C: '#6aa84f', D: '#4f7f3a', P: '#6b4a2f' }), (ctx, ox) => {
     R(ctx, ox + 2, 2, 12, 1, '#e8c867'); R(ctx, ox + 4, 0, 8, 2, '#e8c867'); R(ctx, ox + 4, 1, 8, 1, '#c9a443');

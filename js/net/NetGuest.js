@@ -84,7 +84,7 @@ export class NetGuest {
 
   hello() {
     this.welcomeWait = performance.now();
-    this.send({ t: 'hello', name: this.name, v: PROTO, sid: this.sid });
+    this.send({ t: 'hello', name: this.name, v: PROTO, sid: this.sid, gender: this.scene.player?.gender || 'm' });
     if (document.visibilityState === 'hidden') this.send({ t: 'vis', h: 1 });
   }
 
@@ -527,7 +527,12 @@ export class NetGuest {
     if (!list || !this.panel) return;
     this.roster = list;
     this.panel.setRoster(list.map((x) => ({ ...x, me: x.id === this.id })));
-    for (const r of list) { const a = this.avatars.get(r.id); if (a && a.label.text !== r.name) a.label.setText(r.name); }
+    for (const r of list) {
+      const a = this.avatars.get(r.id);
+      if (a && a.label.text !== r.name) a.label.setText(r.name);
+      const tex = avatarTex(r); // karakter cinsiyeti
+      if (a && a.spr.texture.key !== tex) { a.spr.anims.stop(); a.spr.setTexture(tex, 0); }
+    }
   }
 
   // ---------------- Anlık görüntü uygulama ----------------
@@ -603,9 +608,9 @@ export class NetGuest {
 
   makeAvatar(id) {
     const s = this.scene;
-    const spr = s.add.sprite(0, 0, 'player', 0);
-    const shadow = s.add.image(0, 0, 'shadow');
     const r = this.roster?.find((x) => x.id === id);
+    const spr = s.add.sprite(0, 0, avatarTex(r), 0);
+    const shadow = s.add.image(0, 0, 'shadow');
     const label = s.add.text(0, 0, r?.name || '', nameStyle).setOrigin(0.5, 1).setDepth(10002);
     return { id, spr, shadow, label, ip: new Interp(), color: r?.color ?? 0xffffff, alive: true };
   }
@@ -625,7 +630,7 @@ export class NetGuest {
       a.alive = !!al;
       a.spr.setFlipX(!!f);
       a.spr.setAngle(al ? ang : 90);
-      if (m && al) a.spr.play('player_walk', true); else { a.spr.anims.stop(); a.spr.setFrame(0); }
+      if (m && al) a.spr.play(`${a.spr.texture.key}_walk`, true); else { a.spr.anims.stop(); a.spr.setFrame(0); }
       const r = this.roster?.find((q) => q.id === id);
       if (r) a.color = r.color;
     }
@@ -848,3 +853,6 @@ export class NetGuest {
     return { rt: this.rt, hostNow: this.clock.hostNow(), delay: this.clock.delay, objs };
   }
 }
+
+// Diğer oyuncunun karakter dokusu (roster'daki cinsiyete göre; eski host'ta alan yoksa erkek)
+function avatarTex(r) { return r?.gender === 'f' ? 'player_f' : 'player'; }

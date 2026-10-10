@@ -327,6 +327,44 @@ export class HUD {
       node.addEventListener('mouseleave', () => this.hideTip());
       this.e.invGrid.appendChild(node);
     });
+    this.renderGive();
+  }
+
+  // Co-op: seçili eşyayı ya da parayı takım arkadaşına ver. Yalnızca host'ta çizilir (misafirin envanter
+  // paneli host'taki kopyadan gelir, tıklamalar host'ta misafir bağlamında çalışır); tek oyunculuda gizli.
+  renderGive() {
+    const net = this.scene.net, inv = this.scene.inventory;
+    let box = this.e.inv.querySelector('.inv-give');
+    const mates = net?.isHost && net.teammates ? net.teammates() : [];
+    if (!mates.length) { box?.remove(); return; }
+    if (!box) { box = el('div', 'inv-give'); this.e.invInfo.after(box); }
+    const i = this.pickedSlot, s = i != null ? inv.slots[i] : null;
+    const coins = Math.floor(this.scene.player?.coins || 0);
+    box.innerHTML = s
+      ? `<div class="give-h">🎁 <b>Ver:</b> ${ITEMS[s.id]?.name || s.id} <span class="muted">×${s.count}</span></div>`
+      : `<div class="give-h">🎁 <b>Ver</b> <span class="muted">· eşya vermek için önce bir eşya seç · 🪙 Para ver</span></div>`;
+    for (const m of mates) {
+      const row = el('div', 'give-row');
+      const name = el('span', 'give-name');
+      name.textContent = m.name; // misafir adı: HTML olarak yorumlanmasın
+      if (Number.isFinite(m.color)) name.style.color = `#${m.color.toString(16).padStart(6, '0')}`;
+      row.appendChild(name);
+      const btn = (label, cls, fn, off) => {
+        const b = el('button', `give-btn${cls ? ` ${cls}` : ''}`);
+        b.textContent = label;
+        if (off) b.disabled = true; else b.addEventListener('click', fn);
+        row.appendChild(b);
+      };
+      const cnt = () => inv.slots[i]?.count || 0;
+      if (s) {
+        btn('🎁 1', '', () => net.giveItem(m.id, i, 1));
+        if (s.count > 2) btn('Yarı', '', () => net.giveItem(m.id, i, Math.ceil(cnt() / 2)));
+        if (s.count > 1) btn('Hepsi', '', () => net.giveItem(m.id, i, cnt()));
+      }
+      btn('🪙 10', 'coin', () => net.giveCoins(m.id, 10), coins < 10);
+      btn('🪙 50', 'coin', () => net.giveCoins(m.id, 50), coins < 50);
+      box.appendChild(row);
+    }
   }
 
   showInfo(s) {

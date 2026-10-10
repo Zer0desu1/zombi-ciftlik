@@ -6,6 +6,7 @@ import { addCanvas, R, makeHumanoid, basePal, iconURL } from '../textures.js';
 import { audio } from '../audio.js';
 import { injectCSS, el } from '../ui/dom.js';
 import { Survivor, SURVIVOR_JOBS, SURV_NAMES_F, SURV_NAMES_M } from '../entities/NPC.js';
+import { installCharPick, prefGender, prefName } from '../ui/charPick.js';
 
 // ---------------- Eşyalar ----------------
 function useHeal(scene, ctx) {
@@ -140,8 +141,11 @@ function nightHelp(scene) {
 }
 
 // Hayatta kalan adları cinsiyete göre NPC.js'te (SURV_NAMES_F / SURV_NAMES_M); ana NPC adlarıyla çakışmaz
-// MAX_SURVIVORS: gelen yetişkin + işe alım sınırı; MAX_POP: doğumlar dahil toplam hayatta kalan nüfusu
-const MAX_SURVIVORS = 4, MAX_POP = 10, HIRE_COST = 100, WAGE = 10;
+// İşe alım sınırı yok: her yetişkin hayatta kalana iş verilebilir.
+// ARRIVE_CAP: dalga sonrası kendiliğinden gelen yetişkin sınırı (haritada bekleyenler dahil); MAX_POP: doğumlar dahil toplam nüfus
+const ARRIVE_CAP = 12, MAX_POP = 20, HIRE_COST = 100, WAGE = 10;
+// Oyuncu evliliği: karşı cinsten yetişkin bir NPC ile en az PLAYER_MARRY_HEARTS♥ dostluk
+const PLAYER_MARRY_HEARTS = 4;
 // Bebek: ilk bebek için bekleme yok (doğum yalnızca şafakta, yani eşleşmeden sonraki ilk şafaktan itibaren);
 // sonraki bebekler arasında BABY_GAP gün. Ana NPC'nin eş olabilmesi için oyuncuyla MATE_HEARTS kalp dostluk gerekir.
 const BABY_GAP = 4, BABY_CHANCE = 0.4, GROW_DAYS = 3, MATE_HEARTS = 3;
@@ -164,6 +168,9 @@ const relOf = (scene, key) => {
   return t[key];
 };
 const heartsOf = (scene, key) => Math.floor(relOf(scene, key).pts / PTS_PER_HEART);
+// Kalp kaydının anahtarı: ana NPC'ler kendi key'i, yetişkin hayatta kalanlar 'surv:<ad>' (adlar benzersiz)
+const relKey = (npc) => (REL[npc?.key] ? npc.key : npc?.key === 'survivor' && !npc.child && !npc.outsider ? `surv:${npc.npcName}` : null);
+const survHearts = (scene, npc) => { const k = relKey(npc); return k ? heartsOf(scene, k) : 0; };
 const npcByKey = (scene, key) => scene.npcs.find((n) => n.key === key);
 const itemName = (id) => ITEMS[id]?.name || id;
 const icon = (scene, id) => iconURL(scene, ITEMS[id]?.icon || id);
@@ -176,6 +183,7 @@ function discount(scene, key) {
 
 function giftCategory(key, id) {
   const r = REL[key];
+  if (!r) return ITEMS[id]?.type === 'food' || ITEMS[id]?.type === 'crop' ? 'liked' : 'neutral'; // hayatta kalanlar yiyeceği sever
   if (r.loved.includes(id)) return 'loved';
   if (r.liked.includes(id)) return 'liked';
   if (r.disliked.includes(id)) return 'disliked';
@@ -194,6 +202,18 @@ function nextRewardText(h, hasShop, key) {
   if (h < 6) return hasShop ? '6♥: %20 indirim + özel tarif' : '6♥: özel tarif';
   if (h < 8) return '8♥: özel hediye';
   return 'Tüm ödüller açıldı';
+}
+
+// Hayatta kalan kalp puanı (ödül kademesi yok; yalnızca evlilik için)
+function addSurvPoints(scene, npc, n) {
+  const key = relKey(npc);
+  if (!key) return;
+  const r = relOf(scene, key);
+  const before = Math.floor(r.pts / PTS_PER_HEART);
+  r.pts = Phaser.Math.Clamp(r.pts + n, 0, MAX_PTS);
+  const after = Math.floor(r.pts / PTS_PER_HEART);
+  if (!npc.hidden) scene.floatText(npc.x, npc.y - 18, n >= 0 ? `+${n} ♥` : `${n} ♥`, n >= 0 ? '#ff7ab6' : '#9aa3ad');
+  if (after > before) scene.hud.toast(`${npc.npcName} ile dostluğun arttı: ${after} ♥`, 'ok');
 }
 
 // Kalp puanı ekle; eşik geçişlerinde ödülleri ver
@@ -256,11 +276,12 @@ function syncRecipes(scene) {
 
 // ---------------- Konuşma ve hediye ----------------
 function onTalk(scene, npc) {
-  if (!REL[npc.key]) return;
-  const r = relOf(scene, npc.key);
+  const key = relKey(npc);
+  if (!key) return;
+  const r = relOf(scene, key);
   if (r.talk === today(scene)) return;
   r.talk = today(scene);
-  addPoints(scene, npc.key, TALK_PTS);
+  if (REL[key]) addPoints(scene, key, TALK_PTS); else addSurvPoints(scene, npc, TALK_PTS);
 }
 
 function giftableItems(scene) {
@@ -285,12 +306,14 @@ function openGiftChooser(scene, npc) {
 }
 
 function giveGift(scene, npc, id) {
-  const r = relOf(scene, npc.key), hud = scene.hud;
+  const key = relKey(npc);
+  if (!key) return;
+  const r = relOf(scene, key), hud = scene.hud;
   if (r.gift === today(scene)) { hud.renderDialog('Bugün zaten bir hediye verdin, yarın tekrar gel!'); return; }
   if (!scene.inventory.remove(id, 1)) return;
-  const cat = giftCategory(npc.key, id);
+  const cat = giftCategory(key, id);
   r.gift = today(scene);
-  addPoints(scene, npc.key, GIFT_PTS[cat]);
+  if (REL[key]) addPoints(scene, key, GIFT_PTS[cat]); else addSurvPoints(scene, npc, GIFT_PTS[cat]);
   if (cat === 'loved') { audio.sfx('quest'); scene.spawnParticles(npc.x, npc.y - 10, 0xff7ab6, 10); } else if (cat === 'disliked') audio.sfx('error'); else audio.sfx('coin');
   hud.renderDialog(pick(REACT[cat]));
 }
@@ -376,8 +399,9 @@ function decorateDialog(scene, custom) {
     opts.insertBefore(b, opts.lastElementChild);
   };
 
-  if (REL[npc.key]) {
-    const r = relOf(scene, npc.key);
+  const rk = relKey(npc);
+  if (rk) {
+    const r = relOf(scene, rk);
     if (r.gift !== today(scene)) add('🎁 Hediye ver', () => openGiftChooser(scene, npc));
   }
   if (npc.key === 'doctor') {
@@ -400,6 +424,8 @@ function decorateDialog(scene, custom) {
       add('👋 İşten çıkar', () => { npc.setJob(null); hud.renderDialog('Anlıyorum… Yine de burada kalabilir miyim?'); }, 'ghost');
     }
   }
+  // Oyuncu ile evlilik (karşı cinsten yetişkin, eşi yok, oyuncunun da eşi yok)
+  if (canWooPlayer(scene, npc)) add('💍 Evlen', () => proposePlayer(scene, npc), 'accent');
   if (canMarry(npc) && !npc.partner) add('💞 Eş bul', () => {
     const { mate, reason } = findMate(scene, npc);
     if (!mate) { hud.renderDialog(reason); return; }
@@ -414,6 +440,10 @@ function survivorMeta(s, scene) {
   if (s.child) parts.push(`Çocuk · ${s.child} gün sonra büyüyecek`);
   else parts.push(s.job ? `İşe alındı · günlük maaş ${WAGE}🪙` : `İşe alınabilir · ${HIRE_COST}🪙 + günlük ${WAGE}🪙`);
   if (s.child && s.parents?.length) parts.push(`Ailesi: ${s.parents.join(' & ')}`);
+  if (scene && !s.child && relKey(s)) {
+    const r = relOf(scene, relKey(s)), day = today(scene);
+    parts.push(`${heartsHTML(survHearts(scene, s))} 💬${r.talk === day ? '✓' : '—'} 🎁${r.gift === day ? '✓' : '—'}`);
+  }
   const fam = scene ? familyMeta(scene, s) : (s.partner ? `Eşi: ${s.partner}` : '');
   if (fam) parts.push(fam);
   return parts.join(' · ');
@@ -426,6 +456,69 @@ const partnerOf = (scene, s) => (s.partner ? scene.npcs.find((o) => o !== s && o
 const canMarry = (n) => (n.key === 'survivor' || !!REL[n.key]) && !n.child && !n.outsider && (n.gender === 'f' || n.gender === 'm');
 const GENDER_WORD = { f: 'kadın', m: 'erkek' };
 
+// ---- Oyuncu evliliği ----
+// scene.town.spouse: oyuncunun eşi olan NPC'nin adı; eşin partner alanı oyuncunun adını tutar (scene.town.playerName)
+const isSpouse = (scene, n) => !!scene.town?.spouse && n?.npcName === scene.town.spouse;
+const spouseNpc = (scene) => (scene.town?.spouse ? scene.npcs.find((n) => n.npcName === scene.town.spouse) || null : null);
+const playerLabel = (scene) => scene.town?.playerName || prefName() || 'Çiftçi';
+const playerGenderOf = (scene) => (scene.player?.gender === 'f' ? 'f' : 'm');
+
+function canWooPlayer(scene, npc) {
+  return canMarry(npc) && !npc.partner && !scene.town.spouse && npc.gender !== playerGenderOf(scene);
+}
+
+function proposePlayer(scene, npc) {
+  const hud = scene.hud, h = heartsOf(scene, relKey(npc));
+  // Diyalog açıksa NPC cevap verir, değilse (ilişkiler paneli) bildirim
+  const say = (txt, ok) => {
+    if (hud.modal === 'dialog' && hud.npc === npc) hud.renderDialog(txt);
+    else hud.toast(`${npc.npcName}: ${txt}`, ok ? 'ok' : 'info');
+  };
+  if (scene.town.spouse) { say('Senin zaten bir eşin var.'); return false; }
+  if (npc.gender === playerGenderOf(scene)) { say('Seni iyi bir dost olarak görüyorum.'); return false; }
+  if (h < PLAYER_MARRY_HEARTS) {
+    say(`Seni daha yakından tanımak isterim… Her gün konuş, hediye getir. (Dostluğunuz en az ${PLAYER_MARRY_HEARTS}♥ olmalı, şu an ${h}♥)`);
+    return false;
+  }
+  marryPlayer(scene, npc);
+  say('Evet! Bu kıyamet ortasında bir yuva kuralım. Birlikte her şeyin üstesinden geliriz.', true);
+  return true;
+}
+
+function marryPlayer(scene, npc) {
+  const t = scene.town;
+  t.playerName = t.playerName || prefName() || 'Çiftçi';
+  t.spouse = npc.npcName;
+  npc.partner = t.playerName;
+  audio.sfx('quest');
+  scene.spawnParticles(npc.x, npc.y - 8, 0xff8fb0, 12);
+  scene.spawnParticles(scene.player.x, scene.player.y - 8, 0xff8fb0, 12);
+  scene.hud.banner('💍 Evlendiniz!', `${t.playerName} ve ${npc.npcName} artık bir aile. Şafaklarda bir bebekleri olabilir.`);
+}
+
+// Oyuncu + eşinden bebek (şafakta şansla ya da test için zorla)
+function playerBirth(scene, force = false) {
+  const sp = spouseNpc(scene);
+  if (!sp || sp.child) return null;
+  if (!force && (babyBlock(scene, sp) || Math.random() >= BABY_CHANCE)) return null;
+  const pg = playerGenderOf(scene), me = playerLabel(scene);
+  const [mom, dad] = pg === 'f' ? [me, sp.npcName] : [sp.npcName, me];
+  const baby = birth(scene, mom, dad);
+  sp.lastBaby = scene.town.lastBaby = today(scene);
+  scene.hud.banner('👶 Ailen büyüyor!', `${baby.npcName} dünyaya geldi. ${GROW_DAYS} gün sonra büyüyecek.`);
+  return baby;
+}
+
+function birth(scene, momName, dadName) {
+  const gender = Math.random() < 0.5 ? 'f' : 'm';
+  const name = freshName(scene, gender);
+  const baby = spawnSurvivor(scene, { name, gender, variant: rand(0, 2), job: null, arrived: today(scene), child: GROW_DAYS, parents: [momName, dadName] }, false);
+  scene.spawnParticles(baby.x, baby.y - 6, 0xff8fb0, 10);
+  audio.sfx('levelup');
+  scene.hud.toast(`👶 ${momName} ve ${dadName} bir ${gender === 'f' ? 'kız' : 'erkek'} bebek sahibi oldu: ${name}!`, 'ok');
+  return baby;
+}
+
 // Kiler sistemi kullanılıyorsa (en az bir bağış yapılmışsa) ve kiler günlük ihtiyacı karşılamıyorsa kasaba aç sayılır.
 // Kiler hiç kullanılmadıysa bebek için engel sayılmaz.
 function pantryShort(scene) {
@@ -437,7 +530,7 @@ function pantryShort(scene) {
 
 // Çiftin neden bebek düşünmediği (null = engel yok)
 function babyBlock(scene, a) {
-  const b = partnerOf(scene, a);
+  const b = isSpouse(scene, a) ? { lastBaby: scene.town.lastBaby || 0 } : partnerOf(scene, a);
   if (!b) return `${a.partner} köyde olmadığı için bebek düşünmüyoruz`;
   const pop = survivors(scene).length;
   if (pop >= MAX_POP) return `Köy çok kalabalık (${pop}/${MAX_POP}), şimdilik bebek düşünmüyoruz`;
@@ -452,7 +545,8 @@ function babyBlock(scene, a) {
 function familyMeta(scene, n) {
   if (!n.partner) return '';
   const block = babyBlock(scene, n);
-  return `💞 Eşi: ${n.partner} · 👶 ${block || `Bir bebek düşünüyoruz (her şafak %${Math.round(BABY_CHANCE * 100)} şans)`}`;
+  const who = isSpouse(scene, n) ? `💍 Eşin (${n.partner})` : `💞 Eşi: ${n.partner}`;
+  return `${who} · 👶 ${block || `Bir bebek düşünüyoruz (her şafak %${Math.round(BABY_CHANCE * 100)} şans)`}`;
 }
 
 // Karşı cinsten, eşi olmayan, köydeki en yakın yetişkin (ana NPC'ler dahil; onlar için oyuncuyla MATE_HEARTS♥ gerekir)
@@ -487,7 +581,12 @@ function pair(scene, a, b) {
 // Eşi artık hiçbir yerde olmayan (ayrılmış/silinmiş) kişinin eş bilgisini temizle
 function fixPartners(scene) {
   const all = people(scene);
-  all.forEach((s) => { if (s.partner && !all.some((o) => o !== s && o.npcName === s.partner)) s.partner = null; });
+  const t = scene.town;
+  if (t.spouse && !all.some((o) => o.npcName === t.spouse)) t.spouse = null; // oyuncunun eşi ayrıldı
+  all.forEach((s) => {
+    if (isSpouse(scene, s)) { s.partner = playerLabel(scene); return; }
+    if (s.partner && !all.some((o) => o !== s && o.npcName === s.partner)) s.partner = null;
+  });
 }
 
 // Cinsiyete uygun, kimsenin kullanmadığı bir ad (liste biterse "Ali 2" gibi)
@@ -520,15 +619,11 @@ function familyDawn(scene) {
     seen.add(a); seen.add(b);
     if (babyBlock(scene, a)) return;
     if (Math.random() >= BABY_CHANCE) return;
-    const gender = Math.random() < 0.5 ? 'f' : 'm';
-    const name = freshName(scene, gender);
     const [mom, dad] = a.gender === 'f' ? [a, b] : [b, a];
-    const baby = spawnSurvivor(scene, { name, gender, variant: rand(0, 2), job: null, arrived: day, child: GROW_DAYS, parents: [mom.npcName, dad.npcName] }, false);
+    birth(scene, mom.npcName, dad.npcName);
     a.lastBaby = b.lastBaby = day;
-    scene.spawnParticles(baby.x, baby.y - 6, 0xff8fb0, 10);
-    audio.sfx('levelup');
-    scene.hud.toast(`👶 ${mom.npcName} ve ${dad.npcName} bir ${gender === 'f' ? 'kız' : 'erkek'} bebek sahibi oldu: ${name}!`, 'ok');
   });
+  playerBirth(scene);
 }
 
 // ---------------- Hayatta kalanlar ----------------
@@ -568,7 +663,6 @@ function hire(scene, s, job) {
   const p = scene.player, hud = scene.hud;
   if (s.child) { hud.toast(`${s.npcName} daha çocuk, çalışamaz`, 'warn'); return false; }
   if (s.job) { s.setJob(job); return true; }
-  if (survivors(scene).filter((o) => o.job).length >= MAX_SURVIVORS) { hud.toast('Daha fazla yardımcı alamazsın', 'warn'); return false; }
   if (p.coins < HIRE_COST) {
     audio.sfx('error');
     if (hud.modal === 'dialog' && hud.npc === s) hud.renderDialog(`${HIRE_COST} altının yok mu? Bekleyebilirim…`);
@@ -586,7 +680,7 @@ function hire(scene, s, job) {
 function maybeSurvivorArrives(scene, wave) {
   if (wave % 3 !== 0) return;
   const adults = survivors(scene).filter((s) => !s.child).length;
-  if (adults + (scene.settlement?.strays() || 0) >= MAX_SURVIVORS || survivors(scene).length >= MAX_POP) return;
+  if (adults + (scene.settlement?.strays() || 0) >= ARRIVE_CAP || survivors(scene).length >= MAX_POP) return;
   const t = scene.town;
   if (t.everArrived && Math.random() >= 0.6) return; // ilk seferde garanti, sonra %60
   t.everArrived = true;
@@ -602,7 +696,7 @@ function payWages(scene) {
     if (s.job) {
       if (p.coins >= WAGE) { p.addCoins(-WAGE); paid += WAGE; }
       else { s.setJob(null); scene.hud.toast(`${s.npcName} maaşını alamadı ve işi bıraktı!`, 'warn'); }
-    } else if (!s.child && !s.partner && today(scene) - (s.arrived || 0) > 3) {
+    } else if (!s.child && !s.partner && survHearts(scene, s) < 2 && today(scene) - (s.arrived || 0) > 3) {
       // Çocuklar ve eşi olanlar köye bağlıdır, ayrılmaz
       scene.hud.toast(`${s.npcName} iş bulamadı ve kasabadan ayrıldı.`, 'info');
       removeSurvivor(scene, s);
@@ -784,7 +878,7 @@ function openRelations(scene) {
          <span class="town-prog">${npc.partner ? `💞 ${npc.partner} · ` : ''}💬${r.talk === day ? '✓' : '—'} 🎁${r.gift === day ? '✓' : '—'} · Sever: ${loved || '?'} · Sevmez: ${disliked || '?'} · ${nextRewardText(h, !!npc.shop, key)}</span></div>`));
     });
     const list = survivors(scene);
-    body.appendChild(el('h4', 'town-h4', `Hayatta kalanlar (${list.length}/${MAX_POP} · çalışan ${list.filter((s) => s.job).length}/${MAX_SURVIVORS})`));
+    body.appendChild(el('h4', 'town-h4', `Hayatta kalanlar (${list.length}/${MAX_POP} · çalışan ${list.filter((s) => s.job).length})`));
     if (!list.length) body.appendChild(el('p', 'town-sub', 'Her 3 dalgada bir kasabaya hayatta kalanlar gelebilir. İşe alınca çiftçi, savaşçı, oduncu ya da madenci olurlar.'));
     list.forEach((s) => {
       const card = el('div', 'town-card',
@@ -793,6 +887,7 @@ function openRelations(scene) {
          <span class="town-prog">${survivorMeta(s, scene)}${s.hidden ? ' · sığınakta' : ''}</span></div>`);
       const btns = el('div', 'town-btns');
       const mk = (label, cls, fn) => { const b = el('button', cls, label); b.onclick = () => { audio.sfx('click'); fn(); render(); }; btns.appendChild(b); };
+      if (canWooPlayer(scene, s)) mk('💍 Evlen', '', () => proposePlayer(scene, s));
       if (s.child) { /* çocuklar çalışmaz */ } else if (!s.job) {
         JOB_IDS.forEach((j) => mk(`${SURVIVOR_JOBS[j].icon} ${SURVIVOR_JOBS[j].name}`, 'accent', () => hire(scene, s, j)));
       } else {
@@ -935,7 +1030,12 @@ export default {
   textures(scene) { makeTextures(scene); },
 
   init(scene) {
-    scene.town = { rel: {}, board: { day: 0, tasks: [] }, everArrived: false, lastCounts: {}, giftMode: false, faintedTonight: false, minShelter: 1 };
+    scene.town = { rel: {}, board: { day: 0, tasks: [] }, everArrived: false, lastCounts: {}, giftMode: false, faintedTonight: false, minShelter: 1, spouse: null, playerName: null, lastBaby: 0 };
+    // Karakter seçimi (ana menü): cihazdaki tercih hemen uygulanır; kayıt yüklenirse kayıttaki cinsiyet geçerli olur
+    scene.player?.setGender?.(prefGender());
+    installCharPick(scene, (g) => { if (!scene.started) scene.player?.setGender?.(g); });
+    // Testler / diğer modüller için
+    scene.town.api = { marryPlayer: (n) => marryPlayer(scene, n), proposePlayer: (n) => proposePlayer(scene, n), playerBirth: (force) => playerBirth(scene, force), hire: (n, j) => hire(scene, n, j) };
     REL_KEYS.forEach((k) => relOf(scene, k));
     syncHunterShop();
     injectCSS('town', CSS);
@@ -1016,6 +1116,9 @@ export default {
       survivors(scene).forEach((s) => removeSurvivor(scene, s));
       people(scene).forEach((n) => { n.partner = null; n.lastBaby = 0; });
       scene.town.everArrived = false;
+      scene.town.spouse = null; scene.town.lastBaby = 0;
+      scene.town.playerName = prefName() || scene.net?.name || null;
+      scene.player?.setGender?.(prefGender());
     }
     if (scene.town.board.day !== today(scene) || !scene.town.board.tasks.length) genBoard(scene);
     syncRecipes(scene);
@@ -1036,6 +1139,11 @@ export default {
       rel: t.rel,
       board: t.board,
       everArrived: t.everArrived,
+      // Oyuncu karakteri + evliliği
+      playerGender: scene.player?.gender === 'f' ? 'f' : 'm',
+      playerName: t.playerName || null,
+      spouse: t.spouse || null,
+      lastBaby: t.lastBaby || 0,
       // Ana NPC'lerin eş bilgisi (eş adı + son bebek günü)
       main: Object.fromEntries(people(scene).filter((n) => REL[n.key] && n.partner).map((n) => [n.key, { partner: n.partner, lastBaby: n.lastBaby || 0 }])),
       survivors: survivors(scene).map((s) => ({
@@ -1058,7 +1166,13 @@ export default {
       t.board = { day: data.board.day || 0, tasks: data.board.tasks.filter((x) => x && x.type && x.amount && (x.type !== 'deliver' || ITEMS[x.item])) };
     }
     t.everArrived = !!data.everArrived;
+    // Eski kayıtlarda cinsiyet yok → erkek
+    scene.player?.setGender?.(data.playerGender === 'f' ? 'f' : 'm');
+    t.playerName = typeof data.playerName === 'string' && data.playerName ? data.playerName : null;
+    t.lastBaby = Number(data.lastBaby) || 0;
+    t.spouse = null;
     survivors(scene).forEach((s) => removeSurvivor(scene, s));
+    t.spouse = typeof data.spouse === 'string' && data.spouse ? data.spouse : null; // eş aşağıda yüklenir; fixPartners en sonda
     const main = data.main && typeof data.main === 'object' ? data.main : {};
     people(scene).forEach((n) => {
       if (!REL[n.key]) return;
