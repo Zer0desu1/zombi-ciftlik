@@ -1,4 +1,4 @@
-import { ITEMS, RECIPES, SHOPS, HOTBAR_SIZE } from '../config.js';
+import { ITEMS, RECIPES, SHOPS, HOTBAR_SIZE, DIFFICULTIES } from '../config.js';
 import { iconURL } from '../textures.js';
 import { audio } from '../audio.js';
 
@@ -327,21 +327,39 @@ export class HUD {
   }
 
   // ---------- Menü / oyun sonu ----------
-  showMenu(hasSave, onContinue, onNew) {
+  showMenu(hasSave, onContinue, onNew, records) {
     const m = $('#menu');
     m.classList.add('show');
     const cont = $('#btn-continue');
     cont.style.display = hasSave ? '' : 'none';
     cont.onclick = () => { m.classList.remove('show'); onContinue(); };
+    const r = records || {};
+    $('#menu-records').innerHTML = r.runs
+      ? `🏆 En iyi puan <b>${r.bestScore}</b> · En uzun <b>${r.bestDay}. gün</b> · En yüksek <b>${r.bestWave}. dalga</b>${r.wins ? ` · Zafer <b>${r.wins}</b>` : ''}`
+      : '';
+    // Yeni oyun → zorluk seçimi
+    const pick = $('#diff-pick');
+    pick.innerHTML = '';
+    Object.values(DIFFICULTIES).forEach((d) => {
+      const b = el('button', d.id === 'normal' ? 'primary' : '', `<span class="d-ic">${d.icon}</span><b>${d.name}</b><small>${d.desc}</small>`);
+      b.addEventListener('click', () => { audio.init(); m.classList.remove('show'); onNew(d.id); });
+      pick.appendChild(b);
+    });
     $('#btn-new').onclick = () => {
       if (hasSave && !confirm('Mevcut kayıt silinecek. Emin misin?')) return;
-      m.classList.remove('show'); onNew();
+      pick.classList.toggle('show');
     };
   }
 
   showGameOver(stats, onRestart) {
     const g = $('#gameover');
-    g.querySelector('.stats').textContent = `${stats.day}. günde, ${stats.wave}. dalgada kasaba düştü. Öldürülen zombi: ${stats.kills}`;
+    g.classList.toggle('win', !!stats.victory);
+    g.querySelector('.go-title').textContent = stats.victory ? 'Kurtarıldınız!' : 'Kasaba Düştü';
+    g.querySelector('.stats').textContent = stats.victory
+      ? `Kurtarma ekibi ${stats.day}. günde geldi. ${stats.wave} dalga atlatıldı, ${stats.kills} zombi öldürüldü.`
+      : `${stats.day}. günde, ${stats.wave}. dalgada kasaba düştü. Öldürülen zombi: ${stats.kills}`;
+    const r = stats.records || {};
+    g.querySelector('.go-score').innerHTML = `<div class="score">${stats.score ?? 0}</div><div class="muted">${stats.newBest ? '🎉 Yeni rekor!' : `Rekor: ${r.bestScore ?? 0}`} · ${DIFFICULTIES[stats.difficulty]?.name || ''}</div>`;
     g.classList.add('show');
     g.querySelector('button').onclick = () => { g.classList.remove('show'); onRestart(); };
   }

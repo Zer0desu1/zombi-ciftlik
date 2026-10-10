@@ -16,6 +16,9 @@ export class WaveManager {
     this.interval = 3;
     this.killedThisWave = 0;
     this.queue = [];
+    this.pending = [];
+    this.bursts = 0;
+    this.burstGap = 10;
     this.plan = null;       // aktif dalganın planı
     this.nextPlan = null;   // önizlemesi yapılmış bir sonraki dalga
     this.bloodMoon = false;
@@ -26,7 +29,9 @@ export class WaveManager {
 
   // Dalga kompozisyonu: { wave, blood, counts: {tür: adet}, sides: [kenar] }
   makePlan(w, blood = false) {
-    const total = Math.round((5 + w * 3) * (blood ? 1.5 : 1));
+    // Sürü büyüklüğü dalgayla hızlanarak artar; zorluk seçimi çarpan uygular
+    const diff = this.scene.difficulty?.count ?? 1;
+    const total = Math.max(4, Math.round((6 + w * 4 + w * w * 0.35) * (blood ? 1.5 : 1) * diff));
     const share = {
       runner: w >= 2 ? 0.2 : 0,
       brute: w >= 3 ? Math.min(0.3, 0.06 * w) : 0,
@@ -72,8 +77,11 @@ export class WaveManager {
     if (this.plan.counts.boss) q.splice(Math.floor(q.length / 2), 0, 'boss');
     this.queue = q;
     this.toSpawn = q.length;
-    this.interval = Math.max(0.8, 3.2 - this.wave * 0.25) / (this.bloodMoon ? 1.3 : 1);
-    this.spawnTimer = 1.5;
+    // Zombiler tek tek değil, aralıklı SÜRÜLER halinde gelir (gecenin ilk yarısında)
+    this.bursts = Math.min(5, 2 + Math.floor(this.wave / 3));
+    this.burstGap = 34 / this.bursts / (this.bloodMoon ? 1.3 : 1);
+    this.spawnTimer = 3;
+    this.pending = [];
     this.scene.events.emit('waveStart', this.wave);
   }
 
@@ -83,25 +91,44 @@ export class WaveManager {
     this.active = false;
     this.toSpawn = 0;
     this.queue = [];
+    this.pending = [];
     this.bloodMoon = false;
     this.scene.zombies.getChildren().slice().forEach((z) => z.burn());
     this.scene.events.emit('waveEnd', this.wave);
   }
 
   update(dt) {
-    if (!this.active || this.toSpawn <= 0) return;
+    if (!this.active) return;
+    // Bekleyen sürü üyelerini kısa aralıklarla aynı noktadan doğur
+    if (this.pending.length) {
+      for (const p of this.pending) p.t -= dt;
+      while (this.pending.length && this.pending[0].t <= 0) {
+        const p = this.pending.shift();
+        this.spawnKind(p.kind, p.x, p.y);
+      }
+    }
+    if (!this.queue.length) return;
     this.spawnTimer -= dt;
     if (this.spawnTimer > 0) return;
-    this.spawnTimer = this.interval * Phaser.Math.FloatBetween(0.6, 1.3);
+    const left = Math.max(1, this.bursts);
+    const n = Math.ceil(this.queue.length / left);
+    this.bursts = left - 1;
+    this.spawnTimer = this.burstGap;
     const sides = this.plan?.sides?.length ? this.plan.sides : [0, 1, 2, 3];
-    const p = this.edgePoint(Phaser.Utils.Array.GetRandom(sides));
-    // Boss tek başına gelir
-    if (this.queue[0] === 'boss') { this.spawnNext(p.x, p.y); return; }
-    // Bazen küçük gruplar halinde gelsinler
-    const group = Math.min(this.toSpawn, Phaser.Math.Between(1, 1 + Math.floor(this.wave / 2)));
-    for (let i = 0; i < group && this.queue[0] !== 'boss'; i++) {
-      this.spawnNext(p.x + Phaser.Math.Between(-20, 20), p.y + Phaser.Math.Between(-20, 20));
+    const side = Phaser.Utils.Array.GetRandom(sides);
+    const pt = this.edgePoint(side);
+    const at = this.pending.length ? this.pending[this.pending.length - 1].t : 0;
+    for (let i = 0; i < n; i++) {
+      this.pending.push({ kind: this.queue.shift(), x: pt.x + Phaser.Math.Between(-28, 28), y: pt.y + Phaser.Math.Between(-28, 28), t: at + i * 0.2 });
     }
+    this.scene.events.emit('hordeIncoming', { side, count: n, sideName: SIDE_NAMES[side], x: pt.x, y: pt.y });
+  }
+
+  spawnKind(kind, x, y) {
+    const z = this.scene.spawnZombie(x, y, kind);
+    this.toSpawn = Math.max(0, this.toSpawn - 1);
+    if (kind === 'boss') this.scene.events.emit('bossSpawned', z);
+    return z;
   }
 
   spawnNext(x, y) {

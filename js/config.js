@@ -7,7 +7,17 @@ export const ZOOM = 3;
 // Zaman (oyun dakikası)
 export const DAY_START = 6 * 60;      // 06:00
 export const NIGHT_START = 20 * 60;   // 20:00
-export const GAME_MIN_PER_SEC = 4;    // 1 gerçek saniye = 4 oyun dakikası
+export const GAME_MIN_PER_SEC = 4;    // (eski) — artık gündüz/gece süreleri aşağıda
+// Gerçek süreler: gündüz (06–20) ~2 dk, gece (20–06) ~80 sn. Dalga erken temizlenirse şafağa hızla geçilir.
+export const DAY_SECONDS = 120;
+export const NIGHT_SECONDS = 80;
+
+// Zorluk: count = zombi sayısı, hp = zombi canı, dmg = zombi hasarı, reward = dalga ödülü çarpanı
+export const DIFFICULTIES = {
+  easy:   { id: 'easy',   name: 'Kolay',  icon: '🌱', count: 0.7,  hp: 0.8,  dmg: 0.75, reward: 1,   desc: 'Rahat çiftçilik, seyrek sürüler.' },
+  normal: { id: 'normal', name: 'Normal', icon: '⚔️', count: 1,    hp: 1,    dmg: 1,    reward: 1.2, desc: 'Dengeli: geceye hazırlanmazsan kaybedersin.' },
+  hard:   { id: 'hard',   name: 'Zor',    icon: '💀', count: 1.35, hp: 1.25, dmg: 1.25, reward: 1.5, desc: 'Her gece bir kuşatma. Hata affetmez.' }
+};
 
 // Bölgeler (tile koordinatları)
 export const FARM_ZONE = { x: 6, y: 8, w: 16, h: 13 };

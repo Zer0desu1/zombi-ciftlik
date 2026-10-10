@@ -1,4 +1,5 @@
-import { TILE, MAP_W, MAP_H, ZOOM, HOTBAR_SIZE, ITEMS, START_INVENTORY, PLAYER_STATS } from '../config.js';
+import { TILE, MAP_W, MAP_H, ZOOM, HOTBAR_SIZE, ITEMS, START_INVENTORY, PLAYER_STATS, DIFFICULTIES } from '../config.js';
+import { loadRecords, recordRun } from '../systems/Records.js';
 import { audio } from '../audio.js';
 import { Player } from '../entities/Player.js';
 import { Zombie } from '../entities/Zombie.js';
@@ -19,6 +20,8 @@ export class GameScene extends Phaser.Scene {
 
   init(data) {
     this.autostart = data?.autostart || null;
+    this.difficulty = DIFFICULTIES[data?.difficulty] || null;
+    this.victory = false;
     this.started = false;
     this.gameOver = false;
     this.selected = 0;
@@ -99,7 +102,7 @@ export class GameScene extends Phaser.Scene {
     this.hud.update();
 
     if (this.autostart) this.begin(this.autostart === 'continue');
-    else this.hud.showMenu(SaveSystem.exists(), () => this.begin(true), () => this.begin(false));
+    else this.hud.showMenu(SaveSystem.exists(), () => this.begin(true), (diff) => { this.difficulty = DIFFICULTIES[diff] || DIFFICULTIES.normal; this.begin(false); }, loadRecords());
   }
 
   // ---------------- Başlatma / kayıt ----------------
@@ -109,6 +112,7 @@ export class GameScene extends Phaser.Scene {
     if (data) this.applySave(data);
     else {
       SaveSystem.clear();
+      this.difficulty = this.difficulty || DIFFICULTIES.normal;
       START_INVENTORY.forEach(([id, n]) => this.inventory.add(id, n));
       this.hud.toast('Hoş geldin! Gündüz tarlanı işle, gece kasabayı savun.', 'info');
       this.time.delayedCall(1800, () => this.hud.toast('Ayşe, Kemal, Zeynep ve Demir ile E tuşuyla konuş.', 'info'));
@@ -136,6 +140,7 @@ export class GameScene extends Phaser.Scene {
       structures: [...this.barricades.getChildren(), ...this.turrets.getChildren()].map((s) => ({ kind: s.kind, x: s.x, y: s.y, hp: s.hp })),
       shelterHp: this.shelter.hp,
       kills: this.kills,
+      difficulty: this.difficulty?.id || 'normal',
       features: Object.fromEntries(features.filter((f) => f.save).map((f) => [f.id, f.save(this)]))
     });
     if (manual) { this.hud.toast(ok ? 'Oyun kaydedildi 💾' : 'Kayıt başarısız (depolama kapalı olabilir)', ok ? 'ok' : 'warn'); audio.sfx('save'); }
@@ -156,6 +161,7 @@ export class GameScene extends Phaser.Scene {
     (d.structures || []).forEach((s) => createStructure(this, s.kind, s.x, s.y, s.hp));
     if (d.shelterHp) this.shelter.hp = d.shelterHp;
     this.kills = d.kills || 0;
+    this.difficulty = DIFFICULTIES[d.difficulty] || DIFFICULTIES.normal;
     features.forEach((f) => f.load?.(this, d.features?.[f.id]));
     this.hud.toast(`Kayıt yüklendi · Gün ${this.timeSys.day}`, 'ok');
   }
@@ -252,7 +258,7 @@ export class GameScene extends Phaser.Scene {
       this.hud.banner(`Dalga ${w}`, `${this.waves.toSpawn} zombi geliyor! Sığınağı koru.`);
     });
     this.events.on('waveEnd', (w) => {
-      const reward = 15 * w;
+      const reward = Math.round(15 * w * (this.difficulty?.reward ?? 1));
       this.player.addCoins(reward);
       this.quests.onWaveSurvived(w);
       audio.sfx('dawn');
@@ -299,7 +305,26 @@ export class GameScene extends Phaser.Scene {
     audio.sfx('die');
     SaveSystem.clear();
     this.hud.closeAll();
-    this.hud.showGameOver({ day: this.timeSys.day, wave: this.waves.wave, kills: this.kills }, () => this.scene.restart({ autostart: 'new' }));
+    const stats = this.runStats(false);
+    this.hud.showGameOver({ ...stats, ...recordRun(stats) }, () => this.scene.restart({ autostart: 'new', difficulty: stats.difficulty }));
+  }
+
+  // Ana hedef tamamlandı: kurtarma geldi
+  onVictory() {
+    if (this.gameOver) return;
+    this.gameOver = true;
+    this.victory = true;
+    this.physics.pause();
+    audio.setMusic(null);
+    audio.sfx('quest');
+    SaveSystem.clear();
+    this.hud.closeAll();
+    const stats = this.runStats(true);
+    this.hud.showGameOver({ ...stats, ...recordRun(stats) }, () => this.scene.restart({ autostart: 'new', difficulty: stats.difficulty }));
+  }
+
+  runStats(victory) {
+    return { day: this.timeSys.day, wave: this.waves.wave, kills: this.kills, coins: this.player.coins, victory, difficulty: this.difficulty?.id || 'normal' };
   }
 
   // ---------------- Yardımcılar (diğer modüller kullanır) ----------------
@@ -313,6 +338,12 @@ export class GameScene extends Phaser.Scene {
 
   spawnZombie(x, y, kind) {
     const z = new Zombie(this, Phaser.Math.Clamp(x, 8, MAP_W * TILE - 8), Phaser.Math.Clamp(y, 8, MAP_H * TILE - 8), kind, this.waves.wave);
+    const d = this.difficulty;
+    if (d) {
+      z.maxHp = Math.max(1, Math.round(z.maxHp * d.hp));
+      z.hp = z.maxHp;
+      z.damage = Math.max(1, Math.round(z.damage * d.dmg));
+    }
     this.zombies.add(z);
     z.setAlpha(0);
     this.tweens.add({ targets: z, alpha: 1, duration: 400 });

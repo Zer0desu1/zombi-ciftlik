@@ -362,7 +362,7 @@ export class Guard extends NPC {
           else if (d < 40) n.moveToward(n.x - (z.x - n.x), n.y - (z.y - n.y), n.speed * 0.8);
           else { n.halt(); n.setFlipX(z.x < n.x); }
           if (d < 120 && n.shootCd <= 0) {
-            n.shootCd = 0.75;
+            n.shootCd = 1.1;
             n.scene.fireBullet(n.x, n.y - 2, Phaser.Math.Angle.Between(n.x, n.y, z.x, z.y), 1, 240);
             audio.sfx('turret');
           }
@@ -561,9 +561,10 @@ export class Hunter extends Fighter {
     this.stall = { x, y };
     const d = scene.shelter.door;
     this.post = { x: d.x + 30, y: d.y + 22 };
-    this.range = 160;
-    this.dmg = 3;
-    this.fireRate = 1.1;
+    // NPC savunucular destek amaçlı: asıl savunma oyuncunun işi
+    this.range = 140;
+    this.dmg = 2;
+    this.fireRate = 1.6;
     this.projectile = 'arrow';
     this.roam = 0;
     this.standIcon = '🏹';

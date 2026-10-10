@@ -1,4 +1,4 @@
-import { DAY_START, NIGHT_START, GAME_MIN_PER_SEC } from '../config.js';
+import { DAY_START, NIGHT_START, DAY_SECONDS, NIGHT_SECONDS } from '../config.js';
 
 // Mevsimler: her biri SEASON_DAYS gün sürer, sırayla döner
 export const SEASON_DAYS = 7;
@@ -15,7 +15,7 @@ export class TimeSystem extends Phaser.Events.EventEmitter {
     super();
     this.minutes = 7 * 60;
     this.day = 1;
-    this.speed = GAME_MIN_PER_SEC;
+    this.speedMul = 1; // >1: hızlı ileri sarma (dalga temizlenince / geceyi erken başlatınca)
     this.wasNight = this.isNight;
     this.weatherDim = 0; // hava durumu kararması (world özelliği yazar)
   }
@@ -36,6 +36,12 @@ export class TimeSystem extends Phaser.Events.EventEmitter {
   get seasonInfo() { return SEASONS[this.seasonIndex]; }
   get seasonDay() { return ((Math.max(1, this.day) - 1) % SEASON_DAYS) + 1; } // 1..7
   get year() { return Math.floor((Math.max(1, this.day) - 1) / (SEASON_DAYS * SEASONS.length)) + 1; }
+
+  // Oyun dakikası / gerçek saniye: gündüz ve gece ayrı hızlarda akar
+  get speed() {
+    const base = this.isNight ? (24 * 60 - NIGHT_START + DAY_START) / NIGHT_SECONDS : (NIGHT_START - DAY_START) / DAY_SECONDS;
+    return base * this.speedMul;
+  }
 
   // dt saniye cinsinden; geçen oyun dakikasını döndürür
   update(dt) {

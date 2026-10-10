@@ -2,7 +2,7 @@ import { Actor } from './Actor.js';
 import { audio } from '../audio.js';
 
 // Zombi türleri. normal/brute eski kayıt ve modüllerle uyumlu kalır; diğerleri features/zombies.js dokularını kullanır.
-const baseHp = (w) => 3 + Math.floor(w / 2);
+const baseHp = (w) => 4 + Math.floor(w * 0.75);
 const baseSpeed = (w) => Math.min(42, 26 + w * 1.5) * Phaser.Math.FloatBetween(0.85, 1.15);
 export const ZOMBIE_TYPES = {
   normal:  { name: 'Zombi',          icon: '🧟', tex: 'zombie',          hp: baseHp,                                   speed: baseSpeed,                                  dmg: 8,  reward: 3,  cd: 1,   kb: 110, desc: 'Sıradan, yavaş ama kalabalık.' },

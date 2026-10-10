@@ -41,6 +41,14 @@ Kurulacak bir bağımlılık yok. Phaser 3.80.1 CDN'den (cdnjs), fontlar Google 
 - **Gece (20:00–06:00):** Zombiler dalgalar halinde harita kenarlarından gelir. Her dalga bir öncekinden büyük olur ve 3. dalgadan sonra iri "brute" zombiler de katılır. Kılıç, tabanca, barikat ve taretlerle savun. **Sığınak düşerse oyun biter.** Şafakta kalan zombiler güneşte yanar ve dalga ödülünü alırsın.
 - **Üretim:** Barikat, taret, mermi, tabanca, ekmek, balkabağı çorbası ve tohum.
 
+## Hedef ve tempo
+
+- **Süreler:** Gündüz ~2 dk, gece ~80 sn. Sürüyü erken temizlersen şafağa hızla geçilir ve temizleme ödülü alırsın. Hazırsan sığınak kapısında **"Geceyi erken başlat"** ile dalgayı erkenden çağırabilirsin (+%30 ödül).
+- **Sürüler:** Zombiler tek tek değil, kenarlardan toplu sürüler halinde gelir. Ekranda hangi yönden kaç zombi geldiği uyarı olarak çıkar.
+- **Hedef rehberi:** Ekranın üstünde sıradaki adım (çapala → ek → sula → odun → barikat → ilk gece → hasat → satış → taret) ve ödülü görünür.
+- **Ana hedef:** Sığınağın yanındaki **Radyo Kulesi**'ni 4 aşamada kur. Her aşama kalıcı bir avantaj verir (ışık, kule tüfeği, sığınak canı). Son aşamadan 3 gün sonra **Son Gece** gelir; onu atlatırsan kurtarılırsın ve oyunu kazanırsın.
+- **Zorluk ve rekorlar:** Yeni oyunda Kolay/Normal/Zor seçilir. Her oyun sonunda puan hesaplanır, en iyi skorlar ana menüde görünür.
+
 ## Telefonda (dikey) oynanış
 
 - Sol altta sürüklenebilir joystick, sağ altta büyük **eylem** butonu. Eylem butonu seçili eşyayı otomatik hedefe uygular; basılı tutunca tekrarlar, sürükleyince elle nişan alırsın.

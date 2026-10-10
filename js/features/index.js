@@ -9,6 +9,7 @@ import town from './town.js';
 import progression from './progression.js';
 import world from './world.js';
 import juice from './juice.js';
+import director from './director.js';
 
-registerFeatures([mobile, world, farming, animals, combat, zombies, defense, town, progression, juice]);
+registerFeatures([mobile, world, farming, animals, combat, zombies, defense, town, progression, juice, director]);
 export { features } from './registry.js';

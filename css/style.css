@@ -189,3 +189,17 @@ button.ghost { background: transparent; }
 }
 
 #modal-feature { width: 560px; }
+
+/* Zorluk seçimi + rekorlar + puan */
+.diff-pick { display: none; gap: 8px; margin: -8px 0 18px; }
+.diff-pick.show { display: grid; grid-template-columns: repeat(3, 1fr); }
+.diff-pick button { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 8px; }
+.diff-pick .d-ic { font-size: 22px; }
+.diff-pick small { font-size: 11px; font-weight: 400; opacity: 0.8; line-height: 1.3; }
+.records { font-size: 13px; color: var(--muted); margin: -6px 0 16px; }
+.records:empty { display: none; }
+.records b { color: var(--accent); }
+.go-score { margin: -6px 0 20px; }
+.go-score .score { font-family: var(--pixel); font-size: 48px; color: var(--accent); line-height: 1.1; }
+#gameover.win h1 { color: var(--green); }
+@media (max-width: 520px) { .diff-pick.show { grid-template-columns: 1fr; } .diff-pick button { flex-direction: row; text-align: left; } }
