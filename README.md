@@ -10,9 +10,9 @@ ES modülleri `file://` üzerinden yüklenmediği için oyunu küçük bir yerel
 
 ```bash
 # Seçenek 1 (Node.js)
-npm start                      # http://localhost:8080 adresini açar
+npm start                      # önbelleksiz sunucu: http://localhost:8080
 
-# Seçenek 2 (Python)
+# Seçenek 2 (Python) — önbellek kapalı değil; güncellemeden sonra Ctrl+Shift+R yap
 python -m http.server 8080     # sonra tarayıcıda http://localhost:8080
 ```
 
