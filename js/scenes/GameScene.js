@@ -1,4 +1,4 @@
-import { TILE, MAP_W, MAP_H, ZOOM, HOTBAR_SIZE, ITEMS, START_INVENTORY, PLAYER_STATS, DIFFICULTIES } from '../config.js';
+import { TILE, MAP_W, MAP_H, LEGACY_MAP_W, LEGACY_MAP_H, MAP_VERSION, ZOOM, HOTBAR_SIZE, ITEMS, START_INVENTORY, PLAYER_STATS, DIFFICULTIES } from '../config.js';
 import { loadRecords, recordRun } from '../systems/Records.js';
 import { audio } from '../audio.js';
 import { Player } from '../entities/Player.js';
@@ -13,7 +13,11 @@ import { SaveSystem } from '../systems/SaveSystem.js';
 import { buildWorld, regrowResource } from '../systems/MapBuilder.js';
 import { useSelected, canPlace, createStructure } from '../systems/PlayerActions.js';
 import { HUD } from '../ui/HUD.js';
+import { barricadeTexAt } from '../entities/Structures.js';
 import { features } from '../features/index.js';
+import { installNetMenu } from '../net/NetUI.js';
+import { NetHost } from '../net/NetHost.js';
+import { NetGuest } from '../net/NetGuest.js';
 
 export class GameScene extends Phaser.Scene {
   constructor() { super('Game'); }
@@ -28,12 +32,20 @@ export class GameScene extends Phaser.Scene {
     this.kills = 0;
     this.hudTimer = 0;
     this.saveTimer = 0;
+    this.net = null; // çok oyunculu oturum (NetHost / NetGuest); tek oyunculuda null
+    // Çok oyunculu yeniden başlatma: host aynı odayı (kodu) devralır, misafir aynı koda otomatik katılır
+    this.netRoom = data?.netRoom || null;
+    this.netName = data?.netName || null;
+    this.netJoin = data?.netJoin || null;
+    this.netGuestStore = null;
   }
 
   create() {
     // --- Dünya ---
     const world = buildWorld(this);
     Object.assign(this, { layer: world.layer, obstacles: world.obstacles, resources: world.resources, shelter: world.shelter, staticLights: world.lights, spots: world.spots });
+    // Deterministik dünya nesneleri (çok oyunculuda host bunları aynalamaz, misafirde aynısı kurulur)
+    this.worldStatic = new Set(this.children.list);
     const W = MAP_W * TILE, H = MAP_H * TILE;
     this.physics.world.setBounds(0, 0, W, H);
 
@@ -75,7 +87,9 @@ export class GameScene extends Phaser.Scene {
     this.physics.add.collider(this.zombies, [this.barricades, this.turrets], (z, s) => { z.blockedBy = s; });
     this.physics.add.overlap(this.bullets, this.zombies, (b, z) => {
       if (!b.active || z.dead) return;
-      z.takeDamage(b.dmg, b);
+      // Çok oyunculu: misafirin mermisi → hasar/ödül/XP misafir bağlamında
+      if (b.owner && this.net?.asPlayer) this.net.asPlayer(b.owner, () => z.takeDamage(b.dmg, b));
+      else z.takeDamage(b.dmg, b);
       b.destroy();
     });
 
@@ -102,7 +116,57 @@ export class GameScene extends Phaser.Scene {
     this.hud.update();
 
     if (this.autostart) this.begin(this.autostart === 'continue');
-    else this.hud.showMenu(SaveSystem.exists(), () => this.begin(true), (diff) => { this.difficulty = DIFFICULTIES[diff] || DIFFICULTIES.normal; this.begin(false); }, loadRecords());
+    else {
+      this.hud.showMenu(SaveSystem.exists(), () => this.begin(true), (diff) => { this.difficulty = DIFFICULTIES[diff] || DIFFICULTIES.normal; this.begin(false); }, loadRecords());
+      installNetMenu(this, SaveSystem.exists(), {
+        onHost: (loadSave, diff, name) => this.hostGame(loadSave, diff, name),
+        onJoin: (code, name, setStatus) => this.joinGame(code, name, setStatus)
+      });
+      if (this.netJoin) this.autoJoin(this.netJoin.code, this.netJoin.name);
+    }
+    if (this.netRoom && this.started) this.net = new NetHost(this, { name: this.netName, room: this.netRoom });
+  }
+
+  // Oyun sonu sonrası aynı odaya otomatik yeniden katılma (host yeni oyunu başlatana kadar ~90 sn dener)
+  autoJoin(code, name, tries = 0) {
+    if (this.started || this.net) return;
+    const box = document.getElementById('mp-pick'), st = box?.querySelector('.mp-status');
+    box?.classList.add('show');
+    const setStatus = (t, err) => {
+      if (st) { st.textContent = t || ''; st.classList.toggle('err', !!err); }
+      if (err && !this.started && tries < 45) {
+        if (st) st.textContent = `${code}: host'un yeni oyunu bekleniyor… (${t})`;
+        this.time.delayedCall(2000, () => this.autoJoin(code, name, tries + 1));
+      }
+    };
+    this.joinGame(code, name, setStatus);
+  }
+
+  // Oyun sonu "yeniden başla": çok oyunculu host'ta oda açık kalır
+  restartGame(stats) {
+    const room = this.net?.isHost ? this.net.detachRoom() : null;
+    this.scene.restart({ autostart: 'new', difficulty: stats.difficulty, netRoom: room, netName: this.net?.name || null });
+  }
+
+  // ---------------- Çok oyunculu ----------------
+  // Oda kur: oyun bu tarayıcıda (host) başlar, misafirler bağlanınca aynı dünyaya katılır
+  hostGame(loadSave, diff, name) {
+    if (this.started || this.net) return;
+    if (!loadSave) this.difficulty = DIFFICULTIES[diff] || DIFFICULTIES.normal;
+    document.getElementById('menu')?.classList.remove('show');
+    this.begin(loadSave);
+    this.net = new NetHost(this, { name });
+  }
+
+  // Odaya katıl: dünya aynı tohumla kurulu, simülasyon host'tan gelir
+  joinGame(code, name, setStatus) {
+    if (this.started || this.net) return;
+    setStatus('Bağlanılıyor…');
+    NetGuest.join(this, code, name).then((g) => {
+      this.net = g;
+      g.onFail = (msg) => { setStatus(msg, true); this.net = null; g.close(); };
+      setStatus('Dünya yükleniyor…');
+    }).catch((e) => setStatus(e?.message || 'Bağlanılamadı', true));
   }
 
   // ---------------- Başlatma / kayıt ----------------
@@ -114,8 +178,8 @@ export class GameScene extends Phaser.Scene {
       SaveSystem.clear();
       this.difficulty = this.difficulty || DIFFICULTIES.normal;
       START_INVENTORY.forEach(([id, n]) => this.inventory.add(id, n));
-      this.hud.toast('Hoş geldin! Gündüz tarlanı işle, gece kasabayı savun.', 'info');
-      this.time.delayedCall(1800, () => this.hud.toast('Ayşe, Kemal, Zeynep ve Demir ile E tuşuyla konuş.', 'info'));
+      this.hud.toast('Hoş geldin! Köy boş: tarlanı sıfırdan kur, gece sığınağı savun.', 'info');
+      this.time.delayedCall(1800, () => this.hud.toast('Haritada hayatta kalanlar var. Kimini köye davet et, kimini zombilerden kurtar (❗).', 'info'));
     }
     features.forEach((f) => f.begin?.(this, !data));
     this.started = true;
@@ -127,9 +191,12 @@ export class GameScene extends Phaser.Scene {
 
   saveGame(manual) {
     if (!this.started || this.gameOver) return;
+    if (this.net?.isGuest) { if (manual) this.hud.toast('Kaydı yalnızca odayı kuran yapabilir', 'info'); return; }
+    if (this.net?.isHost) this.net.syncStore();
     if (this.waves.active) { if (manual) this.hud.toast('Dalga sırasında kayıt yapılamaz!', 'warn'); return; }
     const p = this.player;
     const ok = SaveSystem.save({
+      mapVersion: MAP_VERSION,
       player: { x: p.x, y: p.y, hp: p.hp, energy: p.energy, coins: p.coins },
       inventory: this.inventory.serialize(),
       selected: this.selected,
@@ -141,13 +208,21 @@ export class GameScene extends Phaser.Scene {
       shelterHp: this.shelter.hp,
       kills: this.kills,
       difficulty: this.difficulty?.id || 'normal',
-      features: Object.fromEntries(features.filter((f) => f.save).map((f) => [f.id, f.save(this)]))
+      features: Object.fromEntries(features.filter((f) => f.save).map((f) => [f.id, f.save(this)])),
+      netGuests: this.netGuestStore || undefined // çok oyunculu: misafir envanterleri (ada göre)
     });
     if (manual) { this.hud.toast(ok ? 'Oyun kaydedildi 💾' : 'Kayıt başarısız (depolama kapalı olabilir)', ok ? 'ok' : 'warn'); audio.sfx('save'); }
   }
 
   applySave(d) {
     const p = this.player;
+    // Harita sürümü 1 (64×44): eski alan aynı koordinatlarda olduğundan oyuncu/yapı/tarla aynen geçerli.
+    // Eski kayıtta ana harita dışındaki (keşif bölgesi) konum, bölgeler artık daha sağda olduğu için kaydırılır.
+    // Kaynak tükenme durumu kayda yazılmaz; eski alanın kaynak dizilimi zaten birebir aynı üretilir.
+    this.loadedMapVersion = d.mapVersion || 1;
+    if (this.loadedMapVersion < 2 && d.player && (d.player.x > LEGACY_MAP_W * TILE || d.player.y > LEGACY_MAP_H * TILE)) {
+      d.player = { ...d.player, x: d.player.x + (MAP_W - LEGACY_MAP_W) * TILE };
+    }
     if (d.player) {
       p.setPosition(d.player.x, d.player.y);
       p.hp = Math.max(1, d.player.hp); p.energy = d.player.energy; p.coins = d.player.coins ?? PLAYER_STATS.startCoins;
@@ -161,6 +236,7 @@ export class GameScene extends Phaser.Scene {
     (d.structures || []).forEach((s) => createStructure(this, s.kind, s.x, s.y, s.hp));
     if (d.shelterHp) this.shelter.hp = d.shelterHp;
     this.kills = d.kills || 0;
+    if (d.netGuests && typeof d.netGuests === 'object') this.netGuestStore = d.netGuests;
     this.difficulty = DIFFICULTIES[d.difficulty] || DIFFICULTIES.normal;
     features.forEach((f) => f.load?.(this, d.features?.[f.id]));
     this.hud.toast(`Kayıt yüklendi · Gün ${this.timeSys.day}`, 'ok');
@@ -183,7 +259,7 @@ export class GameScene extends Phaser.Scene {
       if (k >= '1' && k <= String(HOTBAR_SIZE)) this.selectSlot(Number(k) - 1);
       if (k === 'e') this.interact();
       if (k === 'k') this.saveGame(true);
-      if (k === ' ') { const ptr = this.input.activePointer.positionToCamera(this.cameras.main); useSelected(this, ptr.x, ptr.y); }
+      if (k === ' ') { if (this.player.actionCd > 0) this.clickBuf = 0.35; else this.useAtPointer(); }
     });
     this.input.on('wheel', (_p, _o, _dx, dy) => {
       if (!this.started || this.hud.isModalOpen()) return;
@@ -192,15 +268,41 @@ export class GameScene extends Phaser.Scene {
     this.input.on('pointerdown', (ptr) => {
       audio.init();
       if (!this.started || this.gameOver || this.hud.isModalOpen() || !ptr.leftButtonDown()) return;
-      const wp = ptr.positionToCamera(this.cameras.main);
-      useSelected(this, wp.x, wp.y);
+      this.holdT = 0;
+      // Önceki eylemin bekleme süresi bitmeden gelen tık kaybolmasın: kısa süre tamponda bekler
+      if (this.player.actionCd > 0) { this.clickBuf = 0.35; return; }
+      this.clickBuf = 0;
+      this.useAtPointer();
     });
     this.input.mouse?.disableContextMenu();
+  }
+
+  // Fare konumundaki hedefe seçili eşyayı uygula. Tarla aletlerinde imleç bir kare kaysa da en yakın uygun kare seçilir.
+  useAtPointer() {
+    const wp = this.input.activePointer.positionToCamera(this.cameras.main);
+    const t = this.farmClickTarget?.(wp.x, wp.y);
+    useSelected(this, t ? t.x : wp.x, t ? t.y : wp.y);
+  }
+
+  // Tamponlanmış tık + silahla basılı tutunca seri saldırı
+  updateClick(dt) {
+    const ptr = this.input.activePointer;
+    if (this.clickBuf > 0) {
+      this.clickBuf -= dt;
+      if (this.player.actionCd <= 0) { this.clickBuf = 0; this.useAtPointer(); return; }
+    }
+    if (!ptr.isDown || ptr.wasTouch || !ptr.leftButtonDown()) { this.holdT = 0; return; }
+    this.holdT = (this.holdT || 0) + dt;
+    const slot = this.inventory.slots[this.selected];
+    const type = slot ? ITEMS[slot.id].type : null;
+    const repeat = !slot || (type === 'weapon' || type === 'gun') && slot.id !== 'bow';
+    if (repeat && this.holdT > 0.2 && this.player.actionCd <= 0) this.useAtPointer();
   }
 
   selectSlot(i) {
     this.selected = i;
     this.hud.renderHotbar();
+    if (this.net?.isGuest) this.net.onSelect(i);
   }
 
   nearestNPC(range = 24) {
@@ -217,6 +319,7 @@ export class GameScene extends Phaser.Scene {
 
   // Tüm sağlayıcılar arasından en yakın etkileşim
   bestInteraction() {
+    if (this.net?.isGuest) return this.net.hintAction();
     let best = null;
     for (const fn of this.interactions) {
       const r = fn(this);
@@ -227,6 +330,7 @@ export class GameScene extends Phaser.Scene {
 
   interact() {
     if (!this.player.alive) return;
+    if (this.net?.isGuest) { this.net.interact(); return; }
     this.bestInteraction()?.run();
   }
 
@@ -238,6 +342,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   onModal(open) {
+    // Çok oyunculuda dünya panel açıkken de akar; yalnızca kendi karakterin durur
+    if (this.net) { if (open) this.player.halt(); return; }
     if (open) { this.physics.pause(); this.player.halt(); }
     else this.physics.resume();
   }
@@ -245,7 +351,7 @@ export class GameScene extends Phaser.Scene {
   // ---------------- Olaylar ----------------
   wireEvents() {
     // Sahne yeniden başlatıldığında özel olay dinleyicileri birikmesin
-    const custom = ['waveStart', 'waveEnd', 'zombieKilled', 'structureDestroyed', 'playerDied', 'shelterFallen', 'questsChanged', 'cropGrew'];
+    const custom = ['waveStart', 'waveEnd', 'zombieKilled', 'structureDestroyed', 'playerDied', 'remotePlayerDied', 'shelterFallen', 'questsChanged', 'cropGrew'];
     this.events.once('shutdown', () => custom.forEach((e) => this.events.off(e)));
     this.timeSys.on('dusk', () => this.waves.start());
     this.timeSys.on('dawn', (day) => this.onDawn(day));
@@ -306,7 +412,8 @@ export class GameScene extends Phaser.Scene {
     SaveSystem.clear();
     this.hud.closeAll();
     const stats = this.runStats(false);
-    this.hud.showGameOver({ ...stats, ...recordRun(stats) }, () => this.scene.restart({ autostart: 'new', difficulty: stats.difficulty }));
+    this.net?.gameOver?.(stats);
+    this.hud.showGameOver({ ...stats, ...recordRun(stats) }, () => this.restartGame(stats));
   }
 
   // Ana hedef tamamlandı: kurtarma geldi
@@ -320,7 +427,8 @@ export class GameScene extends Phaser.Scene {
     SaveSystem.clear();
     this.hud.closeAll();
     const stats = this.runStats(true);
-    this.hud.showGameOver({ ...stats, ...recordRun(stats) }, () => this.scene.restart({ autostart: 'new', difficulty: stats.difficulty }));
+    this.net?.gameOver?.(stats);
+    this.hud.showGameOver({ ...stats, ...recordRun(stats) }, () => this.restartGame(stats));
   }
 
   runStats(victory) {
@@ -330,7 +438,7 @@ export class GameScene extends Phaser.Scene {
   // ---------------- Yardımcılar (diğer modüller kullanır) ----------------
   zombieTargets() {
     const list = [this.shelter, ...this.turrets.getChildren()];
-    if (this.player.alive) list.push(this.player);
+    for (const p of this.allPlayers()) list.push(p);
     for (const n of this.npcs) if (!n.hidden) list.push(n);
     for (const t of this.extraTargets) if (t && t.active !== false) list.push(t);
     return list;
@@ -354,10 +462,38 @@ export class GameScene extends Phaser.Scene {
     const b = this.physics.add.image(x, y, 'bullet').setDepth(y + 20);
     b.body.setSize(4, 4);
     b.dmg = dmg;
+    b.owner = this.player;
     b.setRotation(angle);
     b.setVelocity(Math.cos(angle) * speed, Math.sin(angle) * speed);
     this.bullets.add(b);
     this.time.delayedCall(700, () => { if (b.active) b.destroy(); });
+  }
+
+  // Sahnedeki tüm canlı oyuncular (host + misafir karakterleri). Misafir bağlamında scene.player misafir olsa da
+  // liste aynıdır. Alan hasarı, temas, yakınlık tetikleyicileri bunu kullanmalı (yalnızca scene.player değil).
+  allPlayers(includeDead = false) {
+    const out = [];
+    const h = this.netHostPlayer || this.player;
+    if (h && (includeDead || h.alive)) out.push(h);
+    if (this.netPlayers) for (const p of this.netPlayers) if (p !== h && (includeDead || p.alive)) out.push(p);
+    return out;
+  }
+
+  // (x,y)'ye en yakın canlı oyuncu ve mesafesi
+  nearestPlayer(x, y, max = Infinity) {
+    let best = null, bd = max;
+    for (const p of this.allPlayers()) {
+      const d = Phaser.Math.Distance.Between(x, y, p.x, p.y);
+      if (d < bd) { bd = d; best = p; }
+    }
+    return best ? { p: best, d: bd } : null;
+  }
+
+  // Konumlu sarsıntı: yakındaki her oyuncunun kamerası (misafirlere ağ üzerinden)
+  shakeAt(x, y, range, dur, intensity) {
+    const me = this.netHostPlayer || this.player;
+    if (Phaser.Math.Distance.Between(x, y, me.x, me.y) < range) this.cameras.main.shake(dur, intensity);
+    this.net?.shakeAt?.(x, y, range, dur, intensity);
   }
 
   addStructure(kind, x, y) { return createStructure(this, kind, x, y); }
@@ -407,6 +543,7 @@ export class GameScene extends Phaser.Scene {
       this.dark.erase(this.lightStamp, x - ox, y - oy);
     };
     const flicker = 1 + Math.sin(this.time.now / 120) * 0.03;
+    if (this.net?.isGuest) { this.net.drawLights(light, flicker); return; }
     light(this.player.x, this.player.y, 85 * flicker);
     this.staticLights.forEach((l) => light(l.x, l.y, l.r * flicker));
     this.turrets.getChildren().forEach((t) => light(t.x, t.y, 34));
@@ -417,19 +554,24 @@ export class GameScene extends Phaser.Scene {
 
   // ---------------- Ana döngü ----------------
   update(_t, delta) {
+    if (this.net?.isGuest) { this.net.update(Math.min(delta, 50) / 1000); return; }
     if (!this.started || this.gameOver) { this.drawDarkness(); return; }
     const dt = Math.min(delta, 50) / 1000;
     this.updateMarker();
-    if (this.hud.isModalOpen()) { this.drawDarkness(); return; }
+    // Çok oyunculu host'ta panel açıkken de simülasyon sürer (misafirler oynamaya devam eder)
+    const modal = this.hud.isModalOpen();
+    if (modal && !this.net) { this.drawDarkness(); return; }
 
     const gameMin = this.timeSys.update(dt);
     this.farm.advance(gameMin);
-    this.player.update(dt, this.keys, false);
+    this.player.update(dt, this.keys, modal);
+    if (!modal) this.updateClick(dt);
     this.npcs.forEach((n) => n.update(dt));
     this.zombies.getChildren().slice().forEach((z) => z.update(dt));
     this.turrets.getChildren().forEach((t) => t.update(dt));
     this.waves.update(dt);
     features.forEach((f) => f.update?.(this, dt));
+    this.net?.update(dt);
 
     // Etkileşim ipucu
     const act = this.bestInteraction();
@@ -458,7 +600,8 @@ export class GameScene extends Phaser.Scene {
     this.marker.setVisible(showMarker).setPosition(cx, cy).setTint(inReach ? 0xffffff : 0xff6666);
     if (type === 'place' && !this.hud.isModalOpen()) {
       const ok = canPlace(this, cx, cy);
-      this.ghost.setVisible(true).setTexture(slot.id).setPosition(cx, cy).setTint(ok ? 0x88ff88 : 0xff6666);
+      const tex = slot.id === 'barricade' ? barricadeTexAt(this, cx, cy) : slot.id;
+      this.ghost.setVisible(true).setTexture(tex).setPosition(cx, cy).setTint(ok ? 0x88ff88 : 0xff6666);
     } else this.ghost.setVisible(false);
   }
 }

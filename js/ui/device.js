@@ -1,16 +1,42 @@
 // Cihaz algılama + tarayıcı jestlerini kapatma (oyun başlamadan önce çalışır).
-export const isTouch = (() => {
-  try {
-    return window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-  } catch { return 'ontouchstart' in window; }
+// isTouch canlı bağlamadır (export let): ayar ya da hibrit cihazda girdi türü değişince güncellenir.
+import { settings, onSettingsChange } from './mobileSettings.js';
+
+const mq = (q) => { try { return window.matchMedia(q).matches; } catch { return false; } };
+
+// Cihazda dokunmatik ekran var mı (telefon, tablet ya da dokunmatik dizüstü)
+export const touchCapable = (() => {
+  try { return navigator.maxTouchPoints > 0 || 'ontouchstart' in window || mq('(any-pointer: coarse)'); } catch { return false; }
 })();
+
+// Otomatik: birincil işaretçi parmaksa (telefon/tablet, yatay ya da dikey) ya da mobil tarayıcıysa açık.
+// Fareli dokunmatik dizüstünde kapalı başlar; ekrana dokunulunca açılır, fareyle tıklanınca kapanır.
+function primaryTouch() {
+  if (!touchCapable) return false;
+  if (mq('(pointer: coarse)')) return true;
+  const ua = navigator.userAgent || '';
+  if (/Android|iPhone|iPad|iPod|Mobile|Silk|Kindle|Opera Mini/i.test(ua)) return true;
+  if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return true; // masaüstü UA'lı iPadOS
+  return !mq('(any-pointer: fine)'); // fare/kalem yoksa dokunmatik
+}
+
+let lastInput = null; // hibrit cihazda son girdi türü: 'touch' | 'mouse'
+
+function compute() {
+  if (settings.touchMode === 'on') return true;
+  if (settings.touchMode === 'off') return false;
+  if (primaryTouch()) return true;
+  return lastInput === 'touch';
+}
+
+export let isTouch = compute();
 
 export const isPortrait = () => window.innerHeight >= window.innerWidth;
 
-// Dokunmatik ekranda kamera yakınlığı: portrede daha geniş görüş
+// Dokunmatik ekranda kamera yakınlığı: portrede daha geniş görüş; alçak yatay ekranda 2
 export function pickZoom(base = 3) {
   const w = window.innerWidth, h = window.innerHeight;
-  if (isTouch) return isPortrait() ? 2 : Math.max(2, Math.min(3, Math.round(Math.min(w, h) / 130)));
+  if (isTouch) return isPortrait() ? 2 : Math.max(2, Math.min(3, Math.floor(Math.min(w, h) / 170)));
   return Math.min(w, h) < 520 ? 2 : base;
 }
 
@@ -19,8 +45,21 @@ function syncBody() {
   const b = document.body;
   if (!b) return;
   b.classList.toggle('is-touch', isTouch);
+  b.classList.toggle('touch-capable', touchCapable);
   b.classList.toggle('portrait', isPortrait());
   b.classList.toggle('landscape', !isPortrait());
+}
+
+const changeFns = new Set();
+// Dokunmatik mod açılıp kapanınca çağrılır: fn(isTouch)
+export function onTouchChange(fn) { changeFns.add(fn); return () => changeFns.delete(fn); }
+
+export function refreshTouch() {
+  const next = compute();
+  if (next === isTouch) { syncBody(); return; }
+  isTouch = next;
+  syncBody();
+  changeFns.forEach((fn) => { try { fn(isTouch); } catch (e) { console.warn('dokunmatik mod dinleyicisi', e); } });
 }
 
 let installed = false;
@@ -30,13 +69,26 @@ export function installDevice() {
   syncBody();
   window.addEventListener('resize', syncBody);
   window.addEventListener('orientationchange', () => setTimeout(syncBody, 120));
-  if (!isTouch) return;
-  // Pinch / çift dokunma yakınlaştırmasını, iOS jestlerini ve uzun basma menüsünü engelle
-  const stop = (e) => e.preventDefault();
+  onSettingsChange(refreshTouch);
+  // Emülasyon / tablet klavye-kılıf değişimi: birincil işaretçi değişirse yeniden değerlendir
+  try { window.matchMedia('(pointer: coarse)').addEventListener?.('change', refreshTouch); } catch { /* eski tarayıcı */ }
+  if (touchCapable) {
+    // Hibrit cihaz: son kullanılan girdi türüne göre otomatik geçiş (yalnız birincil işaretçi fare ise)
+    window.addEventListener('pointerdown', (e) => {
+      if (settings.touchMode !== 'auto' || primaryTouch()) return;
+      const kind = e.pointerType === 'touch' ? 'touch' : e.pointerType === 'mouse' ? 'mouse' : null;
+      if (!kind || kind === lastInput) return;
+      lastInput = kind;
+      refreshTouch();
+    }, true);
+  }
+  // Pinch / çift dokunma yakınlaştırmasını, iOS jestlerini ve uzun basma menüsünü engelle (yalnız dokunmatik düzende)
+  const touchOn = () => document.body?.classList.contains('is-touch');
+  const stop = (e) => { if (touchOn()) e.preventDefault(); };
   document.addEventListener('gesturestart', stop, { passive: false });
   document.addEventListener('gesturechange', stop, { passive: false });
   document.addEventListener('dblclick', stop, { passive: false });
   document.addEventListener('contextmenu', stop);
-  document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+  document.addEventListener('touchmove', (e) => { if (e.touches.length > 1 && touchOn()) e.preventDefault(); }, { passive: false });
   // Çift dokunma yakınlaştırması CSS touch-action: manipulation ile kapatılır (tıklamaları bozmadan)
 }

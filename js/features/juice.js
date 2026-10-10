@@ -119,17 +119,17 @@ const CSS = `
 @keyframes jcWave { 0% { opacity: 0 } 12% { opacity: 1 } 30% { opacity: .55 } 45% { opacity: .95 } 100% { opacity: 0 } }
 @keyframes jcHurt { 0% { opacity: .9 } 100% { opacity: 0 } }
 @keyframes jcLow { 0%,100% { opacity: .35 } 50% { opacity: .8 } }
-#jc-minimap { position: absolute; top: 74px; right: 66px; width: 128px; height: 88px; padding: 0; border-radius: 10px;
+#jc-minimap { position: absolute; top: 74px; right: 66px; width: 144px; height: 96px; padding: 0; border-radius: 10px;
   overflow: hidden; pointer-events: auto; cursor: pointer; display: none; transition: width .2s ease, height .2s ease; }
 #jc-minimap.show { display: block; }
 #jc-minimap canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
-#jc-minimap.big { width: 256px; height: 176px; }
+#jc-minimap.big { width: 288px; height: 192px; }
 #jc-minimap .jc-lbl { position: absolute; left: 6px; bottom: 3px; font-size: 9px; color: rgba(255,255,255,.7); text-shadow: 0 1px 2px #000; pointer-events: none; }
-body.is-touch #jc-minimap { top: calc(env(safe-area-inset-top, 0px) + 124px); right: 8px; width: 96px; height: 66px; border-radius: 8px; }
-body.is-touch #jc-minimap.big { width: 192px; height: 132px; }
+body.is-touch #jc-minimap { top: calc(env(safe-area-inset-top, 0px) + 124px); right: 8px; width: 96px; height: 64px; border-radius: 8px; }
+body.is-touch #jc-minimap.big { width: 192px; height: 128px; }
 @media (max-width: 600px) {
-  #jc-minimap { top: calc(env(safe-area-inset-top, 0px) + 124px); right: 8px; width: 96px; height: 66px; border-radius: 8px; }
-  #jc-minimap.big { width: 192px; height: 132px; }
+  #jc-minimap { top: calc(env(safe-area-inset-top, 0px) + 124px); right: 8px; width: 96px; height: 64px; border-radius: 8px; }
+  #jc-minimap.big { width: 192px; height: 128px; }
 }
 .jc-set { display: grid; gap: 12px; font-size: 14px; }
 .jc-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; min-height: 44px; }
@@ -166,6 +166,7 @@ function part(scene, x, y, o) {
   if (!J.parts || J.parts.length >= partCap()) return;
   const img = !!o.tex;
   const obj = img ? (J.imgFree.pop() || scene.add.image(0, 0, o.tex)) : (J.rectFree.pop() || scene.add.rectangle(0, 0, 2, 2, 0xffffff));
+  obj.netFx = true; // çok oyunculu: havuz parçacıkları aynalanmaz (misafir kendi parçacıklarını üretir)
   if (img) {
     obj.setTexture(o.tex, o.frame).setFlipX(!!o.flip);
     if (o.crop) obj.setCrop(...o.crop); else obj.setCrop();
@@ -589,7 +590,7 @@ function updateWater(scene) {
 }
 
 // ---------------- Mini harita ----------------
-const MM_W = MAP_W * 2, MM_H = MAP_H * 2; // 128x88 (2px/tile)
+const MM_W = MAP_W * 2, MM_H = MAP_H * 2; // 192x128 (2px/tile; CSS'te 1.5px/tile ölçekli gösterilir)
 
 // Tile index → ortalama renk (tileset'ten örneklenir; yeni tile türleri de otomatik çalışır)
 function tileColors(scene) {
@@ -683,6 +684,8 @@ function drawMinimap(scene) {
   scene.barricades?.getChildren().forEach((b) => dot(b.x, b.y, '#c9a06b', 1));
   scene.turrets?.getChildren().forEach((t) => dot(t.x, t.y, '#ffd166', 1));
   for (const n of scene.npcs || []) if (!n.hidden && n.visible) dot(n.x, n.y, '#5ad0ff', 1);
+  // Köye katılmamış hayatta kalanlar: davet bekleyen sarı, kurtarılmayı bekleyen kırmızı
+  for (const n of scene.outsiders || []) dot(n.x, n.y, n.outsider?.mode === 'rescue' ? '#ff5a5a' : '#ffd166', 2);
   (scene.minimapDots || []).forEach((fn) => { try { (fn(scene) || []).forEach((d) => dot(d.x, d.y, d.color || '#fff', d.r || 1)); } catch { /* yok say */ } });
   scene.zombies?.getChildren().forEach((z) => { if (!z.dead) dot(z.x, z.y, isBoss(z) ? '#ff2bd6' : '#ff3b3b', z.scaleX > 1.2 || isBoss(z) ? 2 : 1); });
   // Kamera görüş alanı
@@ -788,6 +791,8 @@ export default {
     J.dusts = Array.from({ length: 10 }, () => scene.add.image(0, 0, 'fx_dust').setVisible(false));
     J.ghosts = Array.from({ length: 8 }, () => scene.add.image(0, 0, 'player').setVisible(false));
     J.glints = Array.from({ length: 6 }, () => scene.add.image(0, 0, 'fx_glint').setDepth(-4).setVisible(false));
+    // Oyuncuya özel kozmetikler (toz, yuvarlanma izi, su parıltısı) aynalanmaz: her ekran kendisininkini üretir
+    [...J.dusts, ...J.ghosts, ...J.glints].forEach((o) => { o.netFx = true; });
     J.splats = [];
     buildGlows(scene);
     J.swayOk = makeSwayTextures(scene);

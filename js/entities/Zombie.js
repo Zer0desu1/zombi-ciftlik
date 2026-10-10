@@ -2,16 +2,16 @@ import { Actor } from './Actor.js';
 import { audio } from '../audio.js';
 
 // Zombi türleri. normal/brute eski kayıt ve modüllerle uyumlu kalır; diğerleri features/zombies.js dokularını kullanır.
-const baseHp = (w) => 4 + Math.floor(w * 0.75);
-const baseSpeed = (w) => Math.min(42, 26 + w * 1.5) * Phaser.Math.FloatBetween(0.85, 1.15);
+const baseHp = (w) => 4 + Math.floor(w * 0.5);
+const baseSpeed = (w) => Math.min(40, 26 + w * 1) * Phaser.Math.FloatBetween(0.85, 1.15);
 export const ZOMBIE_TYPES = {
   normal:  { name: 'Zombi',          icon: '🧟', tex: 'zombie',          hp: baseHp,                                   speed: baseSpeed,                                  dmg: 8,  reward: 3,  cd: 1,   kb: 110, desc: 'Sıradan, yavaş ama kalabalık.' },
-  brute:   { name: 'İri Zombi',      icon: '💪', tex: 'zombie_brute',    hp: (w) => 14 + w * 2,                       speed: () => 20,                                   dmg: 18, reward: 12, cd: 1.4, kb: 40,  scale: 1.35, desc: 'Yavaş, çok dayanıklı, sert vurur.' },
+  brute:   { name: 'İri Zombi',      icon: '💪', tex: 'zombie_brute',    hp: (w) => 12 + Math.round(w * 1.5),                       speed: () => 20,                                   dmg: 15, reward: 12, cd: 1.4, kb: 40,  scale: 1.35, desc: 'Yavaş, çok dayanıklı, sert vurur.' },
   runner:  { name: 'Koşucu',         icon: '💨', tex: 'zombie_runner',   hp: (w) => Math.max(1, Math.round(baseHp(w) * 0.5)), speed: (w) => Math.min(78, baseSpeed(w) * 1.8), dmg: 5,  reward: 4,  cd: 0.8, kb: 130, desc: 'Çok hızlı ama kırılgan.' },
   spitter: { name: 'Tükürükçü',      icon: '🤮', tex: 'zombie_spitter',  hp: (w) => Math.ceil(baseHp(w) * 0.9),       speed: (w) => baseSpeed(w) * 0.85,                 dmg: 4,  reward: 6,  cd: 1,   kb: 110, desc: '120px mesafeden asit tükürür, yerde gölcük bırakır.' },
   bloater: { name: 'Patlayan',       icon: '💥', tex: 'zombie_bloater',  hp: (w) => baseHp(w) + 2,                    speed: (w) => baseSpeed(w) * 0.75,                 dmg: 6,  reward: 5,  cd: 1,   kb: 70,  scale: 1.12, desc: 'Yaklaşınca patlar (yapılara çift hasar). Öldürülünce de patlar!' },
   armored: { name: 'Zırhlı',         icon: '🛡️', tex: 'zombie_armored',  hp: (w) => baseHp(w) + 2,                    speed: (w) => baseSpeed(w) * 0.9,                  dmg: 10, reward: 7,  cd: 1.1, kb: 60,  armor: 6, desc: 'İlk 6 hasarı zırhı emer.' },
-  boss:    { name: 'Mezar Bekçisi',  icon: '👑', tex: 'zombie_boss',     hp: (w) => 120 + Math.max(0, w - 5) * 12,    speed: () => 17,                                   dmg: 25, reward: 20, cd: 1.6, kb: 0,   scale: 1.8, desc: 'Her 5. dalganın patronu. 3 sn\'de bir yeri sarsar.' }
+  boss:    { name: 'Mezar Bekçisi',  icon: '👑', tex: 'zombie_boss',     hp: (w) => 70 + Math.max(0, w - 5) * 10,     speed: () => 17,                                   dmg: 25, reward: 20, cd: 1.6, kb: 0,   scale: 1.8, desc: 'Her 5. dalganın patronu. 3 sn\'de bir yeri sarsar.' }
 };
 
 const BLOAT_TRIGGER = 24, BLOAT_RADIUS = 40, BLOAT_DMG = 25;
@@ -19,7 +19,7 @@ const SPIT_RANGE = 120, SPIT_CD = 2, ACID_DMG = 5;
 const SLAM_RADIUS = 60, SLAM_CD = 3, SLAM_DMG = 12;
 // Isırık telegrafı (sn): canlılara saldırmadan önce kırmızı parlayıp geri çekilir — yuvarlanma/vurma fırsatı
 const BITE_TIME = { normal: 0.32, runner: 0.22, brute: 0.5, spitter: 0.3, bloater: 0.3, armored: 0.34, boss: 0.45 };
-const RAID_FROM = 3; // bu dalgadan itibaren bazı zombiler tarlaya/hayvanlara yönelir
+const RAID_FROM = 4; // bu dalgadan itibaren bazı zombiler tarlaya/hayvanlara yönelir
 
 // Prosedürel kısa sesler (audio.js'e dokunmadan)
 function zsfx(name) {
@@ -123,13 +123,18 @@ export function updateZombieFx(scene, dt) {
     a.mark?.setScale(0.6 + 0.4 * k);
     if (k >= 1) { a.img.destroy(); a.mark?.destroy(); f.acid.splice(i, 1); acidImpact(scene, a.tx, a.ty); }
   }
-  const p = scene.player;
+  // Asit gölcüğü tüm oyuncuları yakar (çok oyunculuda misafir karakterleri de)
+  const players = scene.allPlayers ? scene.allPlayers() : [scene.player];
   for (let i = f.pools.length - 1; i >= 0; i--) {
     const g = f.pools[i];
     g.life -= dt;
     g.tick -= dt;
     if (g.life < 0.5) g.img.setAlpha(Math.max(0, g.life / 0.5) * 0.85);
-    if (g.tick <= 0 && p.alive && Math.abs(p.x - g.x) < 8 && Math.abs(p.y + 6 - g.y) < 6) { g.tick = 0.5; p.takeDamage(1); }
+    if (g.tick <= 0) {
+      let hit = false;
+      for (const p of players) if (p.alive && Math.abs(p.x - g.x) < 8 && Math.abs(p.y + 6 - g.y) < 6) { p.takeDamage(1); hit = true; }
+      if (hit) g.tick = 0.5;
+    }
     if (g.life <= 0) { g.img.destroy(); f.pools.splice(i, 1); }
   }
 }
@@ -151,8 +156,8 @@ export class Zombie extends Actor {
     this.kind = ZOMBIE_TYPES[kind] ? kind : 'normal';
     this.def = def;
     this.speed = def.speed(wave);
-    // Denge: ilk iki gece öğretici kadar yumuşak, 5. geceden sonra hasar her gece %6 artar
-    const tier = wave <= 1 ? 0.6 : wave === 2 ? 0.75 : 1 + Math.max(0, wave - 4) * 0.06;
+    // Denge: hasar 1. geceden 5. geceye doğrusal artar (0.6 → 1.0), sonra her gece %4, en fazla 1.8×
+    const tier = Math.min(1.8, wave <= 5 ? 0.6 + Math.max(0, wave - 1) * 0.1 : 1 + (wave - 5) * 0.04);
     this.damage = Math.max(1, Math.round(def.dmg * tier));
     this.biteTime = (BITE_TIME[this.kind] || 0.32) * (wave <= 2 ? 1.35 : 1);
     // Rol: yağmacı tarlaya/hayvanlara, iri zombiler sığınağa yüklenir
@@ -313,7 +318,7 @@ export class Zombie extends Actor {
     if (action === 'slam') {
       s.tweens.add({ targets: this, scaleY: this.def.scale * 1.12, duration: time * 1000 * 0.8, yoyo: true });
       warnCircle(s, this.x, this.y + 6, SLAM_RADIUS, time);
-    } else if (action === 'bite' && this.biteTarget === s.player) {
+    } else if (action === 'bite' && (this.biteTarget === s.player || this.biteTarget?.netRemote)) {
       // Oyuncuya yönelik ısırıkta başının üstünde "!" belirir
       const m = s.add.text(this.x, this.y - 10 * this.scaleY, '!', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ff4a3a', stroke: '#000', strokeThickness: 2 })
         .setOrigin(0.5, 1).setDepth(10003).setResolution(2);
@@ -347,7 +352,8 @@ export class Zombie extends Actor {
     zsfx('slam');
     ring(s, this.x, this.y + 6, SLAM_RADIUS, 0xc9a26b, 450);
     s.spawnParticles(this.x, this.y + 8, 0x8a6a45, 16);
-    if (Phaser.Math.Distance.Between(this.x, this.y, s.player.x, s.player.y) < 200) s.cameras.main.shake(250, 0.008);
+    if (s.shakeAt) s.shakeAt(this.x, this.y, 200, 250, 0.008);
+    else if (Phaser.Math.Distance.Between(this.x, this.y, s.player.x, s.player.y) < 200) s.cameras.main.shake(250, 0.008);
     areaDamage(s, this.x, this.y, SLAM_RADIUS, SLAM_DMG, { structMul: 1.5, source: this });
   }
 
@@ -370,7 +376,8 @@ export class Zombie extends Actor {
     ring(s, this.x, this.y, BLOAT_RADIUS, 0x9bd35a, 380);
     s.spawnParticles(this.x, this.y, 0x9bd35a, 14);
     s.spawnParticles(this.x, this.y, 0xf08a24, 8);
-    if (Phaser.Math.Distance.Between(this.x, this.y, s.player.x, s.player.y) < 180) s.cameras.main.shake(200, 0.006);
+    if (s.shakeAt) s.shakeAt(this.x, this.y, 180, 200, 0.006);
+    else if (Phaser.Math.Distance.Between(this.x, this.y, s.player.x, s.player.y) < 180) s.cameras.main.shake(200, 0.006);
     areaDamage(s, this.x, this.y, BLOAT_RADIUS, BLOAT_DMG, { structMul: 2, zombieDmg: 6, source: this });
   }
 

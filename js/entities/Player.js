@@ -101,6 +101,7 @@ export class Player extends Actor {
         if (!this.active) return;
         const g = this.scene.add.image(this.x, this.y, this.texture.key, this.frame.name)
           .setFlipX(this.flipX).setAngle(this.angle).setDepth(this.depth - 1).setTint(0x9ecbff).setAlpha(0.45);
+        g.netSkip = true; // kısa ömürlü kozmetik iz: çok oyunculuda aynalanmaz (yetim/takılı vekil kalmasın)
         this.scene.tweens.add({ targets: g, alpha: 0, duration: 220, onComplete: () => g.destroy() });
       }
     });
@@ -134,10 +135,12 @@ export class Player extends Actor {
     const dmg = n * (this.dmgTakenMul ?? 1); // yemek güçlendirmesiyle azalabilir
     this.hp -= dmg;
     this.invuln = 0.5;
-    // Yönlü kenar kızarması için (combat dinler)
-    this.scene.events.emit('playerHurt', { dmg, x: source?.x ?? this.x, y: source?.y ?? this.y });
     this.flash(0xff4444);
     if (source) this.knockback(source.x, source.y, 140);
+    // Çok oyunculu: host'taki misafir karakteri → efektler misafirin ekranında
+    if (this.netRemote) { this.netRemote.hurt(dmg, source); if (this.hp <= 0) this.die(); return; }
+    // Yönlü kenar kızarması için (combat dinler)
+    this.scene.events.emit('playerHurt', { dmg, x: source?.x ?? this.x, y: source?.y ?? this.y });
     this.scene.cameras.main.shake(100, 0.004);
     audio.sfx('hurt');
     if (this.hp <= 0) this.die();
@@ -151,6 +154,7 @@ export class Player extends Actor {
     this.halt();
     this.setVelocity(0, 0);
     this.setAngle(90);
+    if (this.netRemote) { this.scene.events.emit('remotePlayerDied', this); return; }
     audio.sfx('die');
     this.scene.events.emit('playerDied');
   }

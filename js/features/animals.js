@@ -1,6 +1,6 @@
 // 'animals' özellik modülü — Hayvancılık: tavuk/inek, ağıl, yalak, sevgi, günlük ürün, gece tehdidi.
 // Sözleşme için registry.js'e bak.
-import { TILE, ITEMS, RECIPES, SHOPS, QUESTS, FARM_ZONE } from '../config.js';
+import { TILE, ITEMS, RECIPES, SHOPS, QUESTS } from '../config.js';
 import { addCanvas, makeCanvas, R } from '../textures.js';
 import { audio } from '../audio.js';
 import { injectCSS, el } from '../ui/dom.js';
@@ -53,6 +53,8 @@ const BARN = { x: T(29) - 4, y: T(6) - 20 }; // 48x40 doku merkezi
 const TROUGH = { x: T(30) - 4, y: T(10) + 6 };
 const SIGN = { x: T(26) + 2, y: T(12) + 4 };
 const TROUGH_CAP = 40;
+const PEN_COST = { wood: 20, stone: 10 };     // ağıl hazır gelmez, oyuncu kurar
+const PEN_COST_COINS = 40;
 const MAX_LOVE = 5;
 
 // ---------- Dokular ----------
@@ -240,8 +242,8 @@ function buildPen(scene) {
     img.setDepth(depth);
     return img;
   };
-  // Tarla çitiyle bitişik kısımda çift çit çizme; o aralıkta tarlanın sağ çiti duvar görevi görür
-  const sharesFarm = (y) => FARM_ZONE.x + FARM_ZONE.w === PEN.x0 - 1 && y >= FARM_ZONE.y - 1;
+  // Hazır tarla çiti yok: ağılın dört kenarı da kendi çitiyle kapanır
+  const sharesFarm = () => false;
   for (let x = PEN.x0; x <= PEN.x1; x++) {
     block(T(x) + 8, T(PEN.y0) + 8, 'fence', 16, 6, 0, 8, T(PEN.y0) + 14);
     if (x === PEN.gate) continue;
@@ -265,6 +267,7 @@ const doorSpot = (house) => (house === 'coop' ? { x: COOP.x, y: COOP.y + 16 } : 
 
 function refreshVisuals(scene) {
   const S = st(scene);
+  if (!S.built) return;
   S.coop.setTexture(S.doorsClosed ? 'a_coop_closed' : 'a_coop');
   S.barn.setTexture(S.doorsClosed ? 'a_barn_closed' : 'a_barn');
   S.trough.setTexture(S.feed > 0 ? 'a_trough_full' : 'a_trough');
@@ -293,6 +296,7 @@ function removeAnimal(scene, a) {
 // Yeni hayvanı ağıla ekle (kapasite kontrolü ile)
 function addAnimal(scene, type) {
   const def = ANIMAL_TYPES[type];
+  if (!st(scene).built) { scene.hud.notice('Önce ağılı kur! (sığınağın kuzeybatısındaki kazıklı alan)'); audio.sfx('error'); return null; }
   if (countType(scene, type) >= def.cap) { scene.hud.notice(`${def.house === 'coop' ? 'Kümes' : 'Ahır'} dolu! (en fazla ${def.cap} ${def.name.toLowerCase()})`); audio.sfx('error'); return null; }
   const used = new Set(st(scene).animals.map((x) => x.animalName));
   const pool = ANIMAL_NAMES[type].filter((n) => !used.has(n));
@@ -333,7 +337,7 @@ function fillTrough(scene) {
 
 function useFeed(scene) {
   if (nearTrough(scene, 44)) fillTrough(scene);
-  else scene.hud.notice('Yemi ağıldaki yalağa koy (çiftliğin doğusu)');
+  else scene.hud.notice(st(scene).built ? 'Yemi ağıldaki yalağa koy' : 'Önce ağılı kur');
 }
 
 function collect(scene, a) {
@@ -367,8 +371,12 @@ function toggleDoors(scene) {
 // E tuşu / mobil eylem butonu etkileşimleri
 function interaction(scene) {
   const S = st(scene);
-  if (!S?.built) return null;
+  if (!S) return null;
   const p = scene.player;
+  if (!S.built) {
+    const d = Phaser.Math.Distance.Between(p.x, p.y, SIGN.x, SIGN.y + 6);
+    return d < 26 ? { dist: d, label: `Ağıl kur (${costText()})`, run: () => tryBuildPen(scene) } : null;
+  }
   let best = null;
   const offer = (dist, label, run) => { if (!best || dist < best.dist) best = { dist, label, run }; };
   for (const a of S.animals) {
@@ -392,6 +400,43 @@ function interaction(scene) {
   const dsn = Phaser.Math.Distance.Between(p.x, p.y, SIGN.x, SIGN.y + 6);
   if (dsn < 22) offer(dsn, 'Hayvan Pazarı', () => openPanel(scene, 'shop'));
   return best;
+}
+
+// ---------- Ağıl inşası ----------
+const costText = () => `${PEN_COST.wood} odun, ${PEN_COST.stone} taş, ${PEN_COST_COINS}🪙`;
+
+// İnşa edilmemiş ağıl yerinde köşe kazıkları + soluk tabela
+function showPenSite(scene) {
+  const S = st(scene);
+  S.site = [scene.add.image(SIGN.x, SIGN.y, 'a_sign').setDepth(SIGN.y + 8).setAlpha(0.6)];
+  for (const [x, y] of [[PEN.x0, PEN.y0], [PEN.x1, PEN.y0], [PEN.x0, PEN.y1], [PEN.x1, PEN.y1]]) {
+    S.site.push(scene.add.rectangle(T(x) + 8, T(y) + 10, 2, 7, 0x8a5a3a).setDepth(T(y) + 12));
+  }
+  S.site.push(scene.add.text(SIGN.x, SIGN.y - 12, '🔨 Ağıl yeri', { fontFamily: 'Outfit, sans-serif', fontSize: '6px', color: '#ffe08a', stroke: '#000', strokeThickness: 2, resolution: 4 }).setOrigin(0.5, 1).setDepth(10002));
+}
+
+function completePen(scene) {
+  const S = st(scene);
+  S.site?.forEach((o) => o.destroy());
+  S.site = null;
+  buildPen(scene);
+  S.built = true;
+  refreshVisuals(scene);
+}
+
+function tryBuildPen(scene) {
+  const inv = scene.inventory, p = scene.player;
+  const miss = Object.entries(PEN_COST).filter(([id, n]) => inv.count(id) < n).map(([id, n]) => `${n - inv.count(id)} ${ITEMS[id].name}`);
+  if (p.coins < PEN_COST_COINS) miss.push(`${PEN_COST_COINS - p.coins}🪙`);
+  if (miss.length) { scene.hud.notice(`Eksik: ${miss.join(', ')}`); audio.sfx('error'); return; }
+  Object.entries(PEN_COST).forEach(([id, n]) => inv.remove(id, n));
+  p.addCoins(-PEN_COST_COINS);
+  completePen(scene);
+  scene.spawnParticles(SIGN.x, SIGN.y - 30, 0xc8a070, 20);
+  scene.cameras.main.shake(120, 0.003);
+  audio.sfx('quest');
+  scene.hud.banner('Ağıl kuruldu! 🐔', 'Tabeladaki Hayvan Pazarı' + "'" + 'ndan tavuk ve inek alabilirsin.');
+  scene.events.emit('penBuilt');
 }
 
 // ---------- Günlük döngü ----------
@@ -478,7 +523,8 @@ function openPanel(scene, tab = 'mine') {
     root.appendChild(sum);
     const list = el('div', 'list');
     if (tab === 'mine') {
-      if (!S.animals.length) list.appendChild(el('p', 'tip', 'Henüz hayvanın yok. Hayvan Pazarı\'ndan tavuk ya da inek al.'));
+      if (!S.built) list.appendChild(el('p', 'tip', `Henüz ağılın yok. Sığınağın kuzeybatısındaki kazıklı alana git ve ağılı kur (${costText()}).`));
+      else if (!S.animals.length) list.appendChild(el('p', 'tip', 'Henüz hayvanın yok. Hayvan Pazarı\'ndan tavuk ya da inek al.'));
       S.animals.forEach((a) => {
         const tags = [
           a.fed ? '<span class="chip good">Tok</span>' : '<span class="chip bad">Aç</span>',
@@ -491,7 +537,7 @@ function openPanel(scene, tab = 'mine') {
         list.appendChild(el('div', 'row', `<img src="${hud.icon(a.def.icon)}" alt=""><div class="info"><b>${a.animalName} <span class="muted" style="font-weight:400;font-size:12px">${a.def.name}</span></b><span class="hearts">${hearts(a.love)}</span><div class="tags">${tags}</div></div>`));
       });
       root.appendChild(list);
-      root.appendChild(el('p', 'tip', 'Ağıl çiftliğin doğusunda. Yalağa yem koy: tok hayvan şafakta ürün verir. Her gün okşa (+♥). 4+ kalpte ürünler kaliteli olur (x1.5). Gece zombiler hayvanlara saldırır: akşam kümes/ahır kapısını kapat, şafakta kendiliğinden açılır.'));
+      root.appendChild(el('p', 'tip', 'Ağıl sığınağın kuzeybatısında. Yalağa yem koy: tok hayvan şafakta ürün verir. Her gün okşa (+♥). 4+ kalpte ürünler kaliteli olur (x1.5). Gece zombiler hayvanlara saldırır: akşam kümes/ahır kapısını kapat, şafakta kendiliğinden açılır.'));
     } else {
       SHOPS.animals.forEach((o) => {
         const d = ITEMS[o.id];
@@ -540,9 +586,9 @@ export default {
         scene.events.emit('animalDied', a);
       }
     };
-    buildPen(scene);
-    S.built = true;
-    refreshVisuals(scene);
+    // Ağıl alanı tarlaya kapalı; ağıl oyuncu kurunca belirir
+    scene.farm.reserved.push({ x: PEN.x0, y: PEN.y0, w: PEN.x1 - PEN.x0 + 1, h: PEN.y1 - PEN.y0 + 1 });
+    showPenSite(scene);
     S.env = {
       roam: ROAM,
       trough: { x: TROUGH.x - 12, y: TROUGH.y + 2 },
@@ -573,12 +619,9 @@ export default {
   begin(scene) {
     const S = st(scene);
     if (S.loaded) return;
-    // Yeni oyun (ya da hayvan verisi olmayan eski kayıt): başlangıç tavukları
-    spawnAnimal(scene, 'chicken', { name: 'Pamuk' });
-    spawnAnimal(scene, 'chicken', { name: 'Fındık' });
-    S.feed = 6;
-    refreshVisuals(scene);
-    scene.time.delayedCall(4200, () => scene.hud.toast('🐔 Çiftliğin doğusundaki ağılda 2 tavuğun var. Yalağa yem koy, yumurta topla!', 'info'));
+    // Yeni oyun: ağıl ve hayvan yok, oyuncu kurar
+    S.feed = 0;
+    scene.time.delayedCall(4200, () => scene.hud.toast(`🐔 Sığınağın kuzeybatısında ağıl yeri var: ${costText()} ile kurup hayvan besleyebilirsin.`, 'info'));
   },
 
   update(scene, dt) {
@@ -589,13 +632,15 @@ export default {
 
   save(scene) {
     const S = st(scene);
-    return { v: 1, feed: S.feed, doorsClosed: S.doorsClosed, animals: S.animals.filter((a) => !a.dead).map((a) => a.serialize()) };
+    return { v: 1, built: S.built, feed: S.feed, doorsClosed: S.doorsClosed, animals: S.animals.filter((a) => !a.dead).map((a) => a.serialize()) };
   },
 
   load(scene, data) {
     const S = st(scene);
     if (!data || !Array.isArray(data.animals)) return;
     S.loaded = true;
+    // Eski kayıtlarda ağıl hazırdı (built alanı yok) → kurulmuş say
+    if (data.built !== false && !S.built) completePen(scene);
     S.feed = Phaser.Math.Clamp(Number(data.feed) || 0, 0, TROUGH_CAP);
     S.doorsClosed = !!data.doorsClosed;
     data.animals.forEach((d) => {

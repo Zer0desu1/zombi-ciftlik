@@ -6,6 +6,25 @@ const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
 
 // Tüm oyun içi arayüz DOM üzerinde (keskin font + glassmorphism için).
+// Üretim sekmeleri: çıktı eşyasının türüne göre
+const CRAFT_TABS = [
+  { id: 'food', icon: '🍞', label: 'Yemek' },
+  { id: 'weapon', icon: '⚔️', label: 'Silah' },
+  { id: 'defense', icon: '🛡️', label: 'Savunma' },
+  { id: 'farm', icon: '🌱', label: 'Tarım' },
+  { id: 'other', icon: '📦', label: 'Diğer' }
+];
+const FARM_IDS = ['fertilizer', 'feed', 'sprinkler', 'scarecrow'];
+export function craftCategory(id) {
+  const d = ITEMS[id];
+  if (!d) return 'other';
+  if (d.type === 'food' || d.heal) return 'food';
+  if (['weapon', 'gun', 'throw'].includes(d.type) || id === 'ammo' || id === 'arrow') return 'weapon';
+  if (d.type === 'place' || id === 'turret') return 'defense';
+  if (d.type === 'seed' || d.type === 'farm' || FARM_IDS.includes(id)) return 'farm';
+  return 'other';
+}
+
 export class HUD {
   constructor(scene) {
     this.scene = scene;
@@ -24,6 +43,23 @@ export class HUD {
     this.e.backdrop.addEventListener('click', () => this.closeAll());
     document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => this.closeAll()));
     scene.inventory.onChange(() => this.refreshInventory());
+    const press = (e) => { this.pressing = !!e.target.closest?.('.modal'); };
+    const release = () => {
+      if (!this.pressing) return;
+      this.pressing = false;
+      // click olayı pointerup'tan sonra gelir: önce o işlensin
+      if (this.refreshPending) setTimeout(() => { this.refreshPending = false; this.refreshInventory(); }, 0);
+    };
+    window.addEventListener('pointerdown', press, true);
+    window.addEventListener('pointerup', release, true);
+    window.addEventListener('pointercancel', release, true);
+    window.addEventListener('blur', release);
+    scene.events.once('shutdown', () => {
+      window.removeEventListener('pointerdown', press, true);
+      window.removeEventListener('pointerup', release, true);
+      window.removeEventListener('pointercancel', release, true);
+      window.removeEventListener('blur', release);
+    });
     scene.events.on('questsChanged', () => this.renderQuests());
     this.bars = ['hp', 'en', 'shelter'].map((k) => {
       const fill = this.e[k];
@@ -185,7 +221,9 @@ export class HUD {
   }
 
   // Aynı uyarıyı kısa sürede tekrar tekrar göstermemek için
+  // Eylem uyarıları (Çok uzak, yorgunsun…) artık ekrana yazılmaz; çağıranlar zaten hata sesi çalar
   notice(msg) {
+    if (!this.showNotices) return;
     const now = performance.now();
     if (this.lastNotice === msg && now - this.lastNoticeAt < 1500) return;
     this.lastNotice = msg; this.lastNoticeAt = now;
@@ -265,6 +303,8 @@ export class HUD {
   }
 
   refreshInventory() {
+    // Fare/parmak basılıyken listeyi yeniden çizmek tıklamayı yutar (basılan düğüm silinir); bırakınca çiz
+    if (this.pressing) { this.refreshPending = true; return; }
     this.renderHotbar();
     this.renderQuests();
     if (this.modal === 'inventory') { this.renderInvGrid(); this.renderCrafting(); }
@@ -303,7 +343,20 @@ export class HUD {
   renderCrafting() {
     const inv = this.scene.inventory;
     this.e.craftList.innerHTML = '';
-    RECIPES.forEach((r) => {
+    // Kategoriler: yemekler, silahlar, savunma, tarım ve diğer malzemeler ayrı sekmelerde
+    const counts = {};
+    RECIPES.forEach((r) => { const c = craftCategory(r.out); counts[c] = (counts[c] || 0) + 1; });
+    if (!counts[this.craftTab]) this.craftTab = CRAFT_TABS.find((t) => counts[t.id])?.id || 'food';
+    const tabs = el('div', 'craft-tabs');
+    CRAFT_TABS.forEach((t) => {
+      if (!counts[t.id]) return;
+      const ready = RECIPES.some((r) => craftCategory(r.out) === t.id && inv.has(r.cost));
+      const b = el('button', `craft-tab ${t.id === this.craftTab ? 'on' : ''}${ready ? ' ready' : ''}`, `${t.icon} ${t.label}`);
+      b.addEventListener('click', () => { audio.sfx('click'); this.craftTab = t.id; this.renderCrafting(); });
+      tabs.appendChild(b);
+    });
+    this.e.craftList.appendChild(tabs);
+    RECIPES.filter((r) => craftCategory(r.out) === this.craftTab).forEach((r) => {
       const ok = inv.has(r.cost);
       const cost = Object.entries(r.cost).map(([id, n]) =>
         `<span class="cost ${inv.count(id) >= n ? '' : 'miss'}"><img src="${this.icon(id)}" alt="">${inv.count(id)}/${n}</span>`).join('');

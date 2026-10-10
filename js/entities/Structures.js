@@ -46,12 +46,36 @@ class Structure extends Phaser.Physics.Arcade.Image {
   }
 }
 
+// Barikat yönü: yalnızca üst/alt komşusu varsa dikey doku (yandan bakışta tahtalar ileri uzanır)
+export function barricadeTexAt(scene, x, y, self = null) {
+  const walls = (scene.defStructs?.getChildren() || []).filter((o) => o.kind === 'stone_wall' || o.kind === 'gate' || o.kind === 'stake_wall');
+  const near = (dx, dy) => [...scene.barricades.getChildren(), ...walls]
+    .some((o) => o !== self && o.active && Math.abs(o.x - (x + dx)) < 4 && Math.abs(o.y - (y + dy)) < 4);
+  const vert = near(0, -16) || near(0, 16), horiz = near(-16, 0) || near(16, 0);
+  return vert && !horiz ? 'barricade_v' : 'barricade';
+}
+
+// Tüm barikatların yönünü komşularına göre yenile (yerleştirme / yıkılma / kayıt yükleme sonrası)
+export function refreshBarricades(scene) {
+  scene.barricades.getChildren().forEach((b) => {
+    if (!b.active) return;
+    const key = barricadeTexAt(scene, b.x, b.y, b);
+    if (b.texture.key !== key && scene.textures.exists(key)) b.setTexture(key);
+  });
+}
+
 export class Barricade extends Structure {
   constructor(scene, x, y, hp) {
     super(scene, x, y, 'barricade', 80);
     this.kind = 'barricade';
     this.label = 'Barikat';
     if (hp != null) { this.hp = hp; this.updateBar(); }
+  }
+
+  destroy(fromScene) {
+    const scene = this.scene;
+    super.destroy(fromScene);
+    if (!fromScene && scene?.barricades) scene.time.delayedCall(0, () => refreshBarricades(scene));
   }
 }
 

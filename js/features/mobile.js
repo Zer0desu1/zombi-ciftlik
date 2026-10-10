@@ -1,7 +1,7 @@
 // 'mobile' özellik modülü — dokunmatik/dikey ekran deneyimi + masaüstü özellik dock'u.
 // Sözleşme için registry.js'e bak.
 import { ZOOM, TILE, ITEMS } from '../config.js';
-import { isTouch, pickZoom, installDevice } from '../ui/device.js';
+import { isTouch, pickZoom, installDevice, onTouchChange } from '../ui/device.js';
 import { applySettings } from '../ui/mobileSettings.js';
 import { TouchControls, autoTarget, installTapFilter } from '../ui/TouchControls.js';
 import { openMobileMenu, DesktopDock, installSheetSwipe } from '../ui/MenuDock.js';
@@ -26,14 +26,32 @@ function setupGlobals() {
   installDevice();
   applySettings();
   dock = new DesktopDock();
-  if (isTouch) {
-    ctrl = new TouchControls();
-    ctrl.onMenu = (s) => openMobileMenu(s);
-    installTapFilter(() => current);
-  }
+  if (isTouch) ensureCtrl();
+  // Ayar ya da hibrit cihazda girdi türü değişince düzen anında geçer (sayfa yenilemeden)
+  onTouchChange((on) => {
+    if (on) ensureCtrl();
+    ctrl?.releaseAll();
+    const s = current;
+    if (!s) return;
+    s.isTouch = on;
+    s.lowFx = on;
+    if (ctrl) ctrl.attach(s);
+    dock.attach(s);
+    applyZoom(s);
+    if (!on) { s.marker?.setVisible(false); s.ghost?.setVisible(false); }
+  });
   installSheetSwipe(() => current);
   trackHudHeight();
   window.addEventListener('orientationchange', () => setTimeout(() => { if (current) applyZoom(current); }, 250));
+}
+
+// Dokunmatik kontroller ilk gerektiğinde bir kez kurulur
+function ensureCtrl() {
+  if (ctrl) return;
+  ctrl = new TouchControls();
+  ctrl.onMenu = (s) => openMobileMenu(s);
+  installTapFilter(() => current);
+  if (current) ctrl.attach(current);
 }
 
 // Üst barın alt kenarını --hud-h olarak yayınla (rozet/mini harita altına hizalanır); yalnız boyut değişince yazar
@@ -80,9 +98,7 @@ export default {
     document.body.classList.add('playing');
     applyZoom(scene);
     dock.attach(scene);
-    if (isTouch) {
-      scene.time.delayedCall(2400, () => scene.hud?.toast('Sol altta sürükleyerek yürü, sağdaki büyük butonla eşyanı kullan.', 'info'));
-    }
+    // Hareket/etkileşim ipucunu director modülünün ipucu kartı gösterir (tekrar bildirim çıkarılmaz)
   },
 
   update(scene, dt) {
@@ -96,7 +112,7 @@ export default {
         ctrl.setMenuDot(ready);
       }
     }
-    if (!ctrl) return;
+    if (!ctrl || !isTouch) return;
     // Otomatik hedefi 100ms'de bir hesapla, imleç/önizlemeyi her kare ona sabitle
     this.tick -= dt;
     if (this.tick <= 0) {

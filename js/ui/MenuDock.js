@@ -3,6 +3,7 @@
 import { audio } from '../audio.js';
 import { el } from './dom.js';
 import { settings, saveSettings, vibrate } from './mobileSettings.js';
+import { touchCapable } from './device.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 // İkon emoji ya da görsel adresi olabilir
@@ -55,8 +56,19 @@ function openQuests(scene) {
   scene.hud.openPanel('Görevler', `<div class="mm-quests">${html}</div>`);
 }
 
-function openSettings(scene) {
+// Seçenek grubu (büyük dokunma hedefli segmentli düğmeler)
+const SEGS = {
+  touchMode: [['auto', 'Otomatik'], ['on', 'Açık'], ['off', 'Kapalı']],
+  moveMode: [['joy', 'Joystick'], ['dpad4', 'D-pad 4'], ['dpad8', 'D-pad 8']],
+  joyMode: [['float', 'Yüzen'], ['fixed', 'Sabit']]
+};
+const segHTML = (k) => `<div class="mm-seg" role="radiogroup" data-seg="${k}">${SEGS[k].map(([v, t]) => `<button type="button" role="radio" data-v="${v}">${t}</button>`).join('')}</div>`;
+
+export function openSettings(scene) {
   const body = el('div', 'mm-settings', `
+    <div class="mm-row col"><span>Dokunmatik kontrolleri göster <small class="muted">Otomatik: telefon/tablette açık; fareli dokunmatik ekranda son kullandığın girdiye göre</small></span>${segHTML('touchMode')}</div>
+    <div class="mm-row col"><span>Hareket</span>${segHTML('moveMode')}</div>
+    <div class="mm-row col mm-joy"><span>Joystick tabanı <small class="muted">Yüzen: dokunduğun yere taşınır · Sabit: yerinde kalır</small></span>${segHTML('joyMode')}</div>
     <label class="mm-row"><span>Titreşim</span><input type="checkbox" data-k="vibrate"></label>
     <label class="mm-row"><span>Sol elle oyna <small class="muted">(butonlar solda, joystick sağda)</small></span><input type="checkbox" data-k="leftHanded"></label>
     <label class="mm-row col"><span>Buton opaklığı <b class="op"></b></span><input type="range" min="40" max="100" step="5" data-k="opacity"></label>
@@ -65,6 +77,24 @@ function openSettings(scene) {
   const lh = body.querySelector('[data-k=leftHanded]');
   const op = body.querySelector('[data-k=opacity]');
   const opTxt = body.querySelector('.op');
+  const syncSegs = () => {
+    body.querySelectorAll('.mm-seg').forEach((g) => g.querySelectorAll('button').forEach((b) => {
+      const on = settings[g.dataset.seg] === b.dataset.v;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-checked', String(on));
+    }));
+    body.querySelector('.mm-joy').style.display = settings.moveMode === 'joy' ? '' : 'none';
+  };
+  body.querySelectorAll('.mm-seg').forEach((g) => g.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-v]');
+    if (!b) return;
+    settings[g.dataset.seg] = b.dataset.v;
+    saveSettings();
+    syncSegs();
+    vibrate(10);
+    audio.sfx('click');
+  }));
+  syncSegs();
   vib.checked = settings.vibrate;
   lh.checked = settings.leftHanded;
   op.value = Math.round(settings.opacity * 100);
@@ -91,6 +121,9 @@ export class DesktopDock {
   sync() {
     const s = this.scene;
     const list = s ? menuItems(s) : [];
+    // Dokunmatik ekranlı (ya da elle açılmış) cihazda kontrol ayarlarına masaüstü düzeninden de ulaşılsın.
+    // featureMenu'ye eklenmez: misafir modunda host'a yönlendirilmesin, hep yerelde açılsın.
+    if (s && (touchCapable || settings.touchMode !== 'auto')) list.push({ id: 'touch-ctrl', icon: '🎮', label: 'Dokunmatik kontroller', open: openSettings });
     const sig = list.map((m) => `${m.id}|${m.icon}|${m.label}|${m.key || ''}`).join(';');
     if (sig === this.sig) return;
     this.sig = sig;

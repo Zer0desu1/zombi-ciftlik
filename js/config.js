@@ -1,7 +1,12 @@
 // Oyun genel sabitleri ve veri tabloları
 export const TILE = 16;
-export const MAP_W = 64;
-export const MAP_H = 44;
+// Harita 64×44'ten 96×64'e büyütüldü: eski alan aynı koordinatlarda kaldı, yeni alan sağa ve aşağıya eklendi.
+export const MAP_W = 96;
+export const MAP_H = 64;
+// Eski (sürüm 1) harita boyutu: tohumlu kaynak dizilimi bu alanda eskisiyle birebir aynı üretilir
+export const LEGACY_MAP_W = 64;
+export const LEGACY_MAP_H = 44;
+export const MAP_VERSION = 2;
 export const ZOOM = 3;
 
 // Zaman (oyun dakikası)

@@ -1,4 +1,5 @@
-import { TILE, FARM_ZONE, CROPS, CROP_STAGES, ITEMS } from '../config.js';
+import { TILE, MAP_W, MAP_H, FARM_ZONE, CROPS, CROP_STAGES, ITEMS } from '../config.js';
+import { Actor } from '../entities/Actor.js';
 
 export const T = { GRASS: 0, GRASS2: 1, GRASS3: 2, PATH: 3, SOIL: 4, WET: 5, FARM: 6, STONE: 7 };
 
@@ -20,14 +21,44 @@ export class Farm {
     // "tx,ty" → { tx, ty, watered, fert, dryDays, crop: { type, stage, growth, harvests?, dead? } | null, sprite, fx }
     this.plots = new Map();
     this.blocked = new Set(); // fıskiye/korkuluk gibi nesnelerin kapladığı tile'lar (sürülemez)
+    this.reserved = [];       // başka yapılara ayrılmış alanlar (ör. ağıl) {x,y,w,h} tile
   }
 
   key(tx, ty) { return `${tx},${ty}`; }
   get(tx, ty) { return this.plots.get(this.key(tx, ty)); }
 
+  // Hazır tarla yok: çimenli, engelsiz her kare sürülebilir (yol, meydan, göl, bina ve ayrılmış alanlar hariç)
   inZone(tx, ty) {
-    const z = FARM_ZONE;
-    return tx >= z.x && ty >= z.y && tx < z.x + z.w && ty < z.y + z.h;
+    // Kenardaki 2 karelik orman şeridi (MapBuilder.FOREST_TILES) sürülemez
+    if (tx < 2 || ty < 2 || tx >= MAP_W - 2 || ty >= MAP_H - 2) return false;
+    if (this.get(tx, ty)) return true;
+    const t = this.layer.getTileAt(tx, ty);
+    if (!t || !(t.index <= T.GRASS3 || t.index === T.FARM)) return false;
+    if (this.reserved.some((r) => tx >= r.x && ty >= r.y && tx < r.x + r.w && ty < r.y + r.h)) return false;
+    const s = this.scene, x = tx * TILE, y = ty * TILE;
+    if (s.lakeRect && Phaser.Geom.Rectangle.Overlaps(s.lakeRect, new Phaser.Geom.Rectangle(x, y, TILE, TILE))) return false;
+    // Ağaç, kaya, bina, yapı gibi gövdeler; canlılar ve mermiler engel sayılmaz
+    return !s.physics.overlapRect(x + 2, y + 2, TILE - 4, TILE - 4, true, true)
+      .some((b) => b.gameObject && !(b.gameObject instanceof Actor) && !s.bullets?.contains(b.gameObject));
+  }
+
+  // Komşu karelerden birinde tarla var mı (tarlayı büyütme önerileri için)
+  nearPlot(tx, ty) {
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if ((dx || dy) && this.get(tx + dx, ty + dy)) return true;
+    return false;
+  }
+
+  // Tarlanın kapladığı alan (NPC'ler burada dolaşır). Tarla yoksa önerilen açık çayır.
+  area() {
+    if (!this.plots.size) return new Phaser.Geom.Rectangle(FARM_ZONE.x * TILE, FARM_ZONE.y * TILE, FARM_ZONE.w * TILE, FARM_ZONE.h * TILE);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of this.plots.values()) { x0 = Math.min(x0, p.tx); y0 = Math.min(y0, p.ty); x1 = Math.max(x1, p.tx); y1 = Math.max(y1, p.ty); }
+    return new Phaser.Geom.Rectangle(x0 * TILE, y0 * TILE, (x1 - x0 + 1) * TILE, (y1 - y0 + 1) * TILE);
+  }
+
+  center() {
+    const r = this.area();
+    return { x: r.centerX, y: r.centerY };
   }
 
   // Şu anki mevsim kimliği ('spring'...) ya da mevsim sistemi yoksa null
@@ -57,6 +88,7 @@ export class Farm {
     if (!this.inZone(tx, ty) || this.get(tx, ty) || this.blocked.has(this.key(tx, ty))) return false;
     const plot = { tx, ty, watered: false, fert: 0, dryDays: 0, crop: null, sprite: null, fx: null };
     this.plots.set(this.key(tx, ty), plot);
+    this.scene.clearDecorAt?.(tx, ty);
     this.refresh(plot);
     return true;
   }
@@ -196,7 +228,7 @@ export class Farm {
     p.sprite?.destroy();
     p.fx?.destroy();
     this.plots.delete(this.key(p.tx, p.ty));
-    this.layer.putTileAt(T.FARM, p.tx, p.ty);
+    this.layer.putTileAt(T.GRASS, p.tx, p.ty);
   }
 
   // Çiftçi NPC için: sulanmamış (canlı) ekinler
@@ -248,6 +280,7 @@ export class Farm {
       }
       const p = { tx: d.tx, ty: d.ty, watered: !!d.watered, fert: d.fert || 0, dryDays: d.dryDays || 0, crop, sprite: null, fx: null };
       this.plots.set(this.key(p.tx, p.ty), p);
+      this.scene.clearDecorAt?.(p.tx, p.ty);
       this.refresh(p);
     });
   }

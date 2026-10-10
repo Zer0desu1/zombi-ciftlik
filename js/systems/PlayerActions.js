@@ -1,12 +1,14 @@
 import { TILE, ITEMS } from '../config.js';
 import { audio } from '../audio.js';
-import { Barricade, Turret } from '../entities/Structures.js';
+import { Barricade, Turret, refreshBarricades } from '../entities/Structures.js';
 import { depleteResource } from './MapBuilder.js';
 
 export const REACH = 40;
 
 // Fare tıklamasında seçili eşyaya göre ne yapılacağını belirler.
 export function useSelected(scene, wx, wy) {
+  // Çok oyunculu misafir: eylem host'ta, misafir adına uygulanır
+  if (scene.net?.isGuest) { scene.net.use(wx, wy); return; }
   const p = scene.player;
   if (!p.alive || p.actionCd > 0) return;
   const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
@@ -38,14 +40,14 @@ export function useSelected(scene, wx, wy) {
 
 function face(p, wx) { if (Math.abs(wx - p.x) > 2) p.setFlipX(wx < p.x); }
 
-export function fail(scene, msg) {
+// Başarısız eylem: ekrana bilgi yazısı çıkarmaz (hedeflerin üstünü kapatıyordu), yalnızca hata sesi
+export function fail(scene, _msg) {
   audio.sfx('error');
-  if (msg) scene.hud.notice(msg);
 }
 
 function till(scene, tx, ty, inReach) {
   if (!inReach) return fail(scene, 'Çok uzak');
-  if (!scene.farm.inZone(tx, ty)) return fail(scene, 'Sadece çitle çevrili tarlada sürebilirsin');
+  if (!scene.farm.inZone(tx, ty)) return fail(scene, 'Burası sürülemez (yol, bina, ağaç ya da engel var)');
   if (scene.farm.get(tx, ty)) return;
   if (!scene.player.useEnergy(2)) return;
   scene.farm.till(tx, ty);
@@ -90,14 +92,18 @@ function harvest(scene, tx, ty) {
 
 function gather(scene, kind, wx, wy) {
   const p = scene.player;
-  let target = null, best = 18;
+  // Erişimdeki her ağaç/kaya hedeflenebilir; imleç görselin (yaprak, gövde) üstündeyse o seçilir, değilse imlece en yakını
+  let target = null, best = Infinity;
   scene.resources.getChildren().forEach((r) => {
     if (r.kind !== kind || r.depleted) return;
     const baseY = r.y + (kind === 'tree' ? 8 : 2);
-    const d = Phaser.Math.Distance.Between(wx, wy, r.x, baseY);
-    if (d < best && Phaser.Math.Distance.Between(p.x, p.y, r.x, baseY) < REACH) { best = d; target = r; }
+    if (Phaser.Math.Distance.Between(p.x, p.y, r.x, baseY) > REACH + 4) return;
+    const b = r.getBounds();
+    const onSprite = wx >= b.x - 3 && wx <= b.right + 3 && wy >= b.y - 3 && wy <= b.bottom + 3;
+    const d = (onSprite ? 0 : 1000) + Phaser.Math.Distance.Between(wx, wy, r.x, r.y);
+    if (d < best) { best = d; target = r; }
   });
-  if (!target) return fail(scene, kind === 'tree' ? 'Yakında ağaç yok' : 'Yakında kaya yok');
+  if (!target) return fail(scene);
   if (!p.useEnergy(2)) return;
   p.actionCd = 0.35;
   target.hits--;
@@ -109,7 +115,6 @@ function gather(scene, kind, wx, wy) {
     const qty = Phaser.Math.Between(2, 4);
     depleteResource(target);
     scene.giveItem(item, qty);
-    scene.floatText(target.x, target.y - 6, `+${qty} ${ITEMS[item].name}`, '#ffffff');
   }
 }
 
@@ -149,8 +154,11 @@ export function melee(scene, wx, wy, dmg, opts = {}) {
   }
   audio.sfx('swing');
   let hits = 0;
-  scene.zombies.getChildren().slice().forEach((z) => {
-    if (z.dead) return;
+  // Zombiler + avlanabilir hayvanlar (wildlife: scene.huntables) aynı koni/menzil kontrolüyle
+  const targets = scene.zombies.getChildren().slice();
+  if (scene.huntables?.length) targets.push(...scene.huntables);
+  targets.forEach((z) => {
+    if (z.dead || !z.active) return;
     const d = Phaser.Math.Distance.Between(p.x, p.y, z.x, z.y);
     const diff = Math.abs(Phaser.Math.Angle.Wrap(Phaser.Math.Angle.Between(p.x, p.y, z.x, z.y) - a));
     if (d < range && diff < cone) {
@@ -207,5 +215,6 @@ export function createStructure(scene, kind, x, y, hp) {
   }
   const b = new Barricade(scene, x, y, hp);
   scene.barricades.add(b);
+  refreshBarricades(scene);
   return b;
 }

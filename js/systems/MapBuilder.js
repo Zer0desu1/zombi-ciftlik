@@ -1,4 +1,4 @@
-import { TILE, MAP_W, MAP_H, FARM_ZONE, SHELTER_TILE, MARKET_TILE, FORGE_TILE } from '../config.js';
+import { TILE, MAP_W, MAP_H, LEGACY_MAP_W, LEGACY_MAP_H, FARM_ZONE, SHELTER_TILE, MARKET_TILE, FORGE_TILE } from '../config.js';
 import { Shelter } from '../entities/Structures.js';
 import { T } from './Farm.js';
 import { makeCanvas, PAL, dith } from '../textures.js';
@@ -9,23 +9,63 @@ const inRect = (x, y, r) => x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r
 export const LAKE_ZONE = { x: 3, y: 35, w: 8, h: 5 };
 export const RUINS_ZONE = { x: 55, y: 27, w: 6, h: 5 };
 
+// --- Orman sınırı: haritanın dört kenarında oyuncunun giremediği sık orman şeridi ---
+// Zombiler ve hayvanlar bu şeritle çarpışmaz (ormandan çıkıp gelirler); yalnızca oyuncu durdurulur.
+export const FOREST_TILES = 2;
+export const FOREST_PX = FOREST_TILES * TILE;
+export const inForest = (tx, ty) => tx < FOREST_TILES || ty < FOREST_TILES || tx >= MAP_W - FOREST_TILES || ty >= MAP_H - FOREST_TILES;
+// İleride açılacak geçitler (kilitli keşif bölgeleri için): yolların harita kenarına ulaştığı yerler.
+// side: 0 kuzey, 1 güney, 2 batı, 3 doğu · t: yolun tile sütunu/satırı. Şimdilik kütüklerle kapalıdır;
+// scene.forestEdge.openGate(id) çarpışmayı ve kütük yığınını kaldırır.
+export const FOREST_GATES = [
+  { id: 'north', side: 0, t: 32 },
+  { id: 'east', side: 3, t: 23 },
+  { id: 'south', side: 1, t: 32 },
+  { id: 'west', side: 2, t: 23 }
+];
+// Geçidin kenar boyunca piksel aralığı (2 kare genişlik, yolu ortalar)
+const gateSpan = (g) => [g.t * TILE - 8, g.t * TILE + 24];
+// Geçide uzanan yol kareleri (kaynak/süs buraya konmaz)
+function gatePathTiles() {
+  const out = [];
+  for (const g of FOREST_GATES) {
+    if (g.side === 0) for (let y = 0; y < 4; y++) out.push([g.t, y]);
+    else if (g.side === 1) for (let y = MAP_H - 4; y < MAP_H; y++) out.push([g.t, y]);
+    else if (g.side === 2) for (let x = 0; x < 3; x++) out.push([x, g.t]);
+    else for (let x = MAP_W - 3; x < MAP_W; x++) out.push([x, g.t]);
+  }
+  return out;
+}
+const GATE_TILES = new Set(gatePathTiles().map(([x, y]) => `${x},${y}`));
+const edgeBlocked = (tx, ty) => inForest(tx, ty) || GATE_TILES.has(`${tx},${ty}`);
+
+// --- Eski (64×44) harita uyumu ---
+// Harita büyütülünce eski alandaki ağaç/kaya dizilimi aynı kalsın diye eski alan, eski RNG akışı ve eski
+// kenar/yol kurallarıyla yerleştirilir; yeni alan ayrı bir tohumla doldurulur. Böylece kaynak sırası
+// (0..LEGACY_RES-1) ve konumları sürüm 1 ile birebir aynıdır.
+const LW = LEGACY_MAP_W, LH = LEGACY_MAP_H;
+const legacyGate = new Set([
+  ...[0, 1, 2, 3].map((y) => `32,${y}`), ...[LH - 4, LH - 3, LH - 2, LH - 1].map((y) => `32,${y}`),
+  ...[0, 1, 2].map((x) => `${x},23`), ...[LW - 3, LW - 2, LW - 1].map((x) => `${x},23`)
+]);
+const legacyEdgeBlocked = (tx, ty) => tx < FOREST_TILES || ty < FOREST_TILES || tx >= LW - FOREST_TILES || ty >= LH - FOREST_TILES || legacyGate.has(`${tx},${ty}`);
+// Eski haritada yatay yol x=60'ta, dikey yol y=40'ta bitiyordu (uzatılan kısımlar eski yerleşimde yol değildi)
+const legacyPath = (data, tx, ty) => data[ty][tx] === T.PATH && !(ty === 23 && tx > LW - 4) && !(tx === 32 && ty > LH - 4);
+export const LEGACY_RES = 92; // eski haritadaki kaynak sayısı (60 ağaç + 32 kaya)
+
 // Dünyayı (zemin, binalar, kaynaklar) kurar. Aynı tohumla her seferinde aynı harita oluşur.
 export function buildWorld(scene) {
   const rng = new Phaser.Math.RandomDataGenerator(['zombi-ciftlik']);
+  // Yeni alan (x ≥ 64 ya da y ≥ 44) için ayrı tohum: eski akış değişmesin
+  const rng2 = new Phaser.Math.RandomDataGenerator(['zombi-ciftlik-genis']);
+  const grass = (r) => (r < 0.08 ? T.GRASS2 : r < 0.2 ? T.GRASS3 : T.GRASS);
   const data = [];
-  for (let y = 0; y < MAP_H; y++) {
-    const row = [];
-    for (let x = 0; x < MAP_W; x++) {
-      const r = rng.frac();
-      row.push(r < 0.08 ? T.GRASS2 : r < 0.2 ? T.GRASS3 : T.GRASS);
-    }
-    data.push(row);
-  }
+  for (let y = 0; y < MAP_H; y++) data.push(new Array(MAP_W));
+  for (let y = 0; y < LH; y++) for (let x = 0; x < LW; x++) data[y][x] = grass(rng.frac());
+  for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) if (x >= LW || y >= LH) data[y][x] = grass(rng2.frac());
   const set = (x, y, t) => { if (x >= 0 && y >= 0 && x < MAP_W && y < MAP_H) data[y][x] = t; };
 
-  // Tarla zemini
-  for (let y = FARM_ZONE.y; y < FARM_ZONE.y + FARM_ZONE.h; y++)
-    for (let x = FARM_ZONE.x; x < FARM_ZONE.x + FARM_ZONE.w; x++) set(x, y, T.FARM);
+  // Hazır tarla yok: FARM_ZONE yalnızca ağaçsız açık bir çayır olarak bırakılır, tarlayı oyuncu kurar
   // Yollar
   for (let x = 3; x < MAP_W - 3; x++) set(x, 23, T.PATH);
   for (let y = 4; y < MAP_H - 3; y++) set(32, y, T.PATH);
@@ -62,16 +102,7 @@ export function buildWorld(scene) {
   // Dekoratif evler
   [[14, 27], [20, 27], [48, 31], [53, 13]].forEach(([tx, ty]) => addBlock(tx * TILE + 24, ty * TILE + 22, 'house', 40, 20, 4, 22, 20));
 
-  // Tarla çiti (sağda ve altta giriş boşlukları)
   const fz = FARM_ZONE;
-  for (let x = fz.x - 1; x <= fz.x + fz.w; x++) {
-    addBlock(x * TILE + 8, (fz.y - 1) * TILE + 8, 'fence', 16, 6, 0, 8, 6);
-    if (x < 12 || x > 15) addBlock(x * TILE + 8, (fz.y + fz.h) * TILE + 8, 'fence', 16, 6, 0, 8, 6);
-  }
-  for (let y = fz.y; y < fz.y + fz.h; y++) {
-    addBlock((fz.x - 1) * TILE + 8, y * TILE + 8, 'fence', 4, 16, 6, 0, 6);
-    if (y < 12 || y > 15) addBlock((fz.x + fz.w) * TILE + 8, y * TILE + 8, 'fence', 4, 16, 6, 0, 6);
-  }
 
   // Kaynaklar: ağaç ve kaya (kasaba/tarla/yol dışında)
   const resources = scene.physics.add.staticGroup();
@@ -83,11 +114,21 @@ export function buildWorld(scene) {
     { x: RUINS_ZONE.x - 1, y: RUINS_ZONE.y - 1, w: RUINS_ZONE.w + 2, h: RUINS_ZONE.h + 2 }
   ];
   const used = new Set();
-  const place = (kind, count) => {
+  // legacy: eski alan, eski RNG ve eski kurallar · aksi halde yeni alan (rng2), yeni kenar kuralları
+  const place = (kind, count, legacy = true) => {
     let tries = 0;
     while (count > 0 && tries++ < 3000) {
-      const tx = rng.between(1, MAP_W - 2), ty = rng.between(2, MAP_H - 2);
-      if (reserved.some((r) => inRect(tx, ty, r)) || data[ty][tx] === T.PATH || used.has(`${tx},${ty}`)) continue;
+      let tx, ty;
+      if (legacy) {
+        tx = rng.between(1, LW - 2); ty = rng.between(2, LH - 2);
+        if (reserved.some((r) => inRect(tx, ty, r)) || legacyPath(data, tx, ty) || used.has(`${tx},${ty}`)) continue;
+      } else {
+        tx = rng2.between(FOREST_TILES, MAP_W - FOREST_TILES - 1); ty = rng2.between(FOREST_TILES, MAP_H - FOREST_TILES - 1);
+        // Yalnızca eski haritada olmayan (ya da eski orman şeridi olan) kareler
+        if (tx < LW - FOREST_TILES && ty < LH - FOREST_TILES) continue;
+        if (edgeBlocked(tx, ty) || reserved.some((r) => inRect(tx, ty, r)) || data[ty][tx] === T.PATH || used.has(`${tx},${ty}`)) continue;
+        if ([[0, 1], [0, -1], [1, 0], [-1, 0]].some(([dx, dy]) => GATE_TILES.has(`${tx + dx},${ty + dy}`))) continue;
+      }
       used.add(`${tx},${ty}`);
       const x = tx * TILE + 8, y = ty * TILE + (kind === 'tree' ? 4 : 8);
       const r = resources.create(x, y, kind);
@@ -103,6 +144,13 @@ export function buildWorld(scene) {
   };
   place('tree', 60);
   place('rock', 32);
+  // Orman şeridine / geçit yoluna düşen kaynakları içeri kaydır. Tohumlu yerleşim ve kaynak SIRASI
+  // değişmez (kayıtlar ve çok oyunculu eşitleme kaynakları sıra numarasıyla tutar); yalnızca konum düzeltilir.
+  // Eski alanın kaynakları eski kenar kurallarıyla kaydırılır (eski haritadakiyle aynı konum).
+  relocateEdgeResources(resources, data, used, reserved);
+  // Yeni alan: eski yoğunlukla orantılı (eski iç alan ~2816 kare → 60 ağaç / 32 kaya; eklenen ~3328 kare)
+  place('tree', 71, false);
+  place('rock', 38, false);
 
   // --- Göl (sol alt) ---
   const lz = LAKE_ZONE, lw = lz.w * TILE, lh = lz.h * TILE, lx = lz.x * TILE, ly = lz.y * TILE;
@@ -133,22 +181,28 @@ export function buildWorld(scene) {
   }
 
   // --- Çiçek / çalı süslemeleri (çarpışmasız) ---
+  scene.decorFlowers = [];
   if (scene.textures.exists('flower_0')) {
-    let n = 46, tries = 0;
-    while (n > 0 && tries++ < 2000) {
+    let n = 100, tries = 0;
+    while (n > 0 && tries++ < 4400) {
       const tx = rng.between(1, MAP_W - 2), ty = rng.between(2, MAP_H - 2);
       if (data[ty][tx] === T.PATH || data[ty][tx] === T.FARM || data[ty][tx] === T.STONE || used.has(`${tx},${ty}`)) continue;
+      if (edgeBlocked(tx, ty)) continue; // orman şeridi
       if (inRect(tx, ty, { x: fz.x - 1, y: fz.y - 1, w: fz.w + 2, h: fz.h + 2 }) || inRect(tx, ty, reserved[3]) || inRect(tx, ty, reserved[4])) continue;
       if (inRect(tx, ty, { x: 26, y: 12, w: 26, h: 20 })) continue; // kasaba binaları
       used.add(`${tx},${ty}`);
       const key = `flower_${rng.between(0, 3)}`;
-      scene.add.image(tx * TILE + rng.between(4, 12), ty * TILE + rng.between(6, 12), key).setDepth(ty * TILE - 2);
+      scene.decorFlowers.push(scene.add.image(tx * TILE + rng.between(4, 12), ty * TILE + rng.between(6, 12), key).setDepth(ty * TILE - 2));
       n--;
     }
   }
 
+  // Geçit yolları kenara kadar uzar (yerleşimden SONRA: tohumlu sıra etkilenmez)
+  gatePathTiles().forEach(([x, y]) => { data[y][x] = T.PATH; layer.putTileAt(T.PATH, x, y); });
+
   paintGround(scene, data, used, buildings);
   placeBushes(scene, data, used, reserved);
+  buildForestEdge(scene);
 
   return {
     map, layer, obstacles, resources, shelter,
@@ -183,7 +237,7 @@ function paintGround(scene, data, used, buildings) {
   const inLake = (px, py) => lake && px >= lake.x - 4 && py >= lake.y - 4 && px < lake.right + 4 && py < lake.bottom + 4;
 
   // 1) Büyük ton lekeleri: karo tekrarını kırar (koyu ve açık, kareli tarama)
-  for (let i = 0; i < 70; i++) {
+  for (let i = 0; i < 150; i++) {
     const cx = rng.between(0, W), cy = rng.between(0, H), rx = rng.between(10, 26), ry = rng.between(7, 16);
     const col = rng.frac() < 0.6 ? '#4a9646' : '#5eab53', th = rng.frac() * 0.25 - 0.3;
     for (let y = -ry; y <= ry; y++) for (let x = -rx; x <= rx; x++) {
@@ -265,7 +319,7 @@ function paintGround(scene, data, used, buildings) {
   // 6) Çiçek kümeleri, ot tutamları ve çakıllar (yalnızca çimde, kaynak karolarından uzak)
   const FL = PAL.flower;
   const freeGrass = (px, py) => onGrass(px, py) && !used.has(`${Math.floor(px / TILE)},${Math.floor(py / TILE)}`) && !inLake(px, py);
-  for (let i = 0; i < 110; i++) {
+  for (let i = 0; i < 240; i++) {
     const cx = rng.between(8, W - 8), cy = rng.between(8, H - 8);
     if (!freeGrass(cx, cy)) continue;
     const a = FL[rng.between(0, FL.length - 1)], b = rng.frac() < 0.4 ? FL[rng.between(0, FL.length - 1)] : a;
@@ -278,13 +332,13 @@ function paintGround(scene, data, used, buildings) {
       else dot(px, py, col);
     }
   }
-  for (let i = 0; i < 260; i++) {
+  for (let i = 0; i < 560; i++) {
     const px = rng.between(2, W - 3), py = rng.between(2, H - 3);
     if (!freeGrass(px, py)) continue;
     dot(px, py, G[2]); dot(px + 2, py, G[2]); dot(px + 1, py + 1, G[2]); dot(px + 1, py, G[4]);
     if (rng.frac() < 0.3) dot(px + 1, py - 1, G[5]);
   }
-  for (let i = 0; i < 70; i++) {
+  for (let i = 0; i < 150; i++) {
     const px = rng.between(2, W - 3), py = rng.between(2, H - 3);
     if (!freeGrass(px, py)) continue;
     dot(px, py, S[4]); dot(px + 1, py, S[3]); dot(px, py + 1, 'rgba(24,20,37,0.3)'); dot(px + 1, py + 1, 'rgba(24,20,37,0.3)');
@@ -293,6 +347,17 @@ function paintGround(scene, data, used, buildings) {
   if (scene.textures.exists('ground_decor')) scene.textures.remove('ground_decor');
   scene.textures.addCanvas('ground_decor', c);
   scene.groundDecor = scene.add.image(0, 0, 'ground_decor').setOrigin(0, 0).setDepth(-9.9);
+  // Sürülen karedeki çim süslerini, çiçekleri ve çalıları kaldır (tarla her yerde açılabilir)
+  scene.clearDecorAt = (tx, ty) => {
+    const tex = scene.textures.get('ground_decor');
+    tex.context?.clearRect(tx * TILE, ty * TILE, TILE, TILE);
+    tex.refresh?.();
+    const inTile = (o) => o.active && Math.floor(o.x / TILE) === tx && Math.floor((o.y - 1) / TILE) === ty;
+    for (const list of [scene.decorFlowers, scene.decorBushes]) {
+      if (!list) continue;
+      for (let i = list.length - 1; i >= 0; i--) if (inTile(list[i])) { list[i].destroy(); list.splice(i, 1); }
+    }
+  };
 }
 
 // Çalılar: evlerin yanlarında ve kırlarda çarpışmasız süs; derinliği tabanına göre sıralanır
@@ -302,15 +367,252 @@ function placeBushes(scene, data, used, reserved) {
   scene.decorBushes = [];
   const add = (x, y) => scene.decorBushes.push(scene.add.image(x, y, 'bush').setDepth(y + 7));
   [[14, 27], [20, 27], [48, 31], [53, 13]].forEach(([tx, ty]) => { add(tx * TILE + 2, ty * TILE + 36); add(tx * TILE + 47, ty * TILE + 38); });
-  let n = 22, tries = 0;
-  while (n > 0 && tries++ < 800) {
+  let n = 48, tries = 0;
+  while (n > 0 && tries++ < 1750) {
     const tx = rng.between(1, MAP_W - 2), ty = rng.between(2, MAP_H - 2);
     if (reserved.some((r) => inRect(tx, ty, r)) || data[ty][tx] > T.GRASS3 || used.has(`${tx},${ty}`)) continue;
+    if (edgeBlocked(tx, ty)) continue;
     if ([[0, 1], [0, -1], [1, 0], [-1, 0]].some(([dx, dy]) => data[ty + dy]?.[tx + dx] === T.PATH)) continue;
     used.add(`${tx},${ty}`);
     add(tx * TILE + rng.between(5, 11), ty * TILE + rng.between(6, 9));
     n--;
   }
+}
+
+// Orman şeridine/geçit yoluna düşen ağaç ve kayayı en yakın boş kareye taşı (rastgele sayı kullanmaz → her açılışta aynı)
+function relocateEdgeResources(resources, data, used, reserved) {
+  // Yalnızca eski alanın kaynakları için çağrılır: eski harita sınırları ve kenar kuralları
+  const free = (tx, ty) => tx >= 0 && ty >= 0 && tx < LW && ty < LH && !legacyEdgeBlocked(tx, ty)
+    && !reserved.some((r) => inRect(tx, ty, r)) && !legacyPath(data, tx, ty) && !used.has(`${tx},${ty}`);
+  resources.getChildren().forEach((r) => {
+    const tx = Math.floor(r.x / TILE), ty = Math.floor(r.y / TILE);
+    if (!legacyEdgeBlocked(tx, ty)) return;
+    let spot = null;
+    for (let d = 1; d <= 5 && !spot; d++) {
+      // Önce içeri (harita merkezine) doğru, sonra çevresine bak
+      const ix = tx < LW / 2 ? 1 : -1, iy = ty < LH / 2 ? 1 : -1;
+      const cands = [[tx + ix * d, ty], [tx, ty + iy * d], [tx + ix * d, ty + iy * d], [tx - ix * d, ty + iy * d], [tx + ix * d, ty - iy * d]];
+      spot = cands.find(([x, y]) => free(x, y)) || null;
+    }
+    // Yedek: halkalar halinde tüm komşu kareler (göl gibi ayrılmış alanların dibinde kalınırsa)
+    for (let d = 1; d <= 8 && !spot; d++) {
+      for (let dy = -d; dy <= d && !spot; dy++) for (let dx = -d; dx <= d && !spot; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) === d && free(tx + dx, ty + dy)) spot = [tx + dx, ty + dy];
+      }
+    }
+    if (!spot) return;
+    const [nx, ny] = spot;
+    used.delete(`${tx},${ty}`);
+    used.add(`${nx},${ny}`);
+    const dx = (nx - tx) * TILE, dy = (ny - ty) * TILE;
+    r.setPosition(r.x + dx, r.y + dy);
+    r.setDepth(r.y + (r.kind === 'tree' ? 11 : 6));
+    const b = r.body;
+    b.x += dx; b.y += dy; // StaticBody x/y ayarlayıcıları statik ağacı da günceller
+    b.updateCenter?.();
+  });
+}
+
+// --- Orman kenarı: görünmez çarpışma şeritleri + tek seferde canvas'a boyanmış sık ağaç tepeleri ---
+function buildForestEdge(scene) {
+  const W = MAP_W * TILE, H = MAP_H * TILE, B = FOREST_PX;
+  const group = scene.physics.add.staticGroup();
+  const block = (x, y, w, h) => {
+    const b = group.create(x + w / 2, y + h / 2, 'px').setVisible(false);
+    b.body.setSize(w, h);
+    b.isForest = true;
+    return b;
+  };
+  // Kenarı geçit boşluklarını atlayarak parçalara böl
+  const along = (side, len) => {
+    const gaps = FOREST_GATES.filter((g) => g.side === side).map(gateSpan).sort((a, b) => a[0] - b[0]);
+    const segs = [];
+    let a = 0;
+    for (const [g0, g1] of gaps) { if (g0 > a) segs.push([a, g0]); a = g1; }
+    if (a < len) segs.push([a, len]);
+    return segs;
+  };
+  along(0, W).forEach(([a, b]) => block(a, 0, b - a, B));
+  along(1, W).forEach(([a, b]) => block(a, H - B, b - a, B));
+  along(2, H).forEach(([a, b]) => block(0, a, B, b - a));
+  along(3, H).forEach(([a, b]) => block(W - B, a, B, b - a));
+
+  makeGateTextures(scene);
+  const gates = FOREST_GATES.map((g) => {
+    const [a0, a1] = gateSpan(g), horiz = g.side < 2;
+    const rect = horiz ? new Phaser.Geom.Rectangle(a0, g.side === 0 ? 0 : H - B, a1 - a0, B) : new Phaser.Geom.Rectangle(g.side === 2 ? 0 : W - B, a0, B, a1 - a0);
+    const body = block(rect.x, rect.y, rect.width, rect.height);
+    body.isGate = g.id;
+    // Kütük yığını geçidin iç ağzında durur
+    const bx = horiz ? rect.centerX : g.side === 2 ? B - 6 : W - B + 6;
+    const by = horiz ? (g.side === 0 ? B - 4 : H - B + 6) : rect.centerY + 4;
+    const img = scene.add.image(bx, by, horiz ? 'forest_gate' : 'forest_gate_v').setDepth(by + 8);
+    return { id: g.id, side: g.side, rect, body, img, open: false };
+  });
+
+  const canopy = paintForest(scene);
+  shadeForestGround(scene);
+
+  scene.forestEdge = {
+    group, gates, canopy,
+    playable: new Phaser.Geom.Rectangle(B, B, W - B * 2, H - B * 2),
+    openGate(id) {
+      const g = gates.find((o) => o.id === id);
+      if (!g || g.open) return false;
+      g.open = true;
+      g.body.destroy();
+      g.img.destroy();
+      return true;
+    }
+  };
+  return scene.forestEdge;
+}
+
+// Geçidi kapatan devrik kütük + diken çalısı (yatay: kuzey/güney, dikey: batı/doğu)
+function makeGateTextures(scene) {
+  const Wd = PAL.wood, L = PAL.leaf;
+  const draw = (key, w, h, vertical) => {
+    if (scene.textures.exists(key)) return;
+    const { c, ctx } = makeCanvas(w, h);
+    const log = (x, y, len) => {
+      if (vertical) {
+        ctx.fillStyle = Wd[2]; ctx.fillRect(x, y, 6, len); ctx.fillStyle = Wd[4]; ctx.fillRect(x, y, 2, len); ctx.fillStyle = Wd[1]; ctx.fillRect(x + 5, y, 1, len);
+        ctx.fillStyle = Wd[5]; ctx.fillRect(x + 1, y, 4, 2); ctx.fillStyle = Wd[3]; ctx.fillRect(x + 2, y, 2, 1);
+      } else {
+        ctx.fillStyle = Wd[2]; ctx.fillRect(x, y, len, 6); ctx.fillStyle = Wd[4]; ctx.fillRect(x, y, len, 2); ctx.fillStyle = Wd[1]; ctx.fillRect(x, y + 5, len, 1);
+        ctx.fillStyle = Wd[5]; ctx.fillRect(x, y + 1, 2, 4); ctx.fillStyle = Wd[3]; ctx.fillRect(x, y + 2, 1, 2);
+      }
+    };
+    const bush = (x, y) => { ctx.fillStyle = L[1]; ctx.fillRect(x - 3, y - 2, 7, 5); ctx.fillStyle = L[3]; ctx.fillRect(x - 2, y - 2, 4, 2); ctx.fillStyle = L[4]; ctx.fillRect(x - 1, y - 2, 1, 1); };
+    if (vertical) { bush(4, 4); bush(14, h - 4); log(3, 4, h - 8); log(10, 2, h - 6); bush(9, h / 2); }
+    else { bush(4, 5); bush(w - 4, 12); log(2, 5, w - 6); log(5, 11, w - 8); bush(w / 2, 4); }
+    scene.textures.addCanvas(key, c);
+  };
+  draw('forest_gate', 32, 20, false);
+  draw('forest_gate_v', 20, 34, true);
+}
+
+// Sık ağaç tepeleri: kuzey şeridi oyuncunun ARKASINDA, güney/batı/doğu şeritleri önünde çizilir
+// (zombiler gölgeli ağaçların altından çıkıyormuş gibi görünür). Ayrı tohum: harita dizilimini etkilemez.
+function paintForest(scene) {
+  const W = MAP_W * TILE, H = MAP_H * TILE, B = FOREST_PX;
+  const rng = new Phaser.Math.RandomDataGenerator(['zombi-ciftlik-orman']);
+  const src = scene.textures.exists('tree') ? scene.textures.get('tree').getSourceImage() : null;
+  // Ağaç çeşitleri: normal, koyu, aynalı
+  const variants = [];
+  if (src) {
+    for (let k = 0; k < 4; k++) {
+      const { c, ctx } = makeCanvas(16, 24);
+      if (k & 1) { ctx.translate(16, 0); ctx.scale(-1, 1); }
+      ctx.drawImage(src, 0, 0);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      if (k >= 2) { ctx.globalCompositeOperation = 'source-atop'; ctx.fillStyle = 'rgba(6,22,16,0.32)'; ctx.fillRect(0, 0, 16, 24); }
+      variants.push(c);
+    }
+  }
+  const BG = '#15301f', DEEP = 'rgba(5,14,10,';
+  const spans = (side) => FOREST_GATES.filter((g) => g.side === side).map(gateSpan);
+  const out = [];
+  const make = (key, x0, y0, w, h, depth, side, fill, plant, grad) => {
+    const { c, ctx } = makeCanvas(w, h);
+    // Zemin: koyu orman tabanı (çim görünmesin)
+    ctx.fillStyle = BG;
+    fill(ctx);
+    // Ağaçlar (taban y'sine göre sıralı → üst üste binen tepeler)
+    const trees = plant().sort((a, b) => a.y - b.y);
+    if (variants.length) trees.forEach((t) => ctx.drawImage(variants[t.v], Math.round(t.x - 8 - x0), Math.round(t.y - 23 - y0)));
+    // Dış kenara doğru koyulaşan gölge (yalnızca boyalı piksellerde)
+    ctx.globalCompositeOperation = 'source-atop';
+    const g = grad(ctx);
+    g.addColorStop(0, `${DEEP}0.72)`); g.addColorStop(0.55, `${DEEP}0.35)`); g.addColorStop(1, `${DEEP}0)`);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'source-over';
+    if (scene.textures.exists(key)) scene.textures.remove(key);
+    scene.textures.addCanvas(key, c);
+    const img = scene.add.image(x0, y0, key).setOrigin(0, 0).setDepth(depth);
+    out.push(img);
+    return img;
+  };
+  const v = (outer) => (outer ? 2 : 0) + rng.between(0, 1);
+
+  // Kuzey (oyuncunun arkasında)
+  const nG = spans(0);
+  const inN = (x) => nG.some(([a, b]) => x > a - 5 && x < b + 5);
+  make('forest_n', 0, 0, W, B + 8, B + 2, 0,
+    (ctx) => { let a = 0; for (const [g0, g1] of nG) { ctx.fillRect(a, 0, g0 - a, B - 6); a = g1; } ctx.fillRect(a, 0, W - a, B - 6); },
+    () => {
+      const t = [];
+      for (let by = 3; by <= B + 3; by += 5) for (let x = rng.between(-6, 0); x < W + 8; x += rng.between(6, 9)) {
+        if (inN(x)) continue;
+        t.push({ x, y: Math.min(B + 3, by + rng.between(-2, 2)), v: v(by < B - 8) });
+      }
+      return t;
+    },
+    (ctx) => ctx.createLinearGradient(0, 0, 0, B + 8));
+
+  // Güney (önde)
+  const sG = spans(1), sy0 = H - B - 26;
+  const inS = (x) => sG.some(([a, b]) => x > a - 5 && x < b + 5);
+  make('forest_s', 0, sy0, W, H - sy0, 8000, 1,
+    (ctx) => { const y = H - B + 8 - sy0; let a = 0; for (const [g0, g1] of sG) { ctx.fillRect(a, y, g0 - a, H); a = g1; } ctx.fillRect(a, y, W - a, H); },
+    () => {
+      const t = [];
+      for (let by = H - B + 22; by <= H + 14; by += 5) for (let x = rng.between(-6, 0); x < W + 8; x += rng.between(6, 9)) {
+        if (inS(x)) continue;
+        t.push({ x, y: by + rng.between(-1, 2), v: v(by > H - 4) });
+      }
+      return t;
+    },
+    (ctx) => ctx.createLinearGradient(0, H - sy0, 0, 0));
+
+  // Batı / doğu (önde)
+  const side = (key, s, x0, w, xs, outerX) => {
+    const G = spans(s);
+    const inG = (y) => G.some(([a, b]) => y > a + 2 && y < b + 20);
+    make(key, x0, 0, w, H, 8000, s,
+      (ctx) => { const fx = s === 2 ? 0 : w - (B - 8); let a = 0; for (const [g0, g1] of G) { ctx.fillRect(fx, a, B - 8, g0 - a); a = g1; } ctx.fillRect(fx, a, B - 8, H - a); },
+      () => {
+        const t = [];
+        for (let by = rng.between(-4, 2); by < H + 22; by += rng.between(5, 7)) {
+          if (inG(by)) continue;
+          xs.forEach((x) => t.push({ x: x + rng.between(-2, 2), y: by + rng.between(-1, 1), v: v(x === outerX) }));
+        }
+        return t;
+      },
+      (ctx) => (s === 2 ? ctx.createLinearGradient(0, 0, w, 0) : ctx.createLinearGradient(w, 0, 0, 0)));
+  };
+  side('forest_w', 2, 0, B + 8, [3, 10, 17, 23], 3);
+  side('forest_e', 3, W - B - 8, B + 8, [W - 3, W - 10, W - 17, W - 23], W - 3);
+  return out;
+}
+
+// Orman kenarının çimene düşen gölgesi (zemin süs canvas'ına; rastgelelik yok)
+function shadeForestGround(scene) {
+  const tex = scene.textures.exists('ground_decor') ? scene.textures.get('ground_decor') : null;
+  const ctx = tex?.context;
+  if (!ctx) return;
+  const W = MAP_W * TILE, H = MAP_H * TILE, B = FOREST_PX, d = 12;
+  const band = (x0, y0, x1, y1, w, h) => {
+    const g = ctx.createLinearGradient(x0, y0, x1, y1);
+    g.addColorStop(0, 'rgba(10,22,16,0.42)'); g.addColorStop(1, 'rgba(10,22,16,0)');
+    ctx.fillStyle = g; ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), w, h);
+  };
+  band(0, B - 2, 0, B + d, W, d + 2);
+  band(0, H - B + 2, 0, H - B - d, W, d + 2);
+  band(B - 2, 0, B + d, 0, d + 2, H);
+  band(W - B + 2, 0, W - B - d, 0, d + 2, H);
+  // Şeridin içi: tamamen koyu orman tabanı
+  ctx.fillStyle = '#15301f';
+  ctx.fillRect(0, 0, W, B - 4); ctx.fillRect(0, H - B + 4, W, B); ctx.fillRect(0, 0, B - 4, H); ctx.fillRect(W - B + 4, 0, B, H);
+  // Geçit ağızları açık kalır (altındaki patika görünsün)
+  FOREST_GATES.forEach((g) => {
+    const [a0, a1] = gateSpan(g);
+    if (g.side === 0) ctx.clearRect(a0, 0, a1 - a0, B);
+    else if (g.side === 1) ctx.clearRect(a0, H - B, a1 - a0, B);
+    else if (g.side === 2) ctx.clearRect(0, a0, B, a1 - a0);
+    else ctx.clearRect(W - B, a0, B, a1 - a0);
+  });
+  tex.refresh?.();
 }
 
 // Kaynak tükendiğinde / yeniden doğduğunda görünüm

@@ -1,7 +1,8 @@
 import { Actor } from './Actor.js';
 import { StateMachine } from '../systems/StateMachine.js';
-import { TILE, FARM_ZONE } from '../config.js';
+import { TILE, ITEMS, CROPS } from '../config.js';
 import { audio } from '../audio.js';
+import { depleteResource } from '../systems/MapBuilder.js';
 
 const BEDTIME = 19 * 60 + 30;
 const WAKE = 6 * 60 + 30;
@@ -26,6 +27,20 @@ function townHungry(s) {
   return !!s.pantry && s.pantry.pantry < 2 * s.npcs.length;
 }
 
+// Cinsiyet: köyün ana NPC'leri sabit; hayatta kalanlar adlarına göre
+const NPC_GENDER = { farmer: 'f', blacksmith: 'f', doctor: 'f', merchant: 'm', guard: 'm', hunter: 'm' };
+export const SURV_NAMES_F = ['Elif', 'Derya', 'Nur', 'Sevgi', 'Leyla', 'Aslı', 'Ece', 'Defne', 'Gül', 'Merve', 'Ebru', 'Pınar', 'Seda', 'Nazlı', 'Hande', 'Yasemin', 'İpek', 'Damla'];
+export const SURV_NAMES_M = ['Ali', 'Hasan', 'Cem', 'Burak', 'Orhan', 'Kerem', 'Mert', 'Emre', 'Can', 'Okan', 'Tolga', 'Serkan', 'Barış', 'Onur', 'Yusuf', 'Efe', 'Arda', 'Kaan'];
+// Eski kayıtlarda geçebilen ama artık dağıtılmayan adlar
+const LEGACY_F = ['Zeynep'];
+// Addan cinsiyet çıkar ("Ali 2" gibi ekli adlar da tanınır); bilinmiyorsa null
+export function genderOfName(name) {
+  const base = String(name || '').split(' ')[0];
+  if (SURV_NAMES_F.includes(base) || LEGACY_F.includes(base)) return 'f';
+  if (SURV_NAMES_M.includes(base)) return 'm';
+  return null;
+}
+
 // Otonom NPC tabanı. Her alt sınıf kendi durum makinesini kurar.
 export class NPC extends Actor {
   constructor(scene, x, y, cfg) {
@@ -33,6 +48,9 @@ export class NPC extends Actor {
     this.key = cfg.key;
     this.npcName = cfg.name;
     this.role = cfg.role;
+    this.gender = cfg.gender || NPC_GENDER[cfg.key] || null; // 'f' | 'm'
+    this.partner = null;                                       // eşinin adı (aile sistemi, town.js)
+    this.lastBaby = 0;                                         // son bebeğin doğduğu gün
     this.speed = cfg.speed || 38;
     this.lines = cfg.lines;
     this.shop = cfg.shop || null;
@@ -128,7 +146,7 @@ export class NPC extends Actor {
     return {
       goShelter: {
         enter: (n) => n.setActivity('🏠'),
-        update: (n) => { if (n.goTo(n.shelter.door.x, n.shelter.door.y)) n.sm.set('sheltered'); }
+        update: (n) => { if (n.goTo(n.shelter.door.x, n.shelter.door.y)) { n.unload?.(); n.sm.set('sheltered'); } }
       },
       sheltered: {
         enter: (n) => { n.hide(); n.setActivity('💤'); },
@@ -143,7 +161,7 @@ export class NPC extends Actor {
       flee: {
         enter: (n) => { n.setActivity('😱'); n.speed *= 1.6; },
         exit: (n) => { n.speed /= 1.6; },
-        update: (n) => { if (n.goTo(n.shelter.door.x, n.shelter.door.y)) n.sm.set('sheltered'); }
+        update: (n) => { if (n.goTo(n.shelter.door.x, n.shelter.door.y)) { n.unload?.(); n.sm.set('sheltered'); } }
       }
     };
   }
@@ -198,7 +216,8 @@ function waterStates() {
   };
 }
 
-const farmRect = () => new Phaser.Geom.Rectangle(FARM_ZONE.x * TILE, FARM_ZONE.y * TILE, FARM_ZONE.w * TILE, FARM_ZONE.h * TILE);
+// Sulayıcıların dolaştığı alan: oyuncunun kurduğu tarla (tarla yoksa açık çayır)
+const farmZone = { get() { return this.scene.farm.area(); }, configurable: true };
 
 // ---------------- Çiftçi: ekinleri sular, tarlada dolaşır ----------------
 export class Farmer extends NPC {
@@ -206,7 +225,7 @@ export class Farmer extends NPC {
     super(scene, x, y, {
       key: 'farmer', name: 'Ayşe', role: 'Çiftçi', texture: 'npc_farmer', speed: 34,
       lines: {
-        day: ['Sulanmayan ekin büyümez, unutma!', 'Buğday en hızlı büyür. Balkabağı sabır ister ama çok para eder.', 'Çapa ile çimi sür, tohumu ek, sonra sula.', 'Senin tarlanı da suluyorum, merak etme.'],
+        day: ['Sulanmayan ekin büyümez, unutma!', 'Buğday en hızlı büyür. Balkabağı sabır ister ama çok para eder.', 'Çapa ile çimi sür, tohumu ek, sonra sula.', 'Senin tarlanı da suluyorum, merak etme.', 'Olgun ekini toplayıp yerine tohum ekerim, ürünü sığınağın kapısına bırakırım.'],
         night: ['Burada ne arıyorsun? İçeri gir!', 'Zombilerin iniltisini duyuyor musun?'],
         lowHp: ['Yüzün bembeyaz olmuş! Bir şeyler ye, sonra konuşuruz.', 'Kanıyorsun… Selin\'e uğra, tarla bekler.'],
         hungry: ['Kiler bomboş… Fazla ürününü sandığa bırakır mısın?', 'Aç karınla kimse nöbet tutamaz. Kileri doldurmalıyız.'],
@@ -215,9 +234,17 @@ export class Farmer extends NPC {
       }
     });
     this.workState = 'tend';
-    this.zone = farmRect();
-    this.sm = new StateMachine(this, { ...this.commonStates(), ...waterStates() }, 'tend');
+    this.carry = {};
+    this.target = null;
+    Object.defineProperty(this, 'zone', farmZone);
+    // Hayatta kalan Çiftçi ile aynı iş döngüsü: sula, hasat et, yeniden ek, ürünü kapıya getir
+    this.sm = new StateMachine(this, { ...this.commonStates(), ...farmhandStates() }, 'tend');
   }
+
+  nearPlayer(r = 160) { const p = this.scene.player; return !!p && Phaser.Math.Distance.Between(p.x, p.y, this.x, this.y) < r; }
+
+  // Taşıdıklarını oyuncuya ver (sığınağa girerken de çağrılır)
+  unload() { deliverCarry(this, '🌾'); }
 }
 
 // ---------------- Tüccar: tezgâhta bekler, meydanda dolaşır ----------------
@@ -614,57 +641,340 @@ export class Hunter extends Fighter {
   }
 }
 
-// ---------------- Hayatta kalan: işe alınınca Sulayıcı veya Nöbetçi olur ----------------
+// ---------------- Hayatta kalan: işe alınınca Çiftçi, Savaşçı, Oduncu veya Madenci olur ----------------
+// İş kimlikleri eski kayıtlarla uyum için korunur: 'waterer' = Çiftçi, 'sentry' = Savaşçı
+export const SURVIVOR_JOBS = {
+  waterer: { name: 'Çiftçi', icon: '🌾' },
+  sentry: { name: 'Savaşçı', icon: '🛡' },
+  lumberjack: { name: 'Oduncu', icon: '🪓' },
+  miner: { name: 'Madenci', icon: '⛏' }
+};
+
 const SURVIVOR_LINES = {
   idle: { day: ['Kasabanız güvenli görünüyor… Bana iş var mı?', 'Günlük 10 altına çalışırım, söz.', 'Uzun zamandır düzgün bir yemek yemedim.'], night: ['İçeri girelim, lütfen!', 'O iniltiler… yine geliyorlar.'] },
-  waterer: { day: ['Tarlayı ben suluyorum, sen rahat ol.', 'Kuru toprak görmeye dayanamıyorum.'], night: ['Sığınakta bekliyorum, sabah tarlaya dönerim.'] },
-  sentry: { day: ['Çevreyi kolluyorum.', 'Mermim azaldıysa haber veririm.'], night: ['Nöbetteyim!', 'Buraya kadar gelemezler!'] }
+  waterer: { day: ['Tarlayı ben suluyorum, olanı da toplarım.', 'Kuru toprak görmeye dayanamıyorum.', 'Hasadı sığınağın kapısına getiriyorum.'], night: ['Sığınakta bekliyorum, sabah tarlaya dönerim.'] },
+  sentry: { day: ['Çevreyi kolluyorum.', 'Mermim azaldıysa haber veririm.'], night: ['Nöbetteyim!', 'Buraya kadar gelemezler!'] },
+  lumberjack: { day: ['Baltam keskin, ormanda ağaç çok.', 'Odunları sığınağın kapısına yığıyorum.', 'Yakındaki ağaçlardan başlıyorum, uzağa gitmem.'], night: ['Gece ormana girilmez. Sabah devam.'] },
+  miner: { day: ['Kayaları kırıp taşı sana getiriyorum.', 'Kazma ağır ama iş görür.', 'Taşsız barikat olmaz!'], night: ['Karanlıkta kazma sallanmaz. Sabah görüşürüz.'] },
+  child: { day: ['Büyüyünce ben de zombi avlayacağım!', 'Saklambaç oynayalım mı?', 'Annem dışarı çok uzağa gitme dedi.'], night: ['Karanlıktan korkuyorum…', 'Sığınakta masal anlatır mısın?'] }
 };
+
+const CARRY_MAX = 6;        // bu kadar taşıyınca kapıya götürür
+const HIT_EVERY = 1.3;      // oduncu/madenci vuruş aralığı (sn)
+
+// Taşınan toplam
+const carryCount = (n) => Object.values(n.carry).reduce((a, b) => a + b, 0);
+const addCarry = (n, id, q) => { if (id && q > 0) n.carry[id] = (n.carry[id] || 0) + q; };
+
+// Taşınanları oyuncuya ver (artan tohumlar dahil) ve kapıda bildir
+function deliverCarry(n, icon) {
+  if (!carryCount(n)) return;
+  const parts = [];
+  Object.entries(n.carry).forEach(([id, q]) => {
+    if (!ITEMS[id] || q <= 0) return;
+    n.scene.giveItem(id, q);
+    parts.push(`${q} ${ITEMS[id].name.toLocaleLowerCase('tr')}`);
+  });
+  n.carry = {};
+  if (!parts.length) return;
+  const d = n.shelter.door;
+  n.scene.spawnParticles(d.x, d.y, 0xffe08a, 6);
+  n.scene.hud.toast(`${icon || '📦'} ${n.npcName} ${parts.join(', ')} getirdi`, 'ok');
+}
+
+// Ekilebilir tohumlar (eşya kimliği → ekin). Özellik modülleri ITEMS/CROPS'a sonradan ekin
+// eklediği için liste her çağrıda kurulur (küçük liste, ucuz).
+const seedIds = () => Object.keys(ITEMS).filter((id) => ITEMS[id].type === 'seed' && CROPS[ITEMS[id].crop]);
+
+// Mevsime uygun tohum seç: önce taşıdığı (hasattan gelen) tohum, yoksa oyuncunun envanteri.
+// pref verilirse o ekinin tohumu öne alınır. Dönüş: { id, from: 'carry' | 'inv' } | null
+function pickSeed(n, pref) {
+  const farm = n.scene.farm, inv = n.scene.inventory;
+  const ids = seedIds().filter((id) => farm.inSeason(ITEMS[id].crop));
+  const pid = pref && `seed_${pref}`;
+  if (pid && ids.includes(pid)) ids.unshift(...ids.splice(ids.indexOf(pid), 1));
+  for (const id of ids) if ((n.carry[id] || 0) > 0) return { id, from: 'carry' };
+  if (inv) for (const id of ids) if (inv.count(id) > 0) return { id, from: 'inv' };
+  return null;
+}
+
+// Kare hâlâ tarlada ve boş mu (oyuncu bu arada ekmiş/kaldırmış olabilir)
+const emptyPlot = (n, p) => !!p && n.scene.farm.get(p.tx, p.ty) === p && !p.crop;
+
+// Yakındaki boş (sürülmüş, ekinsiz) kare
+function nearestEmpty(n) {
+  let best = null, bd = Infinity;
+  for (const p of n.scene.farm.plots.values()) {
+    if (p.crop || claimed(n, p)) continue;
+    const d = Phaser.Math.Distance.Between(n.x, n.y, p.tx * TILE + 8, p.ty * TILE + 4);
+    if (d < bd) { bd = d; best = p; }
+  }
+  return best;
+}
+
+// Başka bir (görünür) NPC bu hedefi zaten seçmiş mi?
+const claimed = (n, t) => n.scene.npcs.some((o) => o !== n && !o.hidden && o.target === t);
+
+// Kapıya yürü, taşıdıklarını oyuncuya ver, işe dön
+function deliverState() {
+  return {
+    deliver: {
+      enter: (n) => { n.setActivity('📦'); n.target = null; },
+      update: (n) => {
+        if (n.civilianChecks()) return;
+        if (!carryCount(n)) { n.sm.set(n.workState); return; }
+        if (n.goTo(n.shelter.door.x, n.shelter.door.y + 6)) { n.unload(); n.sm.set(n.workState); }
+      }
+    }
+  };
+}
+
+// Çiftçi (Ayşe ve hayatta kalan Çiftçi ortak): sular, olgun ekini hasat eder, boşalan/boş kareye
+// mevsime uygun tohum eker (önce taşıdığı tohum, sonra oyuncunun envanteri), ürünü kapıya taşır
+function farmhandStates() {
+  const base = waterStates();
+  return {
+    ...base,
+    ...deliverState(),
+    tend: {
+      enter: (n) => { n.setActivity('🌾'); n.wait = 0; n.goal = null; n.target = null; },
+      update: (n, dt) => {
+        if (n.civilianChecks()) return;
+        const farm = n.scene.farm;
+        const dry = farm.unwatered().filter((p) => !claimed(n, p));
+        if (dry.length) { n.sm.set('goWater', Phaser.Utils.Array.GetRandom(dry)); return; }
+        if (carryCount(n) < CARRY_MAX) {
+          const ripe = farm.ripe().filter((p) => !claimed(n, p));
+          if (ripe.length) {
+            let best = ripe[0], bd = Infinity;
+            ripe.forEach((p) => { const d = Phaser.Math.Distance.Between(n.x, n.y, p.tx * TILE + 8, p.ty * TILE + 4); if (d < bd) { bd = d; best = p; } });
+            n.sm.set('goHarvest', best);
+            return;
+          }
+        }
+        // Sürülmüş ama boş kare + mevsime uygun tohum varsa ek
+        const empty = nearestEmpty(n);
+        if (empty && pickSeed(n)) { n.sm.set('goPlant', empty); return; }
+        if (carryCount(n)) { n.sm.set('deliver'); return; }
+        if (n.wait > 0) { n.wait -= dt; return; }
+        if (!n.goal) n.goal = n.zone.getRandomPoint();
+        if (n.goTo(n.goal.x, n.goal.y)) { n.goal = null; n.wait = Phaser.Math.FloatBetween(1.5, 4); }
+      }
+    },
+    goWater: {
+      enter: (n, plot) => { n.plot = plot; n.target = plot; n.setActivity('💧'); },
+      update: base.goWater.update
+    },
+    goHarvest: {
+      enter: (n, plot) => { n.plot = plot; n.target = plot; n.setActivity('🌾'); },
+      update: (n) => {
+        if (n.civilianChecks()) return;
+        const p = n.plot;
+        if (!p || !n.scene.farm.isRipe(p.tx, p.ty) || n.sm.timeInState > 15) { n.sm.set('tend'); return; }
+        if (n.goTo(p.tx * TILE + 8, p.ty * TILE + 4)) n.sm.set('harvesting');
+      }
+    },
+    harvesting: {
+      enter: (n) => n.setActivity('🧺'),
+      update: (n) => {
+        if (n.sm.timeInState < 0.8) return;
+        const p = n.plot;
+        const type = p?.crop?.type;
+        const r = p && n.scene.farm.harvest(p.tx, p.ty);
+        if (r) {
+          addCarry(n, r.item, r.qty);
+          if (r.seed && r.seedQty) addCarry(n, r.seed, r.seedQty);
+          n.scene.spawnParticles(p.tx * TILE + 8, p.ty * TILE + 8, 0xe8c867, 6);
+          if (n.nearPlayer()) audio.sfx('harvest');
+          // Yeniden büyümeyen ekin: aynı kareye hemen tohum ek (önce aynı türün tohumu)
+          if (emptyPlot(n, p) && pickSeed(n, type)) { n.sm.set('planting', { plot: p, pref: type }); return; }
+        }
+        n.sm.set('tend');
+      }
+    },
+    goPlant: {
+      enter: (n, plot) => { n.plot = plot; n.target = plot; n.setActivity('🌱'); },
+      update: (n) => {
+        if (n.civilianChecks()) return;
+        const p = n.plot;
+        if (!emptyPlot(n, p) || !pickSeed(n) || n.sm.timeInState > 15) { n.sm.set('tend'); return; }
+        if (n.goTo(p.tx * TILE + 8, p.ty * TILE + 4)) n.sm.set('planting', { plot: p });
+      }
+    },
+    planting: {
+      enter: (n, o) => { n.plot = o?.plot || n.plot; n.target = n.plot; n.plantPref = o?.pref || null; n.setActivity('🌱'); },
+      update: (n) => {
+        if (n.civilianChecks()) return;
+        if (n.sm.timeInState < 1) return;
+        const p = n.plot;
+        // Kare bu arada dolduysa / kaldırıldıysa ya da tohum kalmadıysa vazgeç
+        const s = emptyPlot(n, p) && pickSeed(n, n.plantPref);
+        if (s && n.scene.farm.plant(p.tx, p.ty, ITEMS[s.id].crop)) {
+          if (s.from === 'carry') { if (--n.carry[s.id] <= 0) delete n.carry[s.id]; }
+          else n.scene.inventory.remove(s.id, 1);
+          n.scene.spawnParticles(p.tx * TILE + 8, p.ty * TILE + 10, 0x7fbf5a, 5);
+          if (n.nearPlayer()) audio.sfx('plant');
+        }
+        n.sm.set('tend');
+      }
+    }
+  };
+}
+
+// Oduncu / Madenci: en uygun ağacı/kayayı bul, kes/kır, taşı
+function gatherStates(kind) {
+  const item = kind === 'tree' ? 'wood' : 'stone';
+  const icon = kind === 'tree' ? '🪓' : '⛏';
+  return {
+    ...deliverState(),
+    seek: {
+      enter: (n) => { n.setActivity(icon); n.target = null; n.goal = null; n.wait = 0; },
+      update: (n, dt) => {
+        if (n.civilianChecks()) return;
+        if (carryCount(n) >= CARRY_MAX) { n.sm.set('deliver'); return; }
+        if (n.wait > 0) {
+          n.wait -= dt;
+          if (n.goal && n.goTo(n.goal.x, n.goal.y)) n.goal = null;
+          return;
+        }
+        const r = n.findResource(kind);
+        if (r) { n.sm.set('goRes', r); return; }
+        // Kaynak kalmadı: elindekini teslim et, yoksa kampta bekle
+        if (carryCount(n)) { n.sm.set('deliver'); return; }
+        n.setActivity('❔');
+        n.wait = 3;
+        n.goal = { x: n.camp.x + Phaser.Math.Between(-16, 16), y: n.camp.y + Phaser.Math.Between(-8, 8) };
+      }
+    },
+    goRes: {
+      enter: (n, r) => { n.target = r; n.side = Math.random() < 0.5 ? -9 : 9; n.setActivity('🚶'); },
+      update: (n) => {
+        if (n.civilianChecks()) return;
+        const r = n.target;
+        if (!r || !r.active || r.depleted) { n.sm.set('seek'); return; }
+        if (n.sm.timeInState > 25) { n.badRes = r; n.sm.set('seek'); return; } // ulaşılamadı: bunu atla
+        const by = r.y + (kind === 'tree' ? 8 : 2);
+        if (n.goTo(r.x + n.side, by)) { n.setFlipX(n.side > 0); n.sm.set('work', r); }
+      }
+    },
+    work: {
+      enter: (n) => { n.hitCd = HIT_EVERY; n.setActivity(icon); },
+      update: (n, dt) => {
+        if (n.civilianChecks()) return;
+        const r = n.target;
+        if (!r || !r.active || r.depleted) { n.sm.set('seek'); return; }
+        n.hitCd -= dt;
+        if (n.hitCd > 0) return;
+        n.hitCd = HIT_EVERY;
+        r.hits--;
+        n.scene.tweens.add({ targets: r, x: r.x + 1, duration: 40, yoyo: true, repeat: 1 });
+        n.scene.spawnParticles(r.x, r.y + 6, kind === 'tree' ? 0x8a5a3a : 0xa2a6b0, 3);
+        if (n.nearPlayer()) audio.sfx(kind === 'tree' ? 'chop' : 'mine');
+        if (r.hits <= 0) {
+          depleteResource(r);
+          addCarry(n, item, Phaser.Math.Between(2, 4));
+          n.sm.set('seek');
+        }
+      }
+    }
+  };
+}
 
 export class Survivor extends Fighter {
   constructor(scene, x, y, data) {
+    // Cinsiyet: kayıtta varsa o, yoksa addan, o da yoksa rastgele. Kadınların ayrı dokuları var (npc_survf*)
+    const gender = data.gender === 'f' || data.gender === 'm' ? data.gender : genderOfName(data.name) || (Math.random() < 0.5 ? 'f' : 'm');
     super(scene, x, y, {
-      key: 'survivor', name: data.name, role: 'Hayatta Kalan', texture: `npc_surv${data.variant || 0}`, hp: 45, speed: 36,
+      key: 'survivor', name: data.name, role: 'Hayatta Kalan', gender,
+      texture: `npc_surv${gender === 'f' && scene.textures.exists('npc_survf0') ? 'f' : ''}${data.variant || 0}`, hp: 45, speed: 36,
       lines: SURVIVOR_LINES.idle
     });
     this.variant = data.variant || 0;
+    this.parents = Array.isArray(data.parents) ? data.parents.filter((p) => typeof p === 'string').slice(0, 2) : null;
     this.arrived = data.arrived || 1;
     this.slot = data.slot || 0;
-    this.zone = farmRect();
+    this.partner = data.partner || null;           // eşinin adı
+    this.child = Math.max(0, data.child | 0);      // büyümeye kalan gün (0 = yetişkin)
+    this.lastBaby = data.lastBaby || 0;            // son bebeğin doğduğu gün
+    this.carry = {};
+    if (data.carry && typeof data.carry === 'object') Object.entries(data.carry).forEach(([id, q]) => { if (ITEMS[id]) addCarry(this, id, q | 0); });
+    this.target = null;
+    Object.defineProperty(this, 'zone', farmZone);
     const d = scene.shelter.door;
     const posts = [{ x: d.x - 60, y: d.y - 6 }, { x: d.x + 60, y: d.y - 6 }, { x: d.x - 34, y: d.y + 40 }, { x: d.x + 64, y: d.y + 40 }];
     this.post = posts[this.slot % posts.length];
-    this.camp = { x: d.x - 30 + (this.slot % 4) * 20, y: d.y + 74 };
+    this.camp = { x: d.x - 30 + (this.slot % 4) * 20, y: d.y + 74 + Math.floor(this.slot / 4) * 12 };
     this.range = 120;
     this.dmg = 1;
     this.fireRate = 0.9;
     this.projectile = 'bullet';
     this.standIcon = '👁';
-    this.setJob(data.job || null);
+    if (this.child) this.setScale(0.65);
+    this.setJob(this.child ? null : data.job || null);
+  }
+
+  get jobName() { return SURVIVOR_JOBS[this.job]?.name || null; }
+
+  // Oyuncu yakınsa ses çal (uzaktaki işçiler sessiz)
+  nearPlayer(r = 160) { const p = this.scene.player; return !!p && Phaser.Math.Distance.Between(p.x, p.y, this.x, this.y) < r; }
+
+  // Sığınağa yakın, kimsenin seçmediği en uygun kaynak
+  findResource(kind) {
+    const door = this.shelter.door;
+    let best = null, bs = Infinity;
+    this.scene.resources.getChildren().forEach((r) => {
+      if (r.kind !== kind || r.depleted || !r.active || r === this.badRes || claimed(this, r)) return;
+      const s = Phaser.Math.Distance.Between(door.x, door.y, r.x, r.y) + 0.5 * Phaser.Math.Distance.Between(this.x, this.y, r.x, r.y);
+      if (s < bs) { bs = s; best = r; }
+    });
+    if (!best && this.badRes) { this.badRes = null; } // atlanan tek kaynak kaldıysa sonra tekrar dene
+    return best;
+  }
+
+  // Taşıdıklarını oyuncuya ver
+  unload() { deliverCarry(this, SURVIVOR_JOBS[this.job]?.icon); }
+
+  updateRole() {
+    this.role = this.child ? 'Çocuk' : this.jobName || 'Hayatta Kalan';
+  }
+
+  // Çocuk büyüyünce yetişkin olur, işe alınabilir
+  growUp() {
+    this.child = 0;
+    this.setScale(1);
+    this.setJob(null);
   }
 
   setJob(job) {
+    // İş değişirken elindekini teslim etsin (kurulumda değil)
+    if (this.sm && job !== this.job) this.unload();
     this.sm?.current?.exit?.(this);
+    if (this.child || !SURVIVOR_JOBS[job]) job = null;
     this.job = job;
-    this.role = job === 'waterer' ? 'Sulayıcı' : job === 'sentry' ? 'Nöbetçi' : 'Hayatta Kalan';
-    this.lines = SURVIVOR_LINES[job || 'idle'];
+    this.updateRole();
+    this.lines = SURVIVOR_LINES[this.child ? 'child' : job || 'idle'];
     this.goal = null;
     this.wait = 0;
+    this.target = null;
+    this.badRes = null;
     const wasHidden = this.hidden;
     let states, initial;
     if (job === 'waterer') {
-      states = { ...this.commonStates(), ...waterStates() };
+      states = { ...this.commonStates(), ...farmhandStates() };
       initial = 'tend';
     } else if (job === 'sentry') {
       this.stall = this.post;
       this.roam = 30;
       states = { ...this.commonStates(), ...this.fighterStates() };
       initial = 'stand';
+    } else if (job === 'lumberjack' || job === 'miner') {
+      states = { ...this.commonStates(), ...gatherStates(job === 'lumberjack' ? 'tree' : 'rock') };
+      initial = 'seek';
     } else {
       states = {
         ...this.commonStates(),
         idle: {
-          enter: (n) => { n.setActivity('❔'); n.goal = null; n.wait = 0; },
+          enter: (n) => { n.setActivity(n.child ? '🧸' : '❔'); n.goal = null; n.wait = 0; },
           update: (n, dt) => {
             if (n.civilianChecks()) return;
             if (n.wait > 0) { n.wait -= dt; return; }

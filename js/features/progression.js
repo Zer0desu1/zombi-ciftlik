@@ -132,7 +132,7 @@ function addXP(scene, skill, amt, x, y) {
   if (!P || !SKILLS[skill]) return;
   if (P.lv[skill] >= MAX_LV) { checkAch(scene); return; }
   P.xp[skill] += amt;
-  if (x != null) scene.floatText(x, y, `+${amt} XP`, '#c9a7ff');
+  // XP yazısı hedefin üstünde belirip tıklamayı kapatıyordu; ilerleme yalnızca rozette görünür
   while (P.lv[skill] < MAX_LV && P.xp[skill] >= need(P.lv[skill])) {
     P.xp[skill] -= need(P.lv[skill]);
     P.lv[skill]++;
@@ -238,7 +238,7 @@ function toolUse(kind) {
       : ([x, y]) => { const pl = farm.get(x, y); return pl && !pl.watered; };
     tiles = tiles.filter(ok);
     if (!tiles.length) {
-      if (!orig && kind === 'hoe' && !farm.inZone(ctx.tx, ctx.ty)) { audio.sfx('error'); scene.hud.notice('Sadece çitle çevrili tarlada sürebilirsin'); }
+      if (!orig && kind === 'hoe' && !farm.inZone(ctx.tx, ctx.ty)) { audio.sfx('error'); scene.hud.notice('Burası sürülemez (yol, bina, ağaç ya da engel var)'); }
       return;
     }
     // Enerji: ilk kare tam bedel, sonrakiler indirimli; yetmeyen kareler atlanır
@@ -258,7 +258,7 @@ function toolUse(kind) {
 }
 const TOOL_FN = { hoe: toolUse('hoe'), can: toolUse('can') };
 
-function syncTools(scene) {
+function syncTools(scene, render = true) {
   for (const k of ['hoe', 'can']) {
     const lv = scene.prog.tools[k];
     if (lv > 0) {
@@ -271,7 +271,7 @@ function syncTools(scene) {
       if (ORIG[k].onUse) ITEMS[k].onUse = ORIG[k].onUse; else delete ITEMS[k].onUse;
     }
   }
-  scene.hud?.renderHotbar?.();
+  if (render) scene.hud?.renderHotbar?.();
 }
 
 function buyTool(scene, k) {
@@ -374,7 +374,7 @@ function openPanel(scene, tab) {
 function render(scene) {
   const P = scene.prog, body = P.panel;
   if (!body) return;
-  const title = document.querySelector('#modal-feature .feature-title');
+  const title = (scene.hud.e?.feature || document.getElementById('modal-feature'))?.querySelector('.feature-title'); // misafir bağlamında misafirin panel kopyası
   if (title) title.textContent = TITLES[P.tab];
   body.innerHTML = '';
   const tabs = el('div', 'pg-tabs');
@@ -514,12 +514,51 @@ function buildInvBar(scene) {
 }
 
 function updateInvBar(scene) {
-  const P = scene.prog, b = P?.invBag;
-  if (!b) return;
+  const P = scene.prog;
+  // Çok oyunculu: misafir bağlamında hud.e.inv misafirin envanter paneli kopyasıdır
+  const inv = scene.hud?.e?.inv || document.getElementById('modal-inventory');
+  const b = inv?.querySelector('.pg-invbar .accent') || P?.invBag;
+  if (!P || !b) return;
   const up = BAG_UP[P.bag];
   b.textContent = up ? `🎒 Genişlet → ${up.size} slot (${up.coins}🪙)` : `🎒 ${scene.inventory.slots.length} slot (maks)`;
   b.disabled = !up;
-  document.getElementById('modal-inventory')?.classList.toggle('pg-big', scene.inventory.slots.length > INV_SIZE);
+  inv?.classList.toggle('pg-big', scene.inventory.slots.length > INV_SIZE);
+}
+
+// Kalıcı yetenek etkilerinin genel tablo kısmı (satış fiyatı, alet davranışı) — oyuncu bağlamı değişince
+function syncGlobals(scene) {
+  const mul = has(scene, 'f4') ? 1.15 : 1;
+  Object.entries(ORIG.sell).forEach(([id, v]) => {
+    const t = ITEMS[id]?.type;
+    if (t === 'crop' || t === 'food') ITEMS[id].sell = Math.round(v * mul);
+  });
+  syncTools(scene, false);
+}
+
+function serialize(P) {
+  return {
+    xp: { ...P.xp }, lv: { ...P.lv }, points: P.points, skills: [...P.skills], ach: [...P.ach],
+    stats: { ...P.stats }, tools: { ...P.tools }, bag: P.bag
+  };
+}
+
+function loadInto(P, d) {
+  const num = (v, def, lo = 0, hi = Infinity) => (Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : def);
+  for (const k of Object.keys(SKILLS)) {
+    P.lv[k] = Math.floor(num(d.lv?.[k], 1, 1, MAX_LV));
+    P.xp[k] = num(d.xp?.[k], 0);
+  }
+  P.points = Math.floor(num(d.points, 0));
+  P.skills = new Set((d.skills || []).filter((id) => TREE.some((n) => n.id === id)));
+  P.ach = new Set((d.ach || []).filter((id) => ACH.some((a) => a[0] === id)));
+  Object.keys(STAT_DEFAULTS).forEach((k) => {
+    const v = d.stats?.[k];
+    if (typeof STAT_DEFAULTS[k] === 'boolean') P.stats[k] = !!v; else P.stats[k] = num(v, 0);
+  });
+  P.tools.hoe = Math.floor(num(d.tools?.hoe, 0, 0, 2));
+  P.tools.can = Math.floor(num(d.tools?.can, 0, 0, 2));
+  P.bag = Math.floor(num(d.bag, 0, 0, BAG_UP.length));
+  return P;
 }
 
 // ---------------- Modül ----------------
@@ -533,6 +572,7 @@ export default {
     injectCSS('progression', CSS);
     const P = scene.prog = freshState();
     const st = P.stats;
+    const ST = () => scene.prog.stats; // çok oyunculu: misafir bağlamında misafirin istatistikleri
 
     // Rozet (üst bar): toplam seviye + harcanmamış puan; dokununca yetenek paneli
     document.getElementById('prog-badge')?.remove();
@@ -564,17 +604,17 @@ export default {
     };
     scene.input.keyboard?.on('keydown', onKey);
     // GameScene'in temizlemediği (world modülü) olaylar: yalnızca kendi dinleyicilerimizi kaldır
-    const onForage = (id, n) => { st.forage += n || 1; addXP(scene, 'gather', XP.gather); };
-    const onFish = () => { st.forage++; addXP(scene, 'gather', XP.gather); };
+    const onForage = (id, n) => { ST().forage += n || 1; addXP(scene, 'gather', XP.gather); };
+    const onFish = () => { ST().forage++; addXP(scene, 'gather', XP.gather); };
     scene.events.on('foraged', onForage);
     scene.events.on('fishCaught', onFish);
     // Ana hedef, sonsuz mod ve kasaba olayları (director/town modülleri yayar)
-    const bump = (k, v) => { st[k] = Math.max(st[k], v); checkAch(scene); };
+    const bump = (k, v) => { ST()[k] = Math.max(ST()[k], v); checkAch(scene); };
     const onTower = (n) => bump('towerStage', n);
-    const onRescued = () => { st.rescues++; checkAch(scene); };
+    const onRescued = () => { ST().rescues++; checkAch(scene); };
     const onEndless = (n) => bump('endlessNights', n);
     const onHearts = (e) => bump('bestHearts', e?.hearts || 0);
-    const onBoard = () => { st.boardDone++; checkAch(scene); };
+    const onBoard = () => { ST().boardDone++; checkAch(scene); };
     const hooks = { towerBuilt: onTower, rescued: onRescued, endlessNight: onEndless, heartsChanged: onHearts, boardTaskDone: onBoard };
     Object.entries(hooks).forEach(([e, fn]) => scene.events.on(e, fn));
     scene.events.once('shutdown', () => {
@@ -595,7 +635,6 @@ export default {
       // Tohum korunur: çağıran sonra 1 tohum düşeceği için önceden 1 ekle
       if (ok && has(scene, 'f2') && Math.random() < 0.25 && ITEMS[`seed_${type}`]) {
         scene.inventory.add(`seed_${type}`, 1);
-        scene.floatText(tx * TILE + 8, ty * TILE - 2, 'Tohum korundu', '#b8f28a');
       }
       return ok;
     };
@@ -604,7 +643,7 @@ export default {
       const r = oHarvest(tx, ty);
       if (r) {
         if (has(scene, 'f3') && Math.random() < 0.25) r.qty += 1;
-        st.harvests++;
+        ST().harvests++;
         addXP(scene, 'farm', XP.harvest, tx * TILE + 8, ty * TILE - 8);
       }
       return r;
@@ -616,7 +655,7 @@ export default {
       const sel = scene.inventory.slots[scene.selected]?.id;
       if ((id === 'wood' && sel === 'axe') || (id === 'stone' && sel === 'pickaxe')) {
         if (has(scene, id === 'wood' ? 'g1' : 'g2')) n += 1;
-        st[id] += n;
+        ST()[id] += n;
         const p = scene.player;
         addXP(scene, 'gather', XP.gather, p.x, p.y - 20);
         if (has(scene, 'g4') && Math.random() < 0.15) {
@@ -632,31 +671,34 @@ export default {
     const oCoins = p.addCoins.bind(p);
     p.addCoins = (n) => {
       oCoins(n);
-      if (n > 0) st.coinsEarned += n; else if (n < 0) st.coinsSpent -= n;
+      if (n > 0) ST().coinsEarned += n; else if (n < 0) ST().coinsSpent -= n;
       if (n > 0) checkAch(scene);
     };
 
     scene.events.on('zombieKilled', (z) => {
-      st.kills++; st.nightKills++;
-      st.bestNightKills = Math.max(st.bestNightKills, st.nightKills);
+      ST().kills++; ST().nightKills++;
+      ST().bestNightKills = Math.max(ST().bestNightKills, ST().nightKills);
       const boss = z.kind === 'boss' || z.isBoss || z.boss === true;
-      if (boss) st.bosses++; else if (z.kind === 'brute') st.brutes++;
+      if (boss) ST().bosses++; else if (z.kind === 'brute') ST().brutes++;
       addXP(scene, 'combat', boss ? XP.boss : z.kind === 'brute' ? XP.brute : XP.zombie);
       const pl = scene.player;
       if (has(scene, 'c3') && z.reward && Phaser.Math.Distance.Between(z.x, z.y, pl.x, pl.y) < 260) pl.addCoins(Math.ceil(z.reward * 0.5));
       if (has(scene, 'c4') && pl.alive) pl.restore(2, 0);
     });
-    scene.events.on('cropGrew', () => { st.grown++; });
-    scene.events.on('waveStart', () => { st.nightKills = 0; st.diedTonight = false; });
-    scene.events.on('waveEnd', (w) => {
-      st.nights++;
-      st.bestWave = Math.max(st.bestWave, w || 0);
-      if (st.diedTonight) st.streak = 0; else st.streak++;
-      st.bestStreak = Math.max(st.bestStreak, st.streak);
-      st.diedTonight = false;
+    scene.events.on('cropGrew', () => { ST().grown++; });
+    // Dalga olayları her oyuncunun kendi istatistiğine/XP'sine işlesin (çok oyunculu: misafir bağlamlarında da)
+    const each = (fn) => { fn(); scene.net?.eachGuest?.(fn); };
+    scene.events.on('waveStart', () => each(() => { ST().nightKills = 0; ST().diedTonight = false; }));
+    scene.events.on('remotePlayerDied', (pl) => scene.net?.asPlayer?.(pl, () => { ST().deaths++; ST().diedTonight = true; if (!scene.waves.active) ST().streak = 0; }));
+    scene.events.on('waveEnd', (w) => each(() => {
+      ST().nights++;
+      ST().bestWave = Math.max(ST().bestWave, w || 0);
+      if (ST().diedTonight) ST().streak = 0; else ST().streak++;
+      ST().bestStreak = Math.max(ST().bestStreak, ST().streak);
+      ST().diedTonight = false;
       addXP(scene, 'combat', 10 + 5 * (w || 0));
-    });
-    scene.events.on('playerDied', () => { st.deaths++; st.diedTonight = true; if (!scene.waves.active) st.streak = 0; });
+    }));
+    scene.events.on('playerDied', () => { ST().deaths++; ST().diedTonight = true; if (!scene.waves.active) ST().streak = 0; });
     // Oyun sonu ekranına özet ekle (GameScene dinleyicisinden sonra çalışır)
     scene.events.on('shelterFallen', () => {
       const s = document.querySelector('#gameover .stats');
@@ -674,32 +716,53 @@ export default {
     if (scene.prog) scene.prog.stats.playTime += dt;
   },
 
-  save(scene) {
-    const P = scene.prog;
-    return {
-      xp: { ...P.xp }, lv: { ...P.lv }, points: P.points, skills: [...P.skills], ach: [...P.ach],
-      stats: { ...P.stats }, tools: { ...P.tools }, bag: P.bag
-    };
+  // Çok oyunculu: yetenek ağacı, XP, başarımlar, alet/çanta yükseltmeleri oyuncu başına. Misafir eylemleri
+  // bağlam takasıyla misafirin durumunu görür; host kaydında misafirin adına saklanır (netGuests[ad].fs).
+  playerState: {
+    get: (scene) => scene.prog,
+    set: (scene, P) => { scene.prog = P; syncGlobals(scene); },
+    fresh: () => freshState(),
+    save: (P) => serialize(P),
+    load: (_scene, d) => loadInto(freshState(), d || {}),
+    apply: (scene) => {
+      const P = scene.prog;
+      if (P.bag > 0) scene.inventory.resize(BAG_UP[P.bag - 1].size);
+      applyEffects(scene);
+    }
   },
+
+  // Misafirin üst bar rozeti: toplam seviye + harcanmamış puan
+  netPlayerState(scene) {
+    const P = scene.prog;
+    return P ? [P.lv.farm + P.lv.combat + P.lv.gather, P.points] : undefined;
+  },
+  netApplyPlayer(scene, v) {
+    const b = scene.prog?.badge;
+    if (!b || !Array.isArray(v)) return;
+    b.firstChild.textContent = `⭐ ${v[0]}`;
+    b.lastChild.textContent = v[1];
+    b.classList.toggle('pts', v[1] > 0);
+  },
+  guestInit(scene) {
+    // Rozete dokunmak misafirde host'taki yetenek panelini açar
+    const b = scene.prog?.badge;
+    b?.addEventListener('click', (e) => { e.stopImmediatePropagation(); if (!scene.hud.isModalOpen()) scene.featureMenu.find((m) => m.id === 'skills')?.open(scene); }, true);
+  },
+  // Host: misafirin envanter paneli kopyasındaki çanta/sıralama butonları (kopyalama dinleyicileri taşımaz)
+  netCloneHud(scene, e) {
+    const bar = e.inv?.querySelector('.pg-invbar');
+    if (!bar) return;
+    const [sort, bag] = bar.querySelectorAll('button');
+    sort?.addEventListener('click', () => sortBag(scene));
+    bag?.addEventListener('click', () => { buyBag(scene); updateInvBar(scene); });
+  },
+
+  save(scene) { return serialize(scene.prog); },
 
   load(scene, d) {
     const P = scene.prog;
     if (!P || !d || typeof d !== 'object') return;
-    const num = (v, def, lo = 0, hi = Infinity) => (Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : def);
-    for (const k of Object.keys(SKILLS)) {
-      P.lv[k] = Math.floor(num(d.lv?.[k], 1, 1, MAX_LV));
-      P.xp[k] = num(d.xp?.[k], 0);
-    }
-    P.points = Math.floor(num(d.points, 0));
-    P.skills = new Set((d.skills || []).filter((id) => TREE.some((n) => n.id === id)));
-    P.ach = new Set((d.ach || []).filter((id) => ACH.some((a) => a[0] === id)));
-    Object.keys(STAT_DEFAULTS).forEach((k) => {
-      const v = d.stats?.[k];
-      if (typeof STAT_DEFAULTS[k] === 'boolean') P.stats[k] = !!v; else P.stats[k] = num(v, 0);
-    });
-    P.tools.hoe = Math.floor(num(d.tools?.hoe, 0, 0, 2));
-    P.tools.can = Math.floor(num(d.tools?.can, 0, 0, 2));
-    P.bag = Math.floor(num(d.bag, 0, 0, BAG_UP.length));
+    loadInto(P, d);
     if (P.bag > 0) scene.inventory.resize(BAG_UP[P.bag - 1].size);
     // begin() etkileri uygular
   }

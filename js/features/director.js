@@ -10,14 +10,15 @@ import { loadRecords, recordEndlessNight } from '../systems/Records.js';
 // ---------------- Adım adım hedefler ----------------
 const cropsWhere = (s, fn) => { let n = 0; for (const p of s.farm.plots.values()) if (p.crop && fn(p)) n++; return n; };
 const OBJECTIVES = [
-  { id: 'till',      text: 'Çapayla tarlada 3 kare sür',            hint: 'Çapa seçiliyken soldaki çitli tarlaya tıkla', goal: 3, prog: (s) => s.farm.plots.size, reward: 10 },
+  { id: 'till',      text: 'Çapayla tarlada 3 kare sür',            hint: 'Çapa seçip çimenli bir yere tıkla (batıdaki açık çayır ideal)', goal: 3, prog: (s) => s.farm.plots.size, reward: 10 },
   { id: 'plant',     text: '3 tohum ek',                              hint: 'Tohum seçip sürülmüş toprağa tıkla',          goal: 3, prog: (s) => cropsWhere(s, () => true), reward: 10 },
   { id: 'water',     text: 'Ekinlerini sula',                         hint: 'Sulama kabıyla ekili kareye tıkla',           goal: 3, prog: (s) => cropsWhere(s, (p) => p.watered), reward: 10 },
   { id: 'wood',      text: 'Baltayla ağaç kes',                       hint: 'Kasabanın dışındaki ağaçlara git',           goal: 10, prog: (s) => s.inventory.count('wood'), reward: 10 },
+  { id: 'invite',    text: 'Bir hayatta kalanı köye kat',            hint: 'Haritada 💬 olanları davet et, ❗ olanları zombilerden kurtar', goal: 1, prog: (s) => s.settlement?.joinedCount() || 0, reward: 20 },
   { id: 'barricade', text: 'Barikat üret ve yerleştir',               hint: 'Envanter → Üretim → Barikat, sonra sığınağın önüne koy', goal: 1, prog: (s) => s.barricades.countActive(true), reward: 20 },
   { id: 'night1',    text: 'İlk geceyi atlat',                        hint: 'Sığınağı koru; sürüler kenarlardan gelir',    goal: 1, prog: (s) => s.waves.wave - (s.waves.active ? 1 : 0), reward: 25 },
   { id: 'harvest',   text: 'İlk hasadını yap',                        hint: 'Olgun ekine tıkla',                          goal: 1, prog: (s, st) => (st.harvested ? 1 : 0), reward: 15 },
-  { id: 'sell',      text: 'Kemal\'e ürün sat',                       hint: 'Pazar tezgâhındaki Kemal ile konuş → Ticaret → Sat', goal: 1, prog: (s, st) => (st.sold ? 1 : 0), reward: 15 },
+  { id: 'sell',      text: 'Kemal\'e ürün sat',                       hint: 'Kemal ile konuş → Ticaret → Sat (köye gelmediyse doğu yolunun sonunda)', goal: 1, prog: (s, st) => (st.sold ? 1 : 0), reward: 15 },
   { id: 'pantry',    text: 'Kilere yiyecek bağışla',                 hint: 'Sığınak kapısının sağındaki sandık: kasaba toksa savunucular güçlenir', goal: 1, prog: (s) => (s.pantry?.donated > 0 ? 1 : 0), reward: 15 },
   { id: 'meal',      text: 'Gece öncesi bir güç yemeği ye',          hint: 'Ekmek (3 buğday) veya çorba: şafağa kadar savaş güçlendirmesi verir', goal: 1, prog: (s) => (s.pantry?.eaten > 0 ? 1 : 0), reward: 15 },
   { id: 'turret',    text: 'Taret kur',                               hint: 'Taret: 4 odun + 6 taş + 10 mermi (veya Zeynep\'ten al)', goal: 1, prog: (s) => s.turrets.countActive(true), reward: 30 },
@@ -25,7 +26,7 @@ const OBJECTIVES = [
 ];
 
 // Hedef okunun gösterdiği dünya konumu (yoksa null → ok gizlenir)
-const farmCenter = () => ({ x: (FARM_ZONE.x + FARM_ZONE.w / 2) * TILE, y: (FARM_ZONE.y + FARM_ZONE.h / 2) * TILE });
+const farmCenter = (s) => s.farm.center();
 const plotPos = (p) => ({ x: p.tx * TILE + 8, y: p.ty * TILE + 8 });
 function nearest(s, list, pos = (o) => o) {
   let best = null, bd = Infinity;
@@ -35,13 +36,14 @@ function nearest(s, list, pos = (o) => o) {
   }
   return best;
 }
-const npcPos = (s, key) => { const n = s.npcs.find((o) => o.key === key && !o.hidden); return n ? { x: n.x, y: n.y } : null; };
+const npcPos = (s, key) => { const n = [...s.npcs, ...(s.outsiders || [])].find((o) => o.key === key && !o.hidden); return n ? { x: n.x, y: n.y } : null; };
 const doorFront = (s) => ({ x: s.shelter.door.x, y: s.shelter.door.y + 14 });
 const TARGETS = {
   till: farmCenter,
-  plant: (s) => nearest(s, [...s.farm.plots.values()].filter((p) => !p.crop), plotPos) || farmCenter(),
-  water: (s) => nearest(s, s.farm.unwatered(), plotPos) || farmCenter(),
+  plant: (s) => nearest(s, [...s.farm.plots.values()].filter((p) => !p.crop), plotPos) || farmCenter(s),
+  water: (s) => nearest(s, s.farm.unwatered(), plotPos) || farmCenter(s),
   wood: (s) => (s.inventory.count('axe') ? nearest(s, s.resources.getChildren().filter((r) => r.kind === 'tree' && !r.depleted)) : null),
+  invite: (s) => { const n = s.settlement?.nearestOutsider(); return n ? { x: n.x, y: n.y } : null; },
   barricade: doorFront,
   night1: doorFront,
   harvest: (s) => nearest(s, s.farm.ripe(), plotPos),
@@ -202,18 +204,23 @@ function targetPos(s) {
 
 // ---------------- Hedef oku (dünya içi) ----------------
 let guide = null;
+let netTarget = null;
 function makeGuide(s) {
   const arrow = s.add.image(0, 0, 'dr_arrow').setDepth(10003).setVisible(false);
   const dist = s.add.text(0, 0, '', { fontFamily: 'Outfit, sans-serif', fontSize: '6px', color: '#ffd166', stroke: '#000', strokeThickness: 2, resolution: 4 })
     .setOrigin(0.5).setDepth(10003).setVisible(false);
   const pin = s.add.image(0, 0, 'dr_pin').setDepth(10003).setVisible(false);
+  // Yerel (oyuncuya göre) çizim: çok oyunculuda aynalanmaz, her oyuncu kendi okunu görür
+  [arrow, dist, pin].forEach((o) => { o.netSkip = true; });
   guide = { arrow, dist, pin, t: 0 };
 }
 
-function updateGuide(s, dt) {
+function updateGuide(s, dt, netTarget) {
   if (!guide) return;
   const { arrow, dist, pin } = guide;
-  const target = prefs.arrow && s.player.alive ? targetPos(s) : null;
+  // Misafir: hedef konumu host'tan gelir (netTarget), ok kendi karakterinden çizilir
+  const tp = netTarget !== undefined ? netTarget : targetPos(s);
+  const target = prefs.arrow && s.player.alive ? tp : null;
   const p = s.player;
   const d = target ? Phaser.Math.Distance.Between(p.x, p.y, target.x, target.y) : 0;
   const show = !!target && d > 36;
@@ -235,7 +242,7 @@ const TIP_KEY = 'zombi-ciftlik-tips-v1';
 const PREF_KEY = 'zombi-ciftlik-guide-v1';
 const isTouch = () => document.body.classList.contains('is-touch');
 const TIPS = {
-  move: () => (isTouch() ? 'Sol alttaki joystick ile yürü, sağdaki büyük butonla seçili aleti kullan.' : 'WASD / ok tuşlarıyla yürü. Seçili aleti fareyle tıklayarak (ya da Boşluk) kullan. 1–8 ile alet seç.'),
+  move: () => (isTouch() ? 'Joystick (ya da D-pad) ile yürü, büyük eylem butonuyla seçili aleti kullan, ✋ ile etkileş.' : 'WASD / ok tuşlarıyla yürü. Seçili aleti fareyle tıklayarak (ya da Boşluk) kullan. 1–8 ile alet seç.'),
   arrow: () => 'Sarı ok sıradaki hedefi gösteriyor; yanındaki sayı kalan mesafe. Hedefin üstünde de küçük bir işaret var.',
   talk: () => (isTouch() ? 'Yakındaki kişiyle ✋ butonuyla konuş: görev, ticaret ve hediye.' : 'E tuşuyla yakındaki kişiyle konuş: görev, ticaret ve hediye.'),
   dusk: () => 'Hava kararıyor: 20:00\'de zombiler gelir. Sığınağın yakınında ol ve silahını seç.',
@@ -310,7 +317,7 @@ function updateTips(s, dt) {
 function openHelp(s) {
   const touch = isTouch();
   const ctl = touch
-    ? [['Yürü', 'Sol alttaki joystick'], ['Kullan / saldır', 'Sağdaki büyük buton (basılı tut = tekrar, sürükle = nişan)'], ['Konuş / etkileş', '✋ butonu'], ['Envanter', '🎒'], ['Tüm paneller', '☰ menü']]
+    ? [['Yürü', 'Joystick ya da D-pad (Ayarlar → Kontroller)'], ['Kullan / saldır', 'Büyük eylem butonu (basılı tut = tekrar, sürükle = nişan)'], ['Konuş / etkileş', '✋ butonu'], ['Envanter', '🎒'], ['Tüm paneller', '☰ menü']]
     : [['Yürü', 'WASD / Ok tuşları'], ['Kullan / saldır', 'Sol tık veya Boşluk'], ['Alet seç', '1–8 / fare tekerleği'], ['Konuş / etkileş', 'E'], ['Envanter', 'I / Tab'], ['Kaçış', 'Shift'], ['Kaydet', 'K (gündüz)'], ['Yetenek / Başarım', 'L / J'], ['Yardım', 'H']];
   const body = el('div', 'dr-help', `
     <h4>🎯 Amaç</h4>
@@ -442,7 +449,8 @@ export default {
         max-width: min(420px, calc(100vw - 32px)); display: flex; gap: 8px; align-items: flex-start; padding: 8px 8px 8px 12px; border-radius: 12px;
         font-size: 12.5px; line-height: 1.35; opacity: 0; pointer-events: none; transition: opacity .25s, transform .25s;
         background: var(--glass-strong); border: 1px solid rgba(110,182,255,.4); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
-      #dr-tip.show { opacity: 1; transform: translateX(-50%); pointer-events: auto; }
+      #dr-tip.show { opacity: 1; transform: translateX(-50%); }
+      #dr-tip.show .dr-tip-x { pointer-events: auto; }
       body.modal-open #dr-tip.show { opacity: 0; pointer-events: none; }
       #dr-tip span { flex: 1; }
       #dr-tip .dr-tip-x { min-width: 32px; min-height: 32px; padding: 0; flex: none; font-size: 12px; }
@@ -590,7 +598,8 @@ export default {
     const w = scene.waves;
     // Gündüz yavaş iyileşme: bir sonraki geceye tamamen yaralı başlanmasın (hızlı iyileşme için yemek/doktor)
     const p = scene.player;
-    if (!scene.timeSys.isNight && p.alive && p.hp < p.maxHp) p.hp = Math.min(p.maxHp, p.hp + dt * 0.5);
+    // (çok oyunculu: misafir karakterleri de)
+    if (!scene.timeSys.isNight) for (const q of scene.allPlayers ? scene.allPlayers() : [p]) if (q.alive && q.hp < q.maxHp) q.hp = Math.min(q.maxHp, q.hp + dt * 0.5);
     // Gece erken temizlendi → şafağa hızlı ilerle
     if (w.active && !ff && w.toSpawn === 0 && !(w.pending?.length) && scene.zombies.countActive(true) === 0) {
       ff = true;
@@ -624,6 +633,25 @@ export default {
       checkObjectives(scene);
       renderObjective(scene);
     }
+  },
+
+  // Çok oyunculu: hedef kartı ve hedef konumu misafirde (ok misafirin kendi karakterinden)
+  netState(scene) {
+    const box = document.getElementById('dr-objective');
+    const t = targetPos(scene);
+    return { h: box?.innerHTML || '', s: box?.classList.contains('show') ? 1 : 0, t: t ? [Math.round(t.x), Math.round(t.y)] : null };
+  },
+  netApply(scene, v) {
+    const box = document.getElementById('dr-objective');
+    if (!box || !v) return;
+    if (box.innerHTML !== v.h) box.innerHTML = v.h;
+    box.classList.toggle('show', !!v.s);
+    netTarget = v.t ? { x: v.t[0], y: v.t[1] } : null;
+  },
+  guestInit() { if (guide) Object.values(guide).forEach((o) => { if (o && typeof o === 'object') o.netLocal = true; }); },
+  guestUpdate(scene, dt) {
+    updateGuide(scene, dt, netTarget);
+    updateTips(scene, dt);
   },
 
   save() { return { ...st }; },

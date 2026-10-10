@@ -14,11 +14,12 @@ RECIPES.push({ out: 'ammo', qty: 8, cost: { scrap: 2 } });
 RECIPES.push({ out: 'turret', qty: 1, cost: { rare_core: 1, scrap: 4 } });
 
 // Hangi dalgadan itibaren görülür (rehber için)
-const FROM_WAVE = { normal: 1, runner: 2, brute: 3, bloater: 3, spitter: 4, armored: 6, boss: 5 };
+const FROM_WAVE = { normal: 1, runner: 2, brute: 4, bloater: 5, spitter: 6, armored: 8, boss: 5 };
 const LOOT_MAX = 60, MAGNET = 24, LOOT_LIFE = 90;
 const OFF_MAX = 5, OFF_FEW = 5; // ekran dışı işaretçi sayısı / "az kaldı" eşiği
 
-const isBloodNight = (w) => w % 7 === 0 || (w >= 3 && Math.random() < 0.1);
+// Habersiz Kanlı Ay erken gecelerde gelmez
+const isBloodNight = (w) => w % 7 === 0 || (w >= 8 && Math.random() < 0.08);
 
 // ---------- Dokular ----------
 function makeTextures(scene) {
@@ -234,7 +235,7 @@ function openCodex(scene) {
   let head = `<b>${w.active ? `Şu an: Dalga ${w.wave}` : `Sıradaki: Dalga ${w.wave + 1}`}</b>`;
   if (next) head += `<div class="zb-chips" style="display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:4px">${planChips(next)}</div><div style="margin-top:3px;color:#ffd166">⚠ Geliş yönü: ${sideText(next)} · toplam ${planTotal(next)}</div>`;
   else head += '<div style="opacity:.8;margin-top:3px">Keşif raporu saat 19:00\'da gelir.</div>';
-  head += `<div style="margin-top:4px;opacity:.85">🩸 ${next?.blood ? 'Bu gece Kanlı Ay! Zombiler 1.5×, ganimet 2×.' : `Kanlı Ay'a en geç ${toBlood === 7 && !w.active ? 7 : toBlood} gece (bazen habersiz gelir).`}</div>`;
+  head += `<div style="margin-top:4px;opacity:.85">🩸 ${next?.blood ? 'Bu gece Kanlı Ay! Zombiler 1.3×, ganimet 2×.' : `Kanlı Ay'a en geç ${toBlood === 7 && !w.active ? 7 : toBlood} gece (bazen habersiz gelir).`}</div>`;
   head += `<div style="margin-top:4px;opacity:.75">🎒 Zombiler para, hurda, mermi ve nadiren 💜 Nadir Çekirdek düşürür. Yaklaşınca kendiliğinden toplanır.</div>`;
   head += `<div style="margin-top:4px;opacity:.75">⚠ Kırmızı parlayan zombi ısırmak üzere: yuvarlan ya da önce sen vur. 3. geceden itibaren bazıları tarlana ve hayvanlarına, iri zombiler sığınağa yüklenir.</div>`;
   wrap.appendChild(el('div', `zb-head${next?.blood ? ' blood' : ''}`, head));
@@ -308,7 +309,9 @@ function collect(scene, l) {
 }
 
 function updateLoot(scene, dt) {
-  const st = scene.zst, p = scene.player, t = scene.time.now / 1000;
+  const st = scene.zst, t = scene.time.now / 1000;
+  // Çok oyunculu: ganimeti en yakın oyuncu çeker ve alır (misafirse kendi envanterine/altınına)
+  const players = scene.allPlayers ? scene.allPlayers() : [scene.player].filter((x) => x.alive);
   for (let i = st.loot.length - 1; i >= 0; i--) {
     const l = st.loot[i];
     l.life -= dt;
@@ -316,15 +319,21 @@ function updateLoot(scene, dt) {
     if (!l.ready) continue;
     if (l.life < 8) l.img.setVisible(Math.floor(l.life * 6) % 2 === 0);
     if (l.blocked > 0) l.blocked -= dt;
-    const d = p.alive ? Phaser.Math.Distance.Between(p.x, p.y + 4, l.x, l.y) : Infinity;
-    if (!l.mag && d <= MAGNET && !(l.blocked > 0)) { l.mag = true; l.v = 50; }
-    if (l.mag && !p.alive) l.mag = false;
+    let p = l.mag && l.who?.alive ? l.who : null, d = Infinity;
+    if (p) d = Phaser.Math.Distance.Between(p.x, p.y + 4, l.x, l.y);
+    else for (const q of players) {
+      const dq = Phaser.Math.Distance.Between(q.x, q.y + 4, l.x, l.y);
+      if (dq < d) { d = dq; p = q; }
+    }
+    if (!l.mag && p && d <= MAGNET && !(l.blocked > 0)) { l.mag = true; l.v = 50; l.who = p; }
+    if (l.mag && !p) l.mag = false;
     if (l.mag) {
       l.v = Math.min(260, l.v + 500 * dt);
       const a = Math.atan2(p.y + 4 - l.y, p.x - l.x), step = Math.min(d, l.v * dt);
       l.x += Math.cos(a) * step; l.y += Math.sin(a) * step;
       if (d <= 6) {
-        if (collect(scene, l)) { l.img.destroy(); st.loot.splice(i, 1); continue; }
+        const got = scene.net?.asPlayer ? scene.net.asPlayer(p, () => collect(scene, l)) : collect(scene, l);
+        if (got) { l.img.destroy(); st.loot.splice(i, 1); continue; }
         l.mag = false; l.blocked = 3; // envanter dolu: biraz bekle
       }
     }
@@ -475,6 +484,47 @@ export default {
         st.ui.bossFill.style.width = `${Math.max(0, (st.boss.hp / st.boss.maxHp) * 100)}%`;
       }
     }
+  },
+
+  // Çok oyunculu: dalga önizleme kartı, yön okları, patron can barı ve Kanlı Ay tonu misafirde
+  netState(scene) {
+    const st = scene.zst;
+    if (!st) return undefined;
+    const ui = st.ui, card = ui.card.classList.contains('show');
+    return {
+      c: card ? ui.card.innerHTML : '', cb: ui.card.classList.contains('blood') ? 1 : 0,
+      a: ui.arrows.map((a) => (a.classList.contains('show') ? 1 : 0)).join(''),
+      b: st.boss && st.boss.active && !st.boss.dead ? Math.round((st.boss.hp / st.boss.maxHp) * 1000) / 10 : -1,
+      o: Math.round(st.bloodA * 100) / 100
+    };
+  },
+  netApply(scene, v) {
+    const st = scene.zst;
+    if (!st || !v) return;
+    const ui = st.ui;
+    if (ui.card.innerHTML !== v.c) ui.card.innerHTML = v.c;
+    ui.card.classList.toggle('show', !!v.c);
+    ui.card.classList.toggle('blood', !!v.cb);
+    ui.arrows.forEach((a, i) => a.classList.toggle('show', v.a?.[i] === '1'));
+    ui.boss.classList.toggle('show', v.b >= 0);
+    if (v.b >= 0) ui.bossFill.style.width = `${v.b}%`;
+    st.netBlood = v.o || 0;
+    placeTop(ui);
+  },
+  guestInit(scene) {
+    const st = scene.zst;
+    if (!st) return;
+    st.overlay.netLocal = true;
+    // Karta dokunmak host'taki tehdit rehberini açar (yerel plan bilgisi yok)
+    st.ui.card.addEventListener('click', (e) => { e.stopImmediatePropagation(); scene.featureMenu.find((m) => m.id === 'zombies')?.open(scene); }, true);
+  },
+  guestUpdate(scene, dt) {
+    const st = scene.zst;
+    if (!st) return;
+    st.bloodA += ((st.netBlood || 0) - st.bloodA) * Math.min(1, dt * 3);
+    const a = st.bloodA * (1 + Math.sin(scene.time.now / 700) * 0.15);
+    st.overlay.setVisible(a > 0.005).setFillStyle(0x9a0010, a);
+    updateOffscreen(scene); // az zombi kaldığında ekran dışı oklar (vekiller üzerinden)
   },
 
   save(scene) {

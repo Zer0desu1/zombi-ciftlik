@@ -469,6 +469,13 @@ function makeProps(scene) {
     outline(ctx, 0, 0, 16, 16);
     dropShadow(ctx, 8, 15, 7, 0, 0.3);
   });
+  // Dikey dizilen barikat: yukarıdan-önden bakışta tahtalar ileri uzanır, kazıklar üst üste görünür
+  addCanvas(scene, 'barricade_v', 16, 16, (ctx) => {
+    R(ctx, 6, 0, 4, 16, W[3]); R(ctx, 6, 0, 1, 16, W[4]); R(ctx, 9, 0, 1, 16, W[2]);
+    for (const y of [2, 10]) { R(ctx, 5, y, 6, 5, W[2]); R(ctx, 5, y, 6, 1, W[3]); R(ctx, 6, y - 1, 4, 1, '#c8c8d0'); R(ctx, 7, y - 2, 2, 1, '#eef2f5'); }
+    outline(ctx, 0, 0, 16, 16);
+    dropShadow(ctx, 8, 15, 4, 0, 0.3);
+  });
   addCanvas(scene, 'turret', 16, 16, (ctx) => {
     R(ctx, 3, 10, 10, 5, S[2]); R(ctx, 3, 10, 10, 1, S[3]);
     R(ctx, 4, 6, 8, 5, S[3]); R(ctx, 5, 7, 6, 3, S[4]); R(ctx, 5, 6, 3, 1, S[5]);
@@ -536,6 +543,8 @@ export function generateTextures(scene) {
 
 // DOM tarafında ikon göstermek için dataURL önbelleği
 const iconCache = {};
+// Çok oyunculu: uzak panel HTML'inde dataURL'leri kısa anahtarlara çevirmek için (yalnızca okunur)
+export const iconCacheEntries = () => Object.entries(iconCache);
 export function iconURL(scene, key) {
   if (iconCache[key]) return iconCache[key];
   const tex = scene.textures.get(key);

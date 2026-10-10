@@ -8,7 +8,20 @@
 //   update(scene, dt) {},            // Her kare (modal açıkken ÇAĞRILMAZ)
 //   save(scene) { return {...} },    // JSON'a çevrilebilir durum
 //   load(scene, data) {},            // save() çıktısı (yoksa undefined)
+//
+//   // Çok oyunculu (co-op) sözleşmesi — hepsi isteğe bağlı (bkz. net/NetHost.js, net/NetGuest.js):
+//   netState(scene) {}               // host: ortak HUD durumu (JSON, değişince ~4 Hz yayınlanır)
+//   netApply(scene, state) {}        // misafir: netState'i göster (rozet, kart, hava görseli…)
+//   netPlayerState(scene) {}         // host, misafir bağlamında: oyuncuya özel HUD (şarjör, seviye rozeti…)
+//   netApplyPlayer(scene, state) {}  // misafir: kendi HUD'u
+//   playerState: { get, set, fresh, save, load, apply?, tick? } // oyuncu başına kalıcı durum; bağlam takasında
+//                                    // misafirinkiyle değiştirilir, host kaydında misafirin adına saklanır
+//   guestInit(scene) {} / guestUpdate(scene, dt) {} // misafirde yalnızca görsel/yerel kısım (simülasyon host'ta)
+//   netCloneHud(scene, e) {}         // host: misafirin panel kopyasındaki sabit düğmelere dinleyici bağla
 // }
+// Alan hasarı / temas / yakınlık tetikleyicileri yalnızca scene.player'a değil scene.allPlayers()'a bakmalı;
+// misafire ait sonuç (ödül, envanter) için scene.net?.asPlayer(p, fn). Kozmetik kısa ömürlü nesneler için
+// obj.netFx = true (aynalanmaz; misafir kendisi üretir), konumlu sarsıntı için scene.shakeAt(x, y, r, ms, şiddet).
 //
 // Ortak genişletme noktaları (GameScene üzerinde):
 //   scene.addInteraction(fn)  → fn(scene) {dist, label, run()} | null döndürür; E tuşu / mobil eylem butonu en yakını çalıştırır

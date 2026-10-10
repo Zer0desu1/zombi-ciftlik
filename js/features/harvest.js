@@ -211,6 +211,24 @@ function renderBadge(scene) {
   if (html !== lastBadge) { b.innerHTML = html; lastBadge = html; }
 }
 
+// Misafir: rozet host'tan gelen değerlerle; dokununca host'taki kiler paneli açılır
+const netBadge = { shared: null, buffs: '' };
+function renderNetBadge(scene) {
+  const host = topExtra();
+  if (!host || !netBadge.shared) return;
+  let b = document.getElementById('hv-badge');
+  if (!b) {
+    b = el('button', 'hv-badge');
+    b.id = 'hv-badge';
+    b.title = 'Kiler ve yemek güçlendirmeleri';
+    host.appendChild(b);
+  }
+  b.onclick = () => { if (!scene.hud.isModalOpen()) scene.featureMenu.find((m) => m.id === 'pantry')?.open(scene); };
+  const [pantry, need, icon] = netBadge.shared;
+  const html = `🧺 ${pantry}/${need} ${icon}${netBadge.buffs ? ` ${netBadge.buffs}` : ''}`;
+  if (html !== lastBadge) { b.innerHTML = html; lastBadge = html; }
+}
+
 // ---------------- Zombiler ekinleri çiğner ----------------
 function trample(scene) {
   let hit = null;
@@ -310,7 +328,9 @@ export default {
       S.morale = null;
       scene.morale = forecast(scene);
       for (const p of scene.farm.plots.values()) p.trampled = false;
-      if (S.buffs.length) { S.buffs = []; applyBuffs(scene); scene.hud.toast('Yemek güçlendirmelerinin etkisi geçti. Gece için yeniden ye!', 'info'); }
+      const clear = () => { if (S.buffs.length) { S.buffs = []; applyBuffs(scene); scene.hud.toast('Yemek güçlendirmelerinin etkisi geçti. Gece için yeniden ye!', 'info'); } };
+      clear();
+      scene.net?.eachGuest?.(clear); // misafirlerin kendi güçlendirmeleri
     });
     scene.events.once('shutdown', () => { scene.events.off('waveStart', onWaveStart); document.getElementById('hv-badge')?.remove(); });
   },
@@ -333,6 +353,34 @@ export default {
     if (scene.waves.active) trample(scene);
     renderBadge(scene);
   },
+
+  // Çok oyunculu: kiler ortak; yemek güçlendirmeleri oyuncu başına (misafir bağlamında takas edilir)
+  playerState: {
+    get: () => ({ buffs: S.buffs, appliedHp: S.appliedHp }),
+    set: (scene, v) => {
+      S.buffs = v.buffs; S.appliedHp = v.appliedHp;
+      const sum = (k) => S.buffs.reduce((n, id) => n + (BUFFS[id]?.[k] || 0), 0);
+      if (scene.combat) { scene.combat.buffDmg = sum('dmg'); scene.combat.buffCrit = sum('crit'); }
+    },
+    fresh: () => ({ buffs: [], appliedHp: 0 }),
+    save: (v) => ({ buffs: v.buffs.slice() }),
+    load: (_scene, d) => ({ buffs: Array.isArray(d?.buffs) ? d.buffs.filter((id) => BUFFS[id]).slice(-MAX_BUFFS) : [], appliedHp: 0 }),
+    apply: (scene) => applyBuffs(scene),
+    // Fırın patates: gece can yenileme (misafir karakterinde)
+    tick: (scene, dt) => {
+      const p = scene.player;
+      if (scene.timeSys.isNight && p.alive && S.buffs.includes('baked_potato') && p.hp < p.maxHp) p.hp = Math.min(p.maxHp, p.hp + dt);
+    }
+  },
+
+  // Misafir rozeti: ortak kiler + kendi güçlendirmeleri
+  netState(scene) {
+    const m = scene.timeSys.isNight && S.morale ? S.morale : forecast(scene);
+    return [S.pantry, dailyNeed(scene), m.icon];
+  },
+  netPlayerState() { return S.buffs.map((id) => BUFFS[id].icon).join(' '); },
+  netApply(scene, v) { netBadge.shared = v; renderNetBadge(scene); },
+  netApplyPlayer(scene, v) { netBadge.buffs = v || ''; renderNetBadge(scene); },
 
   save() { return { pantry: S.pantry, donated: S.donated, buffs: S.buffs.slice(), eaten: S.eaten }; },
 

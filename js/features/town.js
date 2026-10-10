@@ -5,7 +5,7 @@ import { ITEMS, RECIPES, SHOPS, QUESTS } from '../config.js';
 import { addCanvas, R, makeHumanoid, basePal, iconURL } from '../textures.js';
 import { audio } from '../audio.js';
 import { injectCSS, el } from '../ui/dom.js';
-import { Survivor } from '../entities/NPC.js';
+import { Survivor, SURVIVOR_JOBS, SURV_NAMES_F, SURV_NAMES_M } from '../entities/NPC.js';
 
 // ---------------- Eşyalar ----------------
 function useHeal(scene, ctx) {
@@ -132,14 +132,27 @@ function nightHelp(scene) {
   REL_KEYS.forEach((key) => {
     if (heartsOf(scene, key) < HELP_HEARTS) return;
     const npc = npcByKey(scene, key);
+    if (!npc) return; // köye katılmamış dost yardım edemez
     const m = NIGHT_HELP[key]?.run(scene);
     if (m && npc) msgs.push(`${npc.npcName} ${m}`);
   });
   if (msgs.length) scene.hud.toast(`♥ Dost yardımı: ${msgs.join(' · ')}`, 'ok');
 }
 
-const SURV_NAMES = ['Ali', 'Elif', 'Hasan', 'Derya', 'Cem', 'Nur', 'Burak', 'Sevgi', 'Orhan', 'Leyla', 'Kerem', 'Aslı'];
-const MAX_SURVIVORS = 4, HIRE_COST = 100, WAGE = 10;
+// Hayatta kalan adları cinsiyete göre NPC.js'te (SURV_NAMES_F / SURV_NAMES_M); ana NPC adlarıyla çakışmaz
+// MAX_SURVIVORS: gelen yetişkin + işe alım sınırı; MAX_POP: doğumlar dahil toplam hayatta kalan nüfusu
+const MAX_SURVIVORS = 4, MAX_POP = 10, HIRE_COST = 100, WAGE = 10;
+// Bebek: ilk bebek için bekleme yok (doğum yalnızca şafakta, yani eşleşmeden sonraki ilk şafaktan itibaren);
+// sonraki bebekler arasında BABY_GAP gün. Ana NPC'nin eş olabilmesi için oyuncuyla MATE_HEARTS kalp dostluk gerekir.
+const BABY_GAP = 4, BABY_CHANCE = 0.4, GROW_DAYS = 3, MATE_HEARTS = 3;
+const JOB_IDS = Object.keys(SURVIVOR_JOBS);
+// Diyalogda işe alma metinleri
+const JOB_THANKS = {
+  waterer: 'Teşekkürler! Tarlayı sular, olanı toplayıp kapına getiririm.',
+  sentry: 'Teşekkürler! Gece nöbeti bende.',
+  lumberjack: 'Teşekkürler! Baltamı kaptım, odunlar yolda.',
+  miner: 'Teşekkürler! Kazmamla taş getiririm.'
+};
 
 // ---------------- Yardımcılar ----------------
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
@@ -312,15 +325,30 @@ function patchHUD(scene) {
 }
 
 // HUD'un bilmediği yeni NPC durumlarının Türkçe adları
-const STATE_NAMES = { clinic: 'klinikte', treat: 'yaralı tedavi ediyor', stand: 'tezgâhta', post: 'nöbette', fight: 'savaşıyor', idle: 'iş bekliyor' };
+const STATE_NAMES = {
+  clinic: 'klinikte', treat: 'yaralı tedavi ediyor', stand: 'tezgâhta', post: 'nöbette', fight: 'savaşıyor', idle: 'iş bekliyor',
+  seek: 'kaynak arıyor', goRes: 'işe gidiyor', work: 'çalışıyor', deliver: 'teslimata gidiyor', goHarvest: 'hasada gidiyor', harvesting: 'hasat ediyor',
+  goPlant: 'ekime gidiyor', planting: 'tohum ekiyor'
+};
+
+// Hayatta kalanlar için duruma göre daha açıklayıcı ad
+function stateName(npc) {
+  const name = npc.sm?.name;
+  if (npc.key === 'survivor') {
+    if (npc.child && name === 'idle') return 'oynuyor';
+    if (npc.job === 'sentry' && name === 'stand') return 'çevreyi kolluyor';
+    if (name === 'work') return npc.job === 'miner' ? 'taş kırıyor' : 'ağaç kesiyor';
+  }
+  return STATE_NAMES[name];
+}
 
 function decorateDialog(scene, custom) {
   const hud = scene.hud, npc = hud.npc, d = hud.e.dialog;
   if (!npc) return;
   const body = d.querySelector('.dlg-body') || d;
-  const st = STATE_NAMES[npc.sm?.name];
+  const st = stateName(npc);
   const roleEl = body.querySelector('.npc-role');
-  if (st && roleEl) roleEl.textContent = `${npc.role} · ${npc.key === 'survivor' && npc.job === 'sentry' && npc.sm.name === 'stand' ? 'çevreyi kolluyor' : st}`;
+  if (st && roleEl) roleEl.textContent = `${npc.role} · ${st}`;
   let row = body.querySelector('.town-hearts');
   if (!row) {
     row = el('div', 'town-hearts');
@@ -334,10 +362,11 @@ function decorateDialog(scene, custom) {
     const r = relOf(scene, npc.key), h = heartsOf(scene, npc.key), day = today(scene);
     const disc = discount(scene, npc.key);
     row.style.display = '';
-    row.innerHTML = `${heartsHTML(h)} <span class="th-meta">${h}/10 · 💬${r.talk === day ? '✓' : '—'} 🎁${r.gift === day ? '✓' : '—'}${disc && npc.shop ? ` · -%${Math.round(disc * 100)}` : ''}</span>`;
+    const fam = familyMeta(scene, npc);
+    row.innerHTML = `${heartsHTML(h)} <span class="th-meta">${h}/10 · 💬${r.talk === day ? '✓' : '—'} 🎁${r.gift === day ? '✓' : '—'}${disc && npc.shop ? ` · -%${Math.round(disc * 100)}` : ''}${fam ? ` · ${fam}` : ''}</span>`;
   } else if (npc.key === 'survivor') {
     row.style.display = '';
-    row.innerHTML = `<span class="th-meta">${npc.job ? `İşe alındı · günlük maaş ${WAGE}🪙` : `İşe alınabilir · ${HIRE_COST}🪙 + günlük ${WAGE}🪙`}</span>`;
+    row.innerHTML = `<span class="th-meta">${survivorMeta(npc, scene)}</span>`;
   } else { row.style.display = 'none'; return; }
 
   if (custom || !opts) return;
@@ -363,22 +392,149 @@ function decorateDialog(scene, custom) {
       hud.renderDialog('İşte, turp gibisin! Dikkatli ol dışarıda.');
     }, 'accent');
   }
-  if (npc.key === 'survivor') {
+  if (npc.key === 'survivor' && !npc.child) {
     if (!npc.job) {
-      add(`💧 Sulayıcı yap (${HIRE_COST}🪙)`, () => hire(scene, npc, 'waterer'), 'accent');
-      add(`🛡 Nöbetçi yap (${HIRE_COST}🪙)`, () => hire(scene, npc, 'sentry'), 'accent');
+      JOB_IDS.forEach((j) => add(`${SURVIVOR_JOBS[j].icon} ${SURVIVOR_JOBS[j].name} yap (${HIRE_COST}🪙)`, () => hire(scene, npc, j), 'accent'));
     } else {
-      const other = npc.job === 'waterer' ? 'sentry' : 'waterer';
-      add(other === 'sentry' ? '🔁 Nöbetçi olsun' : '🔁 Sulayıcı olsun', () => { npc.setJob(other); hud.renderDialog(npc.talkLine()); });
+      JOB_IDS.filter((j) => j !== npc.job).forEach((j) => add(`🔁 ${SURVIVOR_JOBS[j].icon} ${SURVIVOR_JOBS[j].name} olsun`, () => { npc.setJob(j); hud.renderDialog(npc.talkLine()); }));
       add('👋 İşten çıkar', () => { npc.setJob(null); hud.renderDialog('Anlıyorum… Yine de burada kalabilir miyim?'); }, 'ghost');
     }
   }
+  if (canMarry(npc) && !npc.partner) add('💞 Eş bul', () => {
+    const { mate, reason } = findMate(scene, npc);
+    if (!mate) { hud.renderDialog(reason); return; }
+    pair(scene, npc, mate);
+    hud.renderDialog(`${mate.npcName} ile birlikte olmak beni çok mutlu ediyor. Burada bir yuva kurabiliriz.`);
+  });
+}
+
+// Diyalog/ilişkiler panelinde hayatta kalan özeti
+function survivorMeta(s, scene) {
+  const parts = [];
+  if (s.child) parts.push(`Çocuk · ${s.child} gün sonra büyüyecek`);
+  else parts.push(s.job ? `İşe alındı · günlük maaş ${WAGE}🪙` : `İşe alınabilir · ${HIRE_COST}🪙 + günlük ${WAGE}🪙`);
+  if (s.child && s.parents?.length) parts.push(`Ailesi: ${s.parents.join(' & ')}`);
+  const fam = scene ? familyMeta(scene, s) : (s.partner ? `Eşi: ${s.partner}` : '');
+  if (fam) parts.push(fam);
+  return parts.join(' · ');
+}
+
+// ---------------- Aile ----------------
+// Köydekiler scene.npcs'te, katılmamışlar scene.outsiders'ta (settlement). Eş bağı ad ile tutulur (adlar benzersiz).
+const people = (scene) => [...scene.npcs, ...(scene.outsiders || [])];
+const partnerOf = (scene, s) => (s.partner ? scene.npcs.find((o) => o !== s && o.npcName === s.partner) || null : null);
+const canMarry = (n) => (n.key === 'survivor' || !!REL[n.key]) && !n.child && !n.outsider && (n.gender === 'f' || n.gender === 'm');
+const GENDER_WORD = { f: 'kadın', m: 'erkek' };
+
+// Kiler sistemi kullanılıyorsa (en az bir bağış yapılmışsa) ve kiler günlük ihtiyacı karşılamıyorsa kasaba aç sayılır.
+// Kiler hiç kullanılmadıysa bebek için engel sayılmaz.
+function pantryShort(scene) {
+  const P = scene.pantry;
+  if (!P || !(P.donated > 0)) return null;
+  const need = 2 * scene.npcs.length;
+  return P.pantry < need ? { have: P.pantry, need } : null;
+}
+
+// Çiftin neden bebek düşünmediği (null = engel yok)
+function babyBlock(scene, a) {
+  const b = partnerOf(scene, a);
+  if (!b) return `${a.partner} köyde olmadığı için bebek düşünmüyoruz`;
+  const pop = survivors(scene).length;
+  if (pop >= MAX_POP) return `Köy çok kalabalık (${pop}/${MAX_POP}), şimdilik bebek düşünmüyoruz`;
+  const last = Math.max(a.lastBaby || 0, b.lastBaby || 0), day = today(scene);
+  if (last && day - last < BABY_GAP) return `Bebeğimiz daha çok küçük; ${BABY_GAP - (day - last)} gün sonra yeniden düşünürüz`;
+  const short = pantryShort(scene);
+  if (short) return `Kiler boş olduğu için bebek düşünmüyoruz (kiler ${short.have}/${short.need}, günlük ihtiyacı karşılamalı)`;
+  return null;
+}
+
+// Diyalogda eş + bebek durumu
+function familyMeta(scene, n) {
+  if (!n.partner) return '';
+  const block = babyBlock(scene, n);
+  return `💞 Eşi: ${n.partner} · 👶 ${block || `Bir bebek düşünüyoruz (her şafak %${Math.round(BABY_CHANCE * 100)} şans)`}`;
+}
+
+// Karşı cinsten, eşi olmayan, köydeki en yakın yetişkin (ana NPC'ler dahil; onlar için oyuncuyla MATE_HEARTS♥ gerekir)
+function findMate(scene, s) {
+  if (REL[s.key] && heartsOf(scene, s.key) < MATE_HEARTS) {
+    return { mate: null, reason: `Seni daha yakından tanımadan böyle şeyleri konuşmam. (Dostluğunuz en az ${MATE_HEARTS}♥ olmalı)` };
+  }
+  const want = s.gender === 'f' ? 'm' : 'f', word = GENDER_WORD[want];
+  const adults = scene.npcs.filter((o) => o !== s && o.gender === want && canMarry(o));
+  if (!adults.length) return { mate: null, reason: `Köyde hiç ${word} yok… Belki ileride biri gelir.` };
+  const free = adults.filter((o) => !o.partner);
+  if (!free.length) return { mate: null, reason: `Köyde eşi olmayan bir ${word} yok. Belki ileride…` };
+  const ok = free.filter((o) => !REL[o.key] || heartsOf(scene, o.key) >= MATE_HEARTS);
+  if (!ok.length) return { mate: null, reason: `${free.map((o) => o.npcName).join(', ')} ile tanışmak isterdim ama önce senin onunla dostluğun en az ${MATE_HEARTS}♥ olmalı.` };
+  let best = null, bd = Infinity;
+  ok.forEach((o) => {
+    const d = Phaser.Math.Distance.Between(s.x, s.y, o.x, o.y);
+    if (d < bd) { bd = d; best = o; }
+  });
+  return { mate: best, reason: '' };
+}
+
+function pair(scene, a, b) {
+  a.partner = b.npcName;
+  b.partner = a.npcName;
+  audio.sfx('quest');
+  scene.spawnParticles(a.x, a.y - 8, 0xff8fb0, 8);
+  scene.spawnParticles(b.x, b.y - 8, 0xff8fb0, 8);
+  scene.hud.toast(`💞 ${a.npcName} ve ${b.npcName} artık bir çift!`, 'ok');
+}
+
+// Eşi artık hiçbir yerde olmayan (ayrılmış/silinmiş) kişinin eş bilgisini temizle
+function fixPartners(scene) {
+  const all = people(scene);
+  all.forEach((s) => { if (s.partner && !all.some((o) => o !== s && o.npcName === s.partner)) s.partner = null; });
+}
+
+// Cinsiyete uygun, kimsenin kullanmadığı bir ad (liste biterse "Ali 2" gibi)
+function freshName(scene, gender) {
+  const taken = new Set(people(scene).map((n) => n.npcName));
+  const list = gender === 'f' ? SURV_NAMES_F : SURV_NAMES_M;
+  const free = list.filter((n) => !taken.has(n));
+  if (free.length) return pick(free);
+  for (let i = 2; i < 999; i++) { const n = `${pick(list)} ${i}`; if (!taken.has(n)) return n; }
+  return `${list[0]} ${Date.now() % 1000}`;
+}
+
+// Şafakta: çocuklar büyür, engeli olmayan çiftlere bebek doğabilir (ana NPC çiftleri dahil; bebek hep hayatta kalan çocuk olur)
+function familyDawn(scene) {
+  const day = today(scene);
+  survivors(scene).forEach((s) => {
+    if (!s.child) return;
+    s.child--;
+    if (!s.child) {
+      s.arrived = day; // işsiz ayrılma sayacı büyüdüğü günden başlar
+      s.growUp();
+      scene.hud.toast(`🎉 ${s.npcName} büyüdü! Artık işe alınabilir.`, 'ok');
+    }
+  });
+  const seen = new Set();
+  scene.npcs.slice().forEach((a) => {
+    if (!a.partner || seen.has(a)) return;
+    const b = partnerOf(scene, a);
+    if (!b) return;
+    seen.add(a); seen.add(b);
+    if (babyBlock(scene, a)) return;
+    if (Math.random() >= BABY_CHANCE) return;
+    const gender = Math.random() < 0.5 ? 'f' : 'm';
+    const name = freshName(scene, gender);
+    const [mom, dad] = a.gender === 'f' ? [a, b] : [b, a];
+    const baby = spawnSurvivor(scene, { name, gender, variant: rand(0, 2), job: null, arrived: day, child: GROW_DAYS, parents: [mom.npcName, dad.npcName] }, false);
+    a.lastBaby = b.lastBaby = day;
+    scene.spawnParticles(baby.x, baby.y - 6, 0xff8fb0, 10);
+    audio.sfx('levelup');
+    scene.hud.toast(`👶 ${mom.npcName} ve ${dad.npcName} bir ${gender === 'f' ? 'kız' : 'erkek'} bebek sahibi oldu: ${name}!`, 'ok');
+  });
 }
 
 // ---------------- Hayatta kalanlar ----------------
 function freeSlot(scene) {
   const used = new Set(survivors(scene).map((s) => s.slot));
-  for (let i = 0; i < MAX_SURVIVORS; i++) if (!used.has(i)) return i;
+  for (let i = 0; i < MAX_POP; i++) if (!used.has(i)) return i;
   return 0;
 }
 const survivors = (scene) => scene.npcs.filter((n) => n.key === 'survivor');
@@ -389,9 +545,14 @@ function spawnSurvivor(scene, data, announce) {
   const s = new Survivor(scene, d.x - 30 + (slot % 4) * 20, d.y + 74, { ...data, slot });
   scene.npcs.push(s);
   if (announce) {
+    // Yeni gelen köye kendiliğinden girmez: haritada bekler, davet edilir ya da kurtarılır (settlement)
+    const rec = scene.settlement?.strand(s);
     s.setAlpha(0);
     scene.tweens.add({ targets: s, alpha: 1, duration: 600 });
-    scene.hud.toast(`Hayatta kalan ${s.npcName} kasabaya sığındı! Konuşup işe alabilirsin.`, 'ok');
+    if (rec) scene.hud.toast(rec.mode === 'rescue'
+      ? `📻 Telsizden yardım çağrısı: ${s.npcName} zombilerin arasında mahsur! Haritada ❗ olarak görünüyor.`
+      : `👣 ${s.npcName} adında bir hayatta kalan köyün yakınlarında dolaşıyor. Bulup davet edebilirsin.`, 'info');
+    else scene.hud.toast(`Hayatta kalan ${s.npcName} kasabaya sığındı! Konuşup işe alabilirsin.`, 'ok');
   }
   return s;
 }
@@ -400,10 +561,12 @@ function removeSurvivor(scene, s) {
   const i = scene.npcs.indexOf(s);
   if (i >= 0) scene.npcs.splice(i, 1);
   s.destroy();
+  fixPartners(scene);
 }
 
 function hire(scene, s, job) {
   const p = scene.player, hud = scene.hud;
+  if (s.child) { hud.toast(`${s.npcName} daha çocuk, çalışamaz`, 'warn'); return false; }
   if (s.job) { s.setJob(job); return true; }
   if (survivors(scene).filter((o) => o.job).length >= MAX_SURVIVORS) { hud.toast('Daha fazla yardımcı alamazsın', 'warn'); return false; }
   if (p.coins < HIRE_COST) {
@@ -415,20 +578,20 @@ function hire(scene, s, job) {
   p.addCoins(-HIRE_COST);
   s.setJob(job);
   audio.sfx('quest');
-  hud.toast(`${s.npcName} artık ${job === 'waterer' ? 'Sulayıcı' : 'Nöbetçi'}!`, 'ok');
-  if (hud.modal === 'dialog' && hud.npc === s) hud.renderDialog(job === 'waterer' ? 'Teşekkürler! Tarlayı ben sularım.' : 'Teşekkürler! Gece nöbeti bende.');
+  hud.toast(`${SURVIVOR_JOBS[job]?.icon || ''} ${s.npcName} artık ${SURVIVOR_JOBS[job]?.name || 'yardımcı'}!`, 'ok');
+  if (hud.modal === 'dialog' && hud.npc === s) hud.renderDialog(JOB_THANKS[job] || 'Teşekkürler!');
   return true;
 }
 
 function maybeSurvivorArrives(scene, wave) {
   if (wave % 3 !== 0) return;
-  if (survivors(scene).length >= MAX_SURVIVORS) return;
+  const adults = survivors(scene).filter((s) => !s.child).length;
+  if (adults + (scene.settlement?.strays() || 0) >= MAX_SURVIVORS || survivors(scene).length >= MAX_POP) return;
   const t = scene.town;
   if (t.everArrived && Math.random() >= 0.6) return; // ilk seferde garanti, sonra %60
   t.everArrived = true;
-  const taken = new Set(survivors(scene).map((s) => s.npcName));
-  const name = pick(SURV_NAMES.filter((n) => !taken.has(n))) || 'Yabancı';
-  spawnSurvivor(scene, { name, variant: rand(0, 2), job: null, arrived: today(scene) }, true);
+  const gender = Math.random() < 0.5 ? 'f' : 'm';
+  spawnSurvivor(scene, { name: freshName(scene, gender), gender, variant: rand(0, 2), job: null, arrived: today(scene) }, true);
 }
 
 // Şafakta maaş öde; ödenemeyen istifa eder, uzun süre işe alınmayan ayrılır
@@ -439,7 +602,8 @@ function payWages(scene) {
     if (s.job) {
       if (p.coins >= WAGE) { p.addCoins(-WAGE); paid += WAGE; }
       else { s.setJob(null); scene.hud.toast(`${s.npcName} maaşını alamadı ve işi bıraktı!`, 'warn'); }
-    } else if (today(scene) - (s.arrived || 0) > 3) {
+    } else if (!s.child && !s.partner && today(scene) - (s.arrived || 0) > 3) {
+      // Çocuklar ve eşi olanlar köye bağlıdır, ayrılmaz
       scene.hud.toast(`${s.npcName} iş bulamadı ve kasabadan ayrıldı.`, 'info');
       removeSurvivor(scene, s);
     }
@@ -505,10 +669,12 @@ function taskProgress(scene, t) {
 }
 
 // Toplama görevleri için envanter farkı takibi
+// Sayım envanter başına tutulur: çok oyunculuda misafir bağlamında scene.inventory misafirin envanteridir
 function syncGather(scene) {
-  const t = scene.town;
-  t.lastCounts = {};
-  ['wood', 'stone'].forEach((id) => { t.lastCounts[id] = scene.inventory.count(id); });
+  const inv = scene.inventory, c = {};
+  ['wood', 'stone'].forEach((id) => { c[id] = inv.count(id); });
+  inv.gatherCounts = c;
+  if (!scene.player?.netRemote) scene.town.lastCounts = c;
 }
 
 function onInventoryChange(scene) {
@@ -517,10 +683,13 @@ function onInventoryChange(scene) {
   const active = t.board.tasks.filter((x) => x.type === 'gather' && x.accepted && !x.done);
   if (!active.length) return;
   let changed = false;
-  for (const id of Object.keys(t.lastCounts || {})) {
-    const now = scene.inventory.count(id);
-    const delta = now - (t.lastCounts[id] || 0);
-    t.lastCounts[id] = now;
+  const inv = scene.inventory;
+  if (!inv.gatherCounts) { if (!scene.player?.netRemote) inv.gatherCounts = t.lastCounts || {}; else { syncGather(scene); return; } }
+  const last = inv.gatherCounts;
+  for (const id of Object.keys(last)) {
+    const now = inv.count(id);
+    const delta = now - (last[id] || 0);
+    last[id] = now;
     if (delta > 0) active.forEach((x) => { if (x.item === id) { x.progress = Math.min(x.amount, x.progress + delta); changed = true; } });
   }
   if (changed) { autoComplete(scene); scene.hud.renderQuests(); }
@@ -612,23 +781,22 @@ function openRelations(scene) {
         `<img class="town-por" src="${iconURL(scene, npc.texKey)}" alt="">
          <div class="town-info"><b>${npc.npcName} <small>${npc.role}</small></b>
          <span class="town-h">${heartsHTML(h)}</span>
-         <span class="town-prog">💬${r.talk === day ? '✓' : '—'} 🎁${r.gift === day ? '✓' : '—'} · Sever: ${loved || '?'} · Sevmez: ${disliked || '?'} · ${nextRewardText(h, !!npc.shop, key)}</span></div>`));
+         <span class="town-prog">${npc.partner ? `💞 ${npc.partner} · ` : ''}💬${r.talk === day ? '✓' : '—'} 🎁${r.gift === day ? '✓' : '—'} · Sever: ${loved || '?'} · Sevmez: ${disliked || '?'} · ${nextRewardText(h, !!npc.shop, key)}</span></div>`));
     });
     const list = survivors(scene);
-    body.appendChild(el('h4', 'town-h4', `Hayatta kalanlar (${list.length}/${MAX_SURVIVORS})`));
-    if (!list.length) body.appendChild(el('p', 'town-sub', 'Her 3 dalgada bir kasabaya hayatta kalanlar gelebilir. İşe alınca tarla sular veya gece nöbet tutarlar.'));
+    body.appendChild(el('h4', 'town-h4', `Hayatta kalanlar (${list.length}/${MAX_POP} · çalışan ${list.filter((s) => s.job).length}/${MAX_SURVIVORS})`));
+    if (!list.length) body.appendChild(el('p', 'town-sub', 'Her 3 dalgada bir kasabaya hayatta kalanlar gelebilir. İşe alınca çiftçi, savaşçı, oduncu ya da madenci olurlar.'));
     list.forEach((s) => {
       const card = el('div', 'town-card',
         `<img class="town-por" src="${iconURL(scene, s.texKey)}" alt="">
          <div class="town-info"><b>${s.npcName} <small>${s.role}</small></b>
-         <span class="town-prog">${s.job ? `Günlük maaş ${WAGE}🪙` : `İşe alım ${HIRE_COST}🪙`}${s.hidden ? ' · sığınakta' : ''}</span></div>`);
+         <span class="town-prog">${survivorMeta(s, scene)}${s.hidden ? ' · sığınakta' : ''}</span></div>`);
       const btns = el('div', 'town-btns');
       const mk = (label, cls, fn) => { const b = el('button', cls, label); b.onclick = () => { audio.sfx('click'); fn(); render(); }; btns.appendChild(b); };
-      if (!s.job) {
-        mk('💧 Sulayıcı', 'accent', () => hire(scene, s, 'waterer'));
-        mk('🛡 Nöbetçi', 'accent', () => hire(scene, s, 'sentry'));
+      if (s.child) { /* çocuklar çalışmaz */ } else if (!s.job) {
+        JOB_IDS.forEach((j) => mk(`${SURVIVOR_JOBS[j].icon} ${SURVIVOR_JOBS[j].name}`, 'accent', () => hire(scene, s, j)));
       } else {
-        mk(s.job === 'waterer' ? '🛡 Nöbetçi yap' : '💧 Sulayıcı yap', '', () => s.setJob(s.job === 'waterer' ? 'sentry' : 'waterer'));
+        JOB_IDS.filter((j) => j !== s.job).forEach((j) => mk(`${SURVIVOR_JOBS[j].icon} ${SURVIVOR_JOBS[j].name}`, '', () => s.setJob(j)));
         mk('Çıkar', 'ghost', () => s.setJob(null));
       }
       card.appendChild(btns);
@@ -640,6 +808,8 @@ function openRelations(scene) {
 }
 
 // ---------------- Dokular ----------------
+// Basit koyulaştırma (#rrggbb)
+const shadeHex = (hex, k = 0.75) => '#' + [1, 3, 5].map((i) => Math.round(parseInt(hex.slice(i, i + 2), 16) * k).toString(16).padStart(2, '0')).join('');
 function makeTextures(scene) {
   // Doktor: beyaz önlük, kırmızı haç
   makeHumanoid(scene, 'npc_doctor', basePal({ H: '#4a2b1a', C: '#eef2f5', D: '#c5d0d8', P: '#3b5b7a' }), (ctx, ox) => {
@@ -657,7 +827,20 @@ function makeTextures(scene) {
     { S: '#c48a64', H: '#d8d0c0', C: '#7a4a6a', D: '#5a3450', P: '#3a3a3a' }
   ];
   sp.forEach((p, i) => makeHumanoid(scene, `npc_surv${i}`, basePal(p), (ctx, ox) => { R(ctx, ox + 5, 10, 1, 1, '#2a1f1a'); R(ctx, ox + 10, 8, 1, 1, '#2a1f1a'); }));
-  ['npc_doctor', 'npc_hunter', 'npc_surv0', 'npc_surv1', 'npc_surv2'].forEach((key) => {
+  // Kadın hayatta kalanlar: omuzlara inen uzun saç, etek ve saç tokası; renkler erkeklerden ayrışır
+  const fp = [
+    { H: '#7a3a1c', C: '#c0607a', D: '#9a4560', P: '#4a3a4a', bow: '#ffd166' },
+    { S: '#e8bf98', H: '#e0c070', C: '#4f9a7a', D: '#3a7a5e', P: '#3a4a5a', bow: '#ff7ab6' },
+    { S: '#b47a56', H: '#1e1a24', C: '#7a64b8', D: '#5c4a94', P: '#3a3040', bow: '#e05a4f' }
+  ];
+  fp.forEach((p, i) => makeHumanoid(scene, `npc_survf${i}`, basePal(p), (ctx, ox) => {
+    R(ctx, ox + 3, 3, 2, 6, p.H); R(ctx, ox + 11, 3, 2, 6, p.H);   // uzun saç
+    R(ctx, ox + 3, 8, 1, 1, shadeHex(p.H)); R(ctx, ox + 12, 8, 1, 1, shadeHex(p.H));
+    R(ctx, ox + 4, 12, 8, 2, p.D); R(ctx, ox + 4, 12, 8, 1, p.C);   // etek
+    R(ctx, ox + 10, 1, 2, 2, p.bow);                                 // toka
+    R(ctx, ox + 5, 10, 1, 1, '#2a1f1a');                             // yama
+  }));
+  ['npc_doctor', 'npc_hunter', 'npc_surv0', 'npc_surv1', 'npc_surv2', 'npc_survf0', 'npc_survf1', 'npc_survf2'].forEach((key) => {
     if (!scene.anims.exists(`${key}_walk`)) scene.anims.create({ key: `${key}_walk`, frames: [{ key, frame: 0 }, { key, frame: 1 }], frameRate: 7, repeat: -1 });
   });
 
@@ -813,9 +996,13 @@ export default {
       scene.events.off('playerDied', onDied);
     });
     scene.inventory.onChange(() => onInventoryChange(scene));
+    // Çok oyunculu: misafirin topladığı odun/taş da toplama ilanlarına sayılır (host misafir bağlamında yayar)
+    scene.events.on('guestInventoryChanged', () => onInventoryChange(scene));
+    scene.events.once('shutdown', () => scene.events.off('guestInventoryChanged'));
     scene.timeSys.on('dawn', () => {
       genBoard(scene);
       payWages(scene);
+      familyDawn(scene);
       const doc = npcByKey(scene, 'doctor');
       if (doc?.treatedTonight) { scene.hud.toast(`Selin gece sığınakta yaralıları ${doc.treatedTonight} kez tedavi etti ✚`, 'info'); doc.treatedTonight = 0; }
       scene.time.delayedCall(2500, () => scene.hud.toast('📋 İlan panosunda yeni görevler var', 'info'));
@@ -827,6 +1014,7 @@ export default {
       scene.town.rel = {};
       REL_KEYS.forEach((k) => relOf(scene, k));
       survivors(scene).forEach((s) => removeSurvivor(scene, s));
+      people(scene).forEach((n) => { n.partner = null; n.lastBaby = 0; });
       scene.town.everArrived = false;
     }
     if (scene.town.board.day !== today(scene) || !scene.town.board.tasks.length) genBoard(scene);
@@ -848,7 +1036,12 @@ export default {
       rel: t.rel,
       board: t.board,
       everArrived: t.everArrived,
-      survivors: survivors(scene).map((s) => ({ name: s.npcName, variant: s.variant, job: s.job || null, arrived: s.arrived, slot: s.slot }))
+      // Ana NPC'lerin eş bilgisi (eş adı + son bebek günü)
+      main: Object.fromEntries(people(scene).filter((n) => REL[n.key] && n.partner).map((n) => [n.key, { partner: n.partner, lastBaby: n.lastBaby || 0 }])),
+      survivors: survivors(scene).map((s) => ({
+        name: s.npcName, gender: s.gender, variant: s.variant, job: s.job || null, arrived: s.arrived, slot: s.slot,
+        partner: s.partner || null, child: s.child || 0, lastBaby: s.lastBaby || 0, carry: s.carry || {}, parents: s.parents || null
+      }))
     };
   },
 
@@ -866,9 +1059,22 @@ export default {
     }
     t.everArrived = !!data.everArrived;
     survivors(scene).forEach((s) => removeSurvivor(scene, s));
-    (data.survivors || []).slice(0, MAX_SURVIVORS).forEach((s) => {
-      if (s && s.name) spawnSurvivor(scene, { name: s.name, variant: s.variant || 0, job: s.job === 'waterer' || s.job === 'sentry' ? s.job : null, arrived: s.arrived || 1, slot: s.slot }, false);
+    const main = data.main && typeof data.main === 'object' ? data.main : {};
+    people(scene).forEach((n) => {
+      if (!REL[n.key]) return;
+      const m = main[n.key];
+      n.partner = m && typeof m.partner === 'string' ? m.partner : null;
+      n.lastBaby = Number(m?.lastBaby) || 0;
     });
+    (data.survivors || []).slice(0, MAX_POP).forEach((s) => {
+      if (!s || !s.name) return;
+      spawnSurvivor(scene, {
+        name: s.name, gender: s.gender, parents: s.parents, variant: s.variant || 0, job: SURVIVOR_JOBS[s.job] ? s.job : null, arrived: s.arrived || 1, slot: s.slot,
+        partner: typeof s.partner === 'string' ? s.partner : null, child: Math.max(0, Number(s.child) || 0), lastBaby: Number(s.lastBaby) || 0,
+        carry: s.carry && typeof s.carry === 'object' ? s.carry : null
+      }, false);
+    });
+    fixPartners(scene);
     syncRecipes(scene);
   }
 };

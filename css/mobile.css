@@ -5,8 +5,8 @@
 body.playing:not(.is-touch) #feature-dock.show { display: flex; }
 /* Bildirimler dock ve mini haritanın altında kalmasın */
 body.playing:not(.is-touch):has(#feature-dock.show) #toasts { right: 72px; }
-body.playing:not(.is-touch):has(#jc-minimap.show) #toasts { top: 172px; }
-body.playing:not(.is-touch):has(#jc-minimap.big.show) #toasts { top: 260px; }
+body.playing:not(.is-touch):has(#jc-minimap.show) #toasts { top: 180px; }
+body.playing:not(.is-touch):has(#jc-minimap.big.show) #toasts { top: 276px; }
 .dock-btn { position: relative; width: 36px; height: 36px; padding: 0; display: grid; place-items: center; font-size: 18px; line-height: 1; border-radius: 9px; }
 .dock-btn img { width: 22px; height: 22px; image-rendering: pixelated; }
 .dock-btn .tip {
@@ -36,6 +36,9 @@ body.is-touch .slot .key { display: none; }
 body.is-touch .slot .count { bottom: 1px; right: 1px; }
 
 /* --- Kontrol katmanı --- */
+/* --mc-s: yan boşluk, --mc-b: kontrollerin alt kenarı (portrede hotbar'ın üstü, yatayda ekran altı) */
+body.is-touch { --mc-s: calc(16px + env(safe-area-inset-left)); --mc-sr: calc(16px + env(safe-area-inset-right)); --mc-b: calc(84px + env(safe-area-inset-bottom)); }
+body.is-touch.landscape { --mc-b: calc(14px + env(safe-area-inset-bottom)); }
 #mobile-ui { display: none; position: absolute; inset: 0; pointer-events: none; }
 body.is-touch.playing:not(.modal-open) #mobile-ui { display: block; }
 body:has(#gameover.show) #mobile-ui { display: none !important; }
@@ -43,55 +46,94 @@ body:has(#gameover.show) #mobile-ui { display: none !important; }
   pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none;
   opacity: var(--mc-alpha, 0.85); color: var(--text); border: 1px solid rgba(255, 255, 255, 0.22);
   background: rgba(18, 22, 32, 0.55); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3); padding: 0; transition: transform 0.08s, background 0.12s;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3); padding: 0; transition: transform 0.08s, background 0.12s, opacity 0.15s;
 }
 #ui .mc-btn:hover:not(:disabled) { background: rgba(18, 22, 32, 0.55); }
 .mc-btn.pressed { transform: scale(0.92); }
 
-/* Joystick: sol alt bölgede ilk dokunuşta belirir (üstü dünyaya dokunarak kullanım için serbest) */
+/* Joystick: taban her zaman görünür (sol alt). Bölgenin herhangi bir yerine dokununca çalışır;
+   yüzen modda taban parmağın altına taşınır, sabit modda yerinde kalır. */
 .mc-joyzone {
-  position: absolute; left: 0; width: 55%; top: 58%;
+  position: absolute; left: 0; width: 52%; top: 46%;
   bottom: calc(76px + env(safe-area-inset-bottom)); pointer-events: auto; touch-action: none;
 }
-/* Yatay telefonda ekran alçak: bölge daha yukarıdan başlar */
-body.landscape .mc-joyzone { top: 28%; width: 42%; }
+/* Yatay telefonda bölge hotbar'a taşmaz (hotbar ortada, iki yanı kontrollere ayrılmış) */
+body.landscape .mc-joyzone { top: 34%; bottom: 0; width: calc(200px + env(safe-area-inset-left)); }
+/* Yatayda co-op paneli sol üstte (hava rozetinin altında); bölge onun altından başlar */
+body.is-touch.landscape:has(#net-panel.show) .mc-joyzone { top: 60%; }
 .mc-joy {
-  position: fixed; width: 112px; height: 112px; transform: translate(-50%, -50%); border-radius: 50%;
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.14));
-  border: 2px solid rgba(255, 255, 255, 0.28); opacity: var(--mc-alpha, 0.85); pointer-events: none;
+  position: fixed; width: 128px; height: 128px; transform: translate(-50%, -50%); border-radius: 50%;
+  left: calc(var(--mc-s) + 72px); top: calc(100% - var(--mc-b) - 72px);
+  background: radial-gradient(circle, rgba(18, 22, 32, 0.2) 40%, rgba(18, 22, 32, 0.45));
+  border: 2px solid rgba(255, 255, 255, 0.5); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 0 0 10px rgba(255, 255, 255, 0.05);
+  opacity: calc(var(--mc-alpha, 0.85) * 0.8); pointer-events: none; transition: opacity 0.15s, border-color 0.15s;
 }
-.mc-joy.idle { left: calc(80px + env(safe-area-inset-left)); top: calc(100% - 166px - env(safe-area-inset-bottom)); opacity: calc(var(--mc-alpha, 0.85) * 0.45); }
+/* İç halka: tabanın merkezi ve sınırı bir bakışta seçilsin */
+.mc-joy::before { content: ''; position: absolute; inset: 24px; border-radius: 50%; border: 1px dashed rgba(255, 255, 255, 0.35); }
+.mc-joy.active { opacity: var(--mc-alpha, 0.85); border-color: rgba(255, 209, 102, 0.85); }
 .mc-knob {
-  position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px; border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.85), rgba(220, 225, 235, 0.55));
+  position: absolute; left: 50%; top: 50%; width: 56px; height: 56px; margin: -28px 0 0 -28px; border-radius: 50%; z-index: 1;
+  background: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.9), rgba(220, 225, 235, 0.6));
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
 }
 
-/* Sağ alt eylem kümesi */
-.mc-cluster { position: absolute; right: calc(16px + env(safe-area-inset-right)); bottom: calc(84px + env(safe-area-inset-bottom)); width: 0; height: 0; }
+/* D-pad (ayarlardan): 3x3 ızgara, 58px tuşlar; 4 yönlüde köşeler gizli */
+.mc-dpad {
+  position: absolute; left: var(--mc-s); bottom: var(--mc-b); display: none;
+  grid-template-columns: repeat(3, 58px); grid-template-rows: repeat(3, 58px); gap: 2px;
+  pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none; opacity: var(--mc-alpha, 0.85);
+}
+body.mv-dpad .mc-dpad { display: grid; }
+body.mv-dpad .mc-joyzone { display: none; }
+.mc-dpad i {
+  display: grid; place-items: center; font-style: normal; font-size: 20px; color: rgba(255, 255, 255, 0.85);
+  background: rgba(18, 22, 32, 0.55); border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25); pointer-events: none;
+}
+.mc-dpad i.d-c { background: rgba(18, 22, 32, 0.3); border-radius: 50%; }
+.mc-dpad i.d-ul, .mc-dpad i.d-ur, .mc-dpad i.d-dl, .mc-dpad i.d-dr { font-size: 14px; border-radius: 50%; }
+body:not(.mv-dpad8) .mc-dpad i.d-ul, body:not(.mv-dpad8) .mc-dpad i.d-ur,
+body:not(.mv-dpad8) .mc-dpad i.d-dl, body:not(.mv-dpad8) .mc-dpad i.d-dr { visibility: hidden; }
+.mc-dpad i.on { background: rgba(255, 209, 102, 0.6); border-color: rgba(255, 209, 102, 0.95); transform: scale(0.94); }
+
+/* Sağ alt eylem kümesi: eylem (80) köşede, etkileşim (68) üstünde, çanta (56) solunda, yuvarlanma çantanın üstünde */
+.mc-cluster { position: absolute; right: var(--mc-sr); bottom: var(--mc-b); width: 0; height: 0; }
 .mc-action {
-  position: absolute; right: 0; bottom: 0; width: 76px; height: 76px; border-radius: 50%;
+  position: absolute; right: 0; bottom: 0; width: 80px; height: 80px; border-radius: 50%;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
   background: radial-gradient(circle at 35% 30%, rgba(255, 220, 140, 0.55), rgba(190, 120, 40, 0.55));
   border: 2px solid rgba(255, 209, 102, 0.75);
 }
 #ui .mc-action:hover:not(:disabled) { background: radial-gradient(circle at 35% 30%, rgba(255, 220, 140, 0.55), rgba(190, 120, 40, 0.55)); }
-.mc-action img { width: 34px; height: 34px; image-rendering: pixelated; pointer-events: none; }
+.mc-action img { width: 36px; height: 36px; image-rendering: pixelated; pointer-events: none; }
 .mc-action.empty img { display: none; }
 .mc-action.empty::before { content: '✊'; font-size: 26px; }
-.mc-action .lb { font-size: 11px; font-weight: 700; text-shadow: 0 1px 2px #000; pointer-events: none; }
+.mc-action .lb { font-size: 12px; font-weight: 700; text-shadow: 0 1px 2px #000; pointer-events: none; max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mc-action.aiming { border-color: var(--red); box-shadow: 0 0 0 4px rgba(235, 87, 87, 0.3); }
-.mc-inv { position: absolute; right: 88px; bottom: 4px; width: 52px; height: 52px; border-radius: 50%; font-size: 22px; }
+.mc-inv { position: absolute; right: 96px; bottom: 0; width: 56px; height: 56px; border-radius: 50%; font-size: 24px; }
+/* Etkileşim: her zaman görünür. Yakında bir şey yoksa soluk; varsa parlak + üstünde etiket balonu */
 .mc-interact {
-  position: absolute; right: 0; bottom: 126px; height: 56px; min-width: 56px; max-width: 230px; border-radius: 28px;
-  display: none; align-items: center; gap: 8px; padding: 0 16px 0 12px; white-space: nowrap;
-  border-color: rgba(110, 224, 110, 0.7); animation: mcPop 0.18s ease;
+  position: absolute; right: 6px; bottom: 96px; width: 68px; height: 68px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid rgba(110, 224, 110, 0.85); box-shadow: 0 0 0 4px rgba(110, 224, 110, 0.18), 0 6px 18px rgba(0, 0, 0, 0.3);
 }
-.mc-interact, #ui .mc-interact:hover:not(:disabled) { background: rgba(40, 110, 60, 0.72); }
-.mc-interact.show { display: flex; }
-.mc-interact .ic { font-size: 22px; }
-.mc-interact .lb { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.mc-interact, #ui .mc-interact:hover:not(:disabled) { background: rgba(40, 120, 60, 0.78); }
+.mc-interact .ic { font-size: 28px; line-height: 1; pointer-events: none; }
+.mc-interact .tag {
+  position: absolute; right: 0; bottom: calc(100% + 8px); max-width: min(62vw, 240px); padding: 5px 11px; border-radius: 12px;
+  background: rgba(30, 90, 45, 0.94); border: 1px solid rgba(110, 224, 110, 0.7); color: #fff;
+  font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35); animation: mcPop 0.18s ease;
+}
+.mc-interact .tag:empty { display: none; }
+.mc-interact.off { opacity: calc(var(--mc-alpha, 0.85) * 0.5); border-color: rgba(255, 255, 255, 0.3); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3); filter: grayscale(0.9); }
+.mc-interact.off, #ui .mc-interact.off:hover:not(:disabled) { background: rgba(18, 22, 32, 0.55); }
+.mc-interact.off .tag { display: none; }
+.mc-interact.off.nudge .tag { display: block; background: rgba(18, 22, 32, 0.92); border-color: rgba(255, 255, 255, 0.3); animation: mcFade 1.4s ease forwards; }
+.mc-interact.off.nudge { animation: mcShake 0.3s ease; }
 @keyframes mcPop { from { transform: scale(0.8); opacity: 0; } }
+@keyframes mcFade { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes mcShake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
 
 .mc-menu {
   position: absolute; top: calc(8px + env(safe-area-inset-top)); right: calc(8px + env(safe-area-inset-right));
@@ -100,16 +142,24 @@ body.landscape .mc-joyzone { top: 28%; width: 42%; }
 .mc-menu .dot { position: absolute; top: 6px; right: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--green); display: none; box-shadow: 0 0 6px var(--green); }
 .mc-menu .dot.show { display: block; }
 
-/* Sol elle oyna: kontroller yer değiştirir */
-body.left-handed .mc-joyzone { left: auto; right: 0; }
-body.left-handed .mc-joy.idle { left: calc(100% - 80px - env(safe-area-inset-right)); }
-body.left-handed .mc-cluster { right: auto; left: calc(16px + env(safe-area-inset-left)); }
-body.left-handed .mc-action, body.left-handed .mc-interact { right: auto; left: 0; }
-body.left-handed .mc-inv { right: auto; left: 88px; }
-body.is-touch.left-handed .cb-dodge { right: auto; left: calc(96px + env(safe-area-inset-left)); }
+/* Diğer modüllerin dokunmatik butonları eylem kümesine hizalanır (çakışmasın); dokunmatik düzen kapalıyken gizli */
+body:not(.is-touch) .cb-dodge { display: none !important; }
+body.is-touch .cb-dodge {
+  width: 56px; height: 56px; font-size: 22px; opacity: var(--mc-alpha, 0.85);
+  right: calc(var(--mc-sr) + 100px); bottom: calc(var(--mc-b) + 72px);
+}
 
-/* Diğer modüllerin dokunmatik butonları eylem kümesine hizalanır (çakışmasın) */
-body.is-touch .cb-dodge { right: calc(96px + env(safe-area-inset-right)); bottom: calc(150px + env(safe-area-inset-bottom)); opacity: var(--mc-alpha, 0.85); }
+/* Sol elle oyna: kontroller aynalanır */
+body.left-handed .mc-joyzone { left: auto; right: 0; }
+body.left-handed.landscape .mc-joyzone { width: calc(200px + env(safe-area-inset-right)); }
+body.left-handed .mc-joy { left: calc(100% - var(--mc-sr) - 72px); }
+body.left-handed .mc-dpad { left: auto; right: var(--mc-sr); }
+body.left-handed .mc-cluster { right: auto; left: var(--mc-s); }
+body.left-handed .mc-action { right: auto; left: 0; }
+body.left-handed .mc-interact { right: auto; left: 6px; }
+body.left-handed .mc-interact .tag { right: auto; left: 0; }
+body.left-handed .mc-inv { right: auto; left: 96px; }
+body.is-touch.left-handed .cb-dodge { right: auto; left: calc(var(--mc-s) + 100px); }
 
 /* --- Hotbar: büyük dokunma hedefleri, yatay kaydırma --- */
 body.is-touch #hotbar {
@@ -121,7 +171,8 @@ body.is-touch .slot { width: 48px; height: 48px; flex-shrink: 0; }
 body.is-touch .slot img { width: 34px; height: 34px; }
 body.is-touch #hotbar .slot.active { transform: none; box-shadow: inset 0 0 0 2px var(--accent); }
 body.is-touch #item-name { bottom: calc(74px + env(safe-area-inset-bottom)); }
-body.is-touch.landscape #hotbar { max-width: calc(100vw - 300px); }
+/* Yatayda hotbar ortada kalır; iki yan joystick/D-pad ve eylem kümesine ayrılır */
+body.is-touch.landscape #hotbar { max-width: calc(100vw - 400px - env(safe-area-inset-left) - env(safe-area-inset-right)); }
 
 /* --- Portre üst bar: 2 satır --- */
 body.is-touch.portrait #hud-top {
@@ -150,14 +201,26 @@ body.is-touch.portrait #hud-top .phase { font-size: 16px; }
 body.is-touch.portrait #hud-top .sub { font-size: 10px; }
 body.is-touch.landscape #hud-top { top: calc(6px + env(safe-area-inset-top)); max-width: calc(100vw - 130px); }
 
+/* --- Yatay: sağ sütun eylem kümesine ayrılır; mini harita ve co-op paneli üst kısımda kalır --- */
+body.is-touch.landscape #jc-minimap { top: calc(var(--hud-h, 56px) + 6px); right: var(--mc-sr); }
+body.is-touch.landscape #jc-minimap.big { width: 132px; height: 88px; }
+/* Etiket balonu sağ sütunda kalsın (üst ortadaki ipucu/hedef kartlarına uzanmasın) */
+body.is-touch.landscape .mc-interact .tag { max-width: 180px; }
+body.is-touch.landscape #net-panel { top: calc(env(safe-area-inset-top, 0px) + 108px); left: var(--mc-s); right: auto; max-height: calc(44vh - 100px); overflow: hidden; }
+body.is-touch.landscape.left-handed #net-panel { left: auto; right: var(--mc-sr); top: calc(var(--hud-h, 56px) + 80px); }
+
 /* --- Bildirimler --- */
 /* Portrede bildirimler üstteki rozet/mini haritayla çakışmasın: başparmak kümesinin üstünde */
-body.is-touch.portrait #toasts { top: auto; bottom: calc(284px + env(safe-area-inset-bottom)); left: 12px; right: 12px; align-items: center; pointer-events: none; }
+body.is-touch.portrait #toasts { top: auto; bottom: calc(304px + env(safe-area-inset-bottom)); left: 12px; right: 12px; align-items: center; pointer-events: none; }
 /* Üst bara yapışan diğer modül öğeleri --hud-h (mobile.js ölçer) altına hizalanır */
 body.is-touch.portrait #wx-badge { top: calc(var(--hud-h, 64px) + 6px); left: calc(8px + env(safe-area-inset-left)); }
 body.is-touch.portrait #jc-minimap { top: calc(var(--hud-h, 64px) + 6px); right: calc(8px + env(safe-area-inset-right)); }
 body.is-touch.portrait .toast { font-size: 12px; padding: 7px 12px; max-width: 100%; }
 /* Alt panel (sheet) açıkken bildirimler üstte, panelin üstüne binmeden görünür */
+/* Yatayda sağ sütun eylem kümesine, üst orta hedef kartına ait: bildirimler hotbar'ın üstünde, iki kontrol grubunun arasında */
+body.is-touch.landscape #toasts { top: auto; bottom: calc(80px + env(safe-area-inset-bottom)); left: 50%; right: auto; transform: translateX(-50%); width: max-content; max-width: calc(100vw - 440px); align-items: center; pointer-events: none; }
+body.is-touch.landscape:not(.modal-open) .toast:not(:nth-last-child(-n+3)) { display: none; }
+body.is-touch.landscape .toast { font-size: 12px; padding: 6px 12px; }
 body.is-touch.portrait.modal-open #toasts { bottom: auto; top: calc(8px + env(safe-area-inset-top)); z-index: 20; }
 body.is-touch.portrait.modal-open .toast:not(:nth-last-child(-n+2)) { display: none; }
 body.is-touch #banner h2 { font-size: 20px; }
@@ -208,6 +271,10 @@ body.is-touch.portrait #inv-info { max-width: none; }
 .mm-settings input[type=checkbox] { width: 24px; height: 24px; accent-color: var(--accent); flex-shrink: 0; }
 .mm-settings input[type=range] { width: 100%; height: 32px; accent-color: var(--accent); }
 .mm-settings small { display: block; font-size: 11px; }
+.mm-seg { display: flex; gap: 6px; margin-top: 8px; }
+.mm-seg button { flex: 1 1 0; min-height: 44px; padding: 4px 6px; font-size: 13px; border-radius: 10px; }
+.mm-seg button.on { background: var(--accent); color: #1a1a1a; border-color: var(--accent); font-weight: 700; }
+#ui .mm-seg button.on:hover:not(:disabled) { background: var(--accent); }
 .mm-tip { font-size: 12px; margin-top: 12px; line-height: 1.5; }
 
 /* --- Ana menü / oyun sonu --- */

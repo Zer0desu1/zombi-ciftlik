@@ -1,13 +1,15 @@
-// Dokunmatik kontroller: yüzen joystick, EYLEM / ETKİLEŞ / çanta / menü butonları ve otomatik hedefleme.
+// Dokunmatik kontroller: her zaman görünen joystick / D-pad, EYLEM / ETKİLEŞİM / çanta / menü butonları ve otomatik hedefleme.
 import { TILE, ITEMS } from '../config.js';
 import { useSelected, canPlace } from '../systems/PlayerActions.js';
 import { audio } from '../audio.js';
 import { el } from './dom.js';
-import { vibrate } from './mobileSettings.js';
+import { vibrate, settings, onSettingsChange } from './mobileSettings.js';
 
 const REACH = 40;      // PlayerActions ile aynı erişim
-const JOY_R = 56;      // joystick taban yarıçapı (112px çap)
-const DEAD = 0.15;     // ölü bölge
+const JOY_R = 64;      // joystick taban yarıçapı (128px çap; gerçek değer CSS'ten ölçülür)
+const DEAD = 0.18;     // ölü bölge (yarıçap oranı)
+const FULL = 0.8;      // bu orandan sonra tam hız (başparmağı kenara itmek gerekmez)
+const PAD_DEAD = 0.12; // D-pad merkezindeki boş bölge (genişlik oranı)
 // Basılı tutunca yoklama aralığı: asıl hız actionCd ile sınırlanır, kısa aralık bekleme biter bitmez vurdurur
 const REPEAT_MS = 50;
 const MELEE_RANGE = 140, GUN_RANGE = 200;
@@ -145,10 +147,14 @@ export function autoTarget(scene, aim) {
 }
 
 // ---------- DOM kontrolleri ----------
+// Hareket: her zaman görünen joystick tabanı (yüzen ya da sabit) veya 4/8 yönlü D-pad.
+// Hepsi scene.virtualMove'a yazar (Player okur; misafir modunda da aynı yol).
 export class TouchControls {
   constructor() {
     this.scene = null;
     this.joyId = null;
+    this.padId = null;
+    this.padDir = '';
     this.actId = null;
     this.aim = null;
     this.repeat = null;
@@ -159,10 +165,13 @@ export class TouchControls {
   }
 
   build() {
+    const cells = [['ul', '◤'], ['u', '▲'], ['ur', '◥'], ['l', '◀'], ['c', ''], ['r', '▶'], ['dl', '◣'], ['d', '▼'], ['dr', '◢']]
+      .map(([k, s]) => `<i class="d-${k}" data-d="${k}">${s}</i>`).join('');
     const root = el('div', '', `
-      <div class="mc-joyzone"><div class="mc-joy idle"><div class="mc-knob"></div></div></div>
+      <div class="mc-joyzone"><div class="mc-joy"><div class="mc-knob"></div></div></div>
+      <div class="mc-dpad" role="group" aria-label="Yön tuşları">${cells}</div>
       <div class="mc-cluster">
-        <button class="mc-btn mc-interact" type="button"><span class="ic">✋</span><span class="lb"></span></button>
+        <button class="mc-btn mc-interact off" type="button" aria-label="Etkileşim"><span class="ic">✋</span><span class="tag"></span></button>
         <button class="mc-btn mc-inv" type="button" aria-label="Envanter">🎒</button>
         <button class="mc-btn mc-action" type="button" aria-label="Eylem"><img alt=""><span class="lb">Kullan</span></button>
       </div>
@@ -174,25 +183,29 @@ export class TouchControls {
     this.zone = root.querySelector('.mc-joyzone');
     this.joy = root.querySelector('.mc-joy');
     this.knob = root.querySelector('.mc-knob');
+    this.pad = root.querySelector('.mc-dpad');
     this.btnAct = root.querySelector('.mc-action');
     this.actImg = this.btnAct.querySelector('img');
     this.actLbl = this.btnAct.querySelector('.lb');
     this.btnInt = root.querySelector('.mc-interact');
-    this.intLbl = this.btnInt.querySelector('.lb');
+    this.intLbl = this.btnInt.querySelector('.tag');
     this.btnInv = root.querySelector('.mc-inv');
     this.btnMenu = root.querySelector('.mc-menu');
     this.menuDot = this.btnMenu.querySelector('.dot');
 
-    // Dokunuşlar Phaser'a / tarayıcı jestlerine geçmesin
-    root.addEventListener('touchstart', (e) => { if (e.target.closest('.mc-joyzone,.mc-btn')) e.preventDefault(); }, { passive: false });
+    // Kontrollere dokunuşlar Phaser'a (dünyaya) / tarayıcı jestlerine geçmesin
+    root.addEventListener('touchstart', (e) => { if (e.target.closest('.mc-joyzone,.mc-dpad,.mc-btn')) e.preventDefault(); }, { passive: false });
 
     this.bindJoystick();
+    this.bindDpad();
     this.bindAction();
-    this.tap(this.btnInt, () => { if (this.ready()) { this.scene.interact(); vibrate(10); } });
+    this.tap(this.btnInt, () => this.onInteract());
     this.tap(this.btnInv, () => { if (this.scene?.started && !this.scene.gameOver) { this.scene.hud.toggleInventory(); audio.sfx('click'); } });
     this.tap(this.btnMenu, () => { if (this.scene?.started && !this.scene.gameOver) this.onMenu?.(this.scene); });
     window.addEventListener('blur', () => this.releaseAll());
     document.addEventListener('visibilitychange', () => { if (document.hidden) this.releaseAll(); });
+    // Hareket türü / el düzeni değişince basılı kalan yön sıfırlansın
+    onSettingsChange(() => this.releaseAll());
   }
 
   attach(scene) {
@@ -204,6 +217,11 @@ export class TouchControls {
   ready() {
     const s = this.scene;
     return !!(s && s.started && !s.gameOver && s.hud && !s.hud.isModalOpen() && s.player?.alive);
+  }
+
+  setMove(x, y) {
+    const vm = this.scene?.virtualMove;
+    if (vm) { vm.x = x; vm.y = y; }
   }
 
   // Basit dokunma butonu: pointerdown anında tepki (300ms tıklama gecikmesi yok)
@@ -219,7 +237,24 @@ export class TouchControls {
     btn.addEventListener('pointerleave', up);
   }
 
+  // Etkileşim: yakında bir şey varsa çalıştır; yoksa kısa bir ipucu göster
+  onInteract() {
+    if (!this.ready()) return;
+    // Görünüm 100ms'de bir yenilenir; karar anlık duruma göre verilsin (NPC yürürken kaçmasın)
+    if (!this.scene.bestInteraction()) {
+      this.btnInt.classList.remove('nudge');
+      void this.btnInt.offsetWidth; // animasyonu yeniden başlat
+      this.btnInt.classList.add('nudge');
+      this.intLbl.textContent = 'Yakında etkileşim yok';
+      this.lastLabel = null; // sonraki refresh etiketi düzeltir
+      return;
+    }
+    this.scene.interact();
+    vibrate(10);
+  }
+
   // ---------- Joystick ----------
+  // Taban her zaman görünür (dinlenme yeri CSS'te). Yüzen: dokunulan yere taşınır; sabit: yerinde kalır.
   bindJoystick() {
     const z = this.zone;
     z.addEventListener('pointerdown', (e) => {
@@ -227,14 +262,21 @@ export class TouchControls {
       e.preventDefault();
       this.joyId = e.pointerId;
       try { z.setPointerCapture(e.pointerId); } catch { /* yoksay */ }
-      // Taban parmağın değdiği yerde belirir (ekrandan taşmasın)
-      const ox = Phaser.Math.Clamp(e.clientX, JOY_R + 6, window.innerWidth - JOY_R - 6);
-      const oy = Phaser.Math.Clamp(e.clientY, JOY_R + 6, window.innerHeight - JOY_R - 6);
-      this.origin = { x: ox, y: oy };
-      this.joy.classList.remove('idle');
-      this.joy.style.left = `${ox}px`;
-      this.joy.style.top = `${oy}px`;
-      this.joy.style.bottom = this.joy.style.right = 'auto';
+      const r = this.joy.getBoundingClientRect();
+      const R = r.width / 2 || JOY_R;
+      this.joyR = R;
+      if (settings.joyMode === 'fixed') {
+        this.origin = { x: r.left + R, y: r.top + R };
+      } else {
+        // Taban parmağın değdiği yerde belirir (ekrandan taşmasın)
+        const ox = Phaser.Math.Clamp(e.clientX, R + 6, window.innerWidth - R - 6);
+        const oy = Phaser.Math.Clamp(e.clientY, R + 6, window.innerHeight - R - 6);
+        this.origin = { x: ox, y: oy };
+        this.joy.style.left = `${ox}px`;
+        this.joy.style.top = `${oy}px`;
+        this.joy.classList.add('moved');
+      }
+      this.joy.classList.add('active');
       this.moveJoy(e.clientX, e.clientY);
     });
     z.addEventListener('pointermove', (e) => { if (e.pointerId === this.joyId) this.moveJoy(e.clientX, e.clientY); });
@@ -245,28 +287,72 @@ export class TouchControls {
   }
 
   moveJoy(px, py) {
+    const R = this.joyR || JOY_R;
     let dx = px - this.origin.x, dy = py - this.origin.y;
     const d = Math.hypot(dx, dy);
-    if (d > JOY_R) { dx = (dx / d) * JOY_R; dy = (dy / d) * JOY_R; }
+    if (d > R) { dx = (dx / d) * R; dy = (dy / d) * R; }
     this.knob.style.transform = `translate(${dx}px, ${dy}px)`;
-    const m = Math.min(1, d / JOY_R);
-    const vm = this.scene?.virtualMove;
-    if (!vm) return;
-    if (m < DEAD) { vm.x = 0; vm.y = 0; return; }
-    // Yön birim vektör, büyüklük ölü bölge sonrası 0..1
-    const mag = (m - DEAD) / (1 - DEAD);
-    const len = Math.hypot(dx, dy) || 1;
-    vm.x = (dx / len) * mag;
-    vm.y = (dy / len) * mag;
+    const m = Math.min(1, d / R);
+    if (m < DEAD) { this.setMove(0, 0); return; }
+    // Ölü bölge sonrası 0..1; yarıçapın %80'inde tam hız (başparmağı kenara itmek gerekmez)
+    const mag = Math.min(1, (m - DEAD) / (FULL - DEAD));
+    this.setMove((dx / d) * mag, (dy / d) * mag);
   }
 
   releaseJoy() {
     this.joyId = null;
     this.knob.style.transform = '';
-    this.joy.classList.add('idle');
-    this.joy.style.left = this.joy.style.top = this.joy.style.bottom = this.joy.style.right = '';
-    const vm = this.scene?.virtualMove;
-    if (vm) { vm.x = 0; vm.y = 0; }
+    this.joy.classList.remove('active', 'moved');
+    this.joy.style.left = this.joy.style.top = '';
+    if (this.padId === null) this.setMove(0, 0);
+  }
+
+  // ---------- D-pad ----------
+  // Tek bir öğe: parmak merkeze göre hangi yöndeyse o yön basılı (parmak kaydırınca yön değişir)
+  bindDpad() {
+    const p = this.pad;
+    p.addEventListener('pointerdown', (e) => {
+      if (this.padId !== null) return;
+      e.preventDefault();
+      this.padId = e.pointerId;
+      try { p.setPointerCapture(e.pointerId); } catch { /* yoksay */ }
+      this.movePad(e.clientX, e.clientY, true);
+    });
+    p.addEventListener('pointermove', (e) => { if (e.pointerId === this.padId) this.movePad(e.clientX, e.clientY, false); });
+    const end = (e) => { if (e.pointerId === this.padId) this.releasePad(); };
+    p.addEventListener('pointerup', end);
+    p.addEventListener('pointercancel', end);
+    p.addEventListener('lostpointercapture', end);
+  }
+
+  movePad(px, py, first) {
+    const r = this.pad.getBoundingClientRect();
+    const dx = px - (r.left + r.width / 2), dy = py - (r.top + r.height / 2);
+    let key = '', vx = 0, vy = 0;
+    if (Math.hypot(dx, dy) >= r.width * PAD_DEAD) {
+      if (settings.moveMode === 'dpad8') {
+        const sector = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));
+        const a = sector * (Math.PI / 4);
+        vx = Math.round(Math.cos(a)); vy = Math.round(Math.sin(a));
+      } else if (Math.abs(dx) >= Math.abs(dy)) vx = Math.sign(dx);
+      else vy = Math.sign(dy);
+      key = (vy < 0 ? 'u' : vy > 0 ? 'd' : '') + (vx < 0 ? 'l' : vx > 0 ? 'r' : '');
+    }
+    if (key !== this.padDir) {
+      this.pad.querySelector('.on')?.classList.remove('on');
+      if (key) { this.pad.querySelector(`[data-d="${key}"]`)?.classList.add('on'); if (!first) vibrate(6); }
+      this.padDir = key;
+    }
+    if (first && key) vibrate(10);
+    const len = Math.hypot(vx, vy) || 1;
+    this.setMove(vx / len, vy / len);
+  }
+
+  releasePad() {
+    this.padId = null;
+    this.padDir = '';
+    this.pad.querySelector('.on')?.classList.remove('on');
+    if (this.joyId === null) this.setMove(0, 0);
   }
 
   // ---------- Eylem butonu ----------
@@ -317,19 +403,21 @@ export class TouchControls {
     this.btnAct.classList.remove('pressed', 'aiming');
   }
 
-  releaseAll() { this.releaseJoy(); this.releaseAction(); }
+  releaseAll() { this.releaseJoy(); this.releasePad(); this.releaseAction(); }
 
-  // ---------- Periyodik arayüz güncellemesi (150ms) ----------
+  // ---------- Periyodik arayüz güncellemesi (100ms) ----------
   refresh(target) {
     const s = this.scene;
     if (!s?.started) return;
-    // Etkileş butonu
+    // Etkileşim butonu: her zaman görünür; yakında etkileşim yoksa soluk, varsa parlak + etiket
     const act = s.player?.alive ? s.bestInteraction() : null;
-    const label = act ? act.label : '';
+    const label = act ? (act.label || 'Etkileşim') : '';
     if (label !== this.lastLabel) {
       this.lastLabel = label;
       this.intLbl.textContent = label;
-      this.btnInt.classList.toggle('show', !!label);
+      this.btnInt.classList.toggle('off', !label);
+      this.btnInt.classList.remove('nudge');
+      this.btnInt.setAttribute('aria-label', label || 'Etkileşim (yakında yok)');
     }
     // Eylem butonu ikonu + fiil
     const slot = s.inventory.slots[s.selected];
@@ -340,7 +428,13 @@ export class TouchControls {
       this.btnAct.classList.toggle('empty', !icon);
     }
     const verb = target?.label || 'Kullan';
-    if (verb !== this.lastAct) { this.lastAct = verb; this.actLbl.textContent = verb; }
+    const name = slot ? (ITEMS[slot.id]?.name || '') : '';
+    const key = verb + '|' + name;
+    if (key !== this.lastAct) {
+      this.lastAct = key;
+      this.actLbl.textContent = verb;
+      this.btnAct.setAttribute('aria-label', name ? `${verb}: ${name}` : verb);
+    }
   }
 
   setMenuDot(on) { this.menuDot.classList.toggle('show', !!on); }
@@ -351,6 +445,7 @@ export function installTapFilter(getScene) {
   window.addEventListener('touchstart', (e) => {
     const s = getScene();
     if (!s || !s.started || s.gameOver || !s.hud || s.hud.isModalOpen()) return;
+    if (!document.body.classList.contains('is-touch')) return; // dokunmatik düzen kapalıyken dokunuş = tık
     const canvas = s.game.canvas;
     if (e.target !== canvas) return;
     const t = e.changedTouches[0];

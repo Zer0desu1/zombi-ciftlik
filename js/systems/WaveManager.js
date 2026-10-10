@@ -1,5 +1,8 @@
 import { TILE, MAP_W, MAP_H } from '../config.js';
 
+// Sürülerin sığınaktan en fazla doğabileceği uzaklık (px). Eski 64×44 haritada en uzak kenar ~490/~370 px idi.
+export const SPAWN_RX = 38 * TILE, SPAWN_RY = 26 * TILE;
+
 // Kenar adları: 0 kuzey, 1 güney, 2 batı, 3 doğu
 export const SIDE_NAMES = ['kuzey', 'güney', 'batı', 'doğu'];
 // Doğum sırasındaki tür sırası (önizleme metni de bu sırayı kullanır)
@@ -29,15 +32,17 @@ export class WaveManager {
 
   // Dalga kompozisyonu: { wave, blood, counts: {tür: adet}, sides: [kenar] }
   makePlan(w, blood = false) {
-    // Sürü büyüklüğü dalgayla hızlanarak artar; zorluk seçimi çarpan uygular
+    // Denge: sürü her gece yumuşakça büyür (eskiden karesel artış 3. geceden sonra ani sıçrama yapıyordu)
+    // w1 8 · w3 15 · w5 22 · w7 30 · w10 42 · w15 64
     const diff = this.scene.difficulty?.count ?? 1;
-    const total = Math.max(4, Math.round((6 + w * 4 + w * w * 0.35) * (blood ? 1.5 : 1) * diff));
+    const total = Math.max(4, Math.round((5 + w * 3 + w * w * 0.08) * (blood ? 1.3 : 1) * diff));
+    // Yeni türler tek tek ve küçük paylarla gelir, payları gece gece artar
     const share = {
-      runner: w >= 2 ? 0.2 : 0,
-      brute: w >= 3 ? Math.min(0.3, 0.06 * w) : 0,
-      bloater: w >= 3 ? Math.min(0.12, 0.03 * (w - 1)) : 0,
-      spitter: w >= 4 ? Math.min(0.15, 0.04 * (w - 3)) : 0,
-      armored: w >= 6 ? Math.min(0.2, 0.04 * (w - 5)) : 0
+      runner: w >= 2 ? Math.min(0.2, 0.05 + 0.03 * (w - 2)) : 0,
+      brute: w >= 4 ? Math.min(0.2, 0.04 * (w - 3)) : 0,
+      bloater: w >= 5 ? Math.min(0.1, 0.03 * (w - 4)) : 0,
+      spitter: w >= 6 ? Math.min(0.12, 0.03 * (w - 5)) : 0,
+      armored: w >= 8 ? Math.min(0.15, 0.03 * (w - 7)) : 0
     };
     const counts = {};
     let used = 0;
@@ -47,7 +52,7 @@ export class WaveManager {
     }
     counts.normal = Math.max(0, total - used);
     if (w % 5 === 0) counts.boss = 1;
-    const nSides = Math.min(4, 1 + (w >= 3) + (w >= 6) + (w >= 10));
+    const nSides = Math.min(4, 1 + (w >= 4) + (w >= 7) + (w >= 11));
     const sides = Phaser.Utils.Array.Shuffle([0, 1, 2, 3]).slice(0, nSides).sort();
     return { wave: w, blood: !!blood, counts, sides };
   }
@@ -139,20 +144,27 @@ export class WaveManager {
   spawnNext(x, y) {
     // Kuyruk yoksa (eski davranış) rastgele normal/brute
     let kind = this.queue.shift();
-    if (!kind) kind = this.wave >= 3 && Math.random() < Math.min(0.35, 0.08 * this.wave) ? 'brute' : 'normal';
+    if (!kind) kind = this.wave >= 4 && Math.random() < Math.min(0.2, 0.04 * (this.wave - 3)) ? 'brute' : 'normal';
     const z = this.scene.spawnZombie(x, y, kind);
     this.toSpawn = Math.max(0, this.toSpawn - 1);
     if (kind === 'boss') this.scene.events.emit('bossSpawned', z);
     return z;
   }
 
+  // Sürü doğma noktası: oynanabilir alanın kenarında, ama sığınaktan en fazla SPAWN_RX/SPAWN_RY uzakta.
+  // 96×64 haritada doğu/güney kenarı sığınaktan ~2 kat uzak; sınırsız bırakılırsa zombiler sığınağa
+  // çok geç ulaşır ve gece temposu bozulur. Kutunun dışındaki (uzak) kenarlarda sürü açık alanda,
+  // kutunun sınırında çıkar. Batı/kuzey kenarları zaten kutunun içinde: eski davranış korunur.
   edgePoint(side = Phaser.Math.Between(0, 3)) {
     const W = MAP_W * TILE, H = MAP_H * TILE, m = 24;
+    const sh = this.scene.shelter, cx = sh?.x ?? W / 2, cy = sh?.y ?? H / 2;
+    const x0 = Math.max(m, cx - SPAWN_RX), x1 = Math.min(W - m, cx + SPAWN_RX);
+    const y0 = Math.max(m, cy - SPAWN_RY), y1 = Math.min(H - m, cy + SPAWN_RY);
     switch (side) {
-      case 0: return { x: Phaser.Math.Between(m, W - m), y: m };
-      case 1: return { x: Phaser.Math.Between(m, W - m), y: H - m };
-      case 2: return { x: m, y: Phaser.Math.Between(m, H - m) };
-      default: return { x: W - m, y: Phaser.Math.Between(m, H - m) };
+      case 0: return { x: Phaser.Math.Between(x0, x1), y: y0 };
+      case 1: return { x: Phaser.Math.Between(x0, x1), y: y1 };
+      case 2: return { x: x0, y: Phaser.Math.Between(y0, y1) };
+      default: return { x: x1, y: Phaser.Math.Between(y0, y1) };
     }
   }
 

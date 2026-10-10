@@ -238,6 +238,7 @@ function makeObject(scene, kind, tx, ty, lvl = 1) {
   const sprite = scene.add.image(cx, isScare ? cy + 8 : cy + 4, tex).setOrigin(0.5, isScare ? 1 : 0.75).setDepth(cy + 4);
   const zone = scene.add.zone(cx, cy + 2, 10, 8);
   st.blockers.add(zone);
+  sprite.netSolid = zone; // görünmez engel bölgesi aynalanmaz: gövde, görünen sprite üzerinden misafire gider
   const o = { kind, tx, ty, x: cx, y: cy, lvl, sprite, zone };
   (isScare ? st.scarecrows : st.sprinklers).push(o);
   scene.farm.blocked.add(scene.farm.key(tx, ty));
@@ -313,7 +314,6 @@ function fertilizeOnUse(scene, ctx) {
   scene.inventory.remove(ctx.slot.id, 1);
   scene.player.actionCd = 0.25;
   scene.spawnParticles(ctx.cx, ctx.cy + 2, 0x5a3a20, 8);
-  scene.floatText(ctx.cx, ctx.cy - 6, 'Gübrelendi', '#a6e07a');
   audio.sfx('plant');
 }
 
@@ -597,6 +597,7 @@ function updateRipeGlow(scene, dt) {
     st.sparkT = 0.35;
     const p = ripe[Math.floor(Math.random() * ripe.length)];
     const s = scene.add.rectangle(p.tx * TILE + 3 + Math.random() * 10, p.ty * TILE + 2 + Math.random() * 6, 1, 1, 0xfff4c2).setDepth(p.ty * TILE + 20);
+    s.netFx = true; // kozmetik: her ekran kendi pırıltısını üretir
     scene.tweens.add({ targets: s, y: s.y - 6, alpha: 0, duration: 700, onComplete: () => s.destroy() });
   }
 }
@@ -609,7 +610,8 @@ function jobInteraction(scene) {
   const tiles = [];
   for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
     const x = tx + dx, y = ty + dy;
-    if ((scene.farm.inZone(x, y) || scene.farm.get(x, y)) && tileReach(pl, x, y)) tiles.push({ tx: x, ty: y });
+    // Tarla her çimende açılabildiği için yeni kare önerisi yalnızca mevcut tarlanın kenarında yapılır
+    if ((scene.farm.get(x, y) || (scene.farm.nearPlot(x, y) && scene.farm.inZone(x, y))) && tileReach(pl, x, y)) tiles.push({ tx: x, ty: y });
   }
   if (!tiles.length) return null;
   const sel = scene.inventory.slots[scene.selected]?.id;
@@ -744,7 +746,15 @@ export default {
       glow: scene.add.graphics().setDepth(2), glowT: 0, sparkT: 0, holdT: 0, holdCd: 0
     };
     scene.physics.add.collider(scene.player, st.blockers);
+    scene.farmBlockers = st.blockers; // co-op: host misafire katı gövde olarak bildirir (NetHost.playerSolid)
     injectCSS('farming', CSS);
+    // Tıklamada hedef kare: imleç uygun değilse oyuncunun çevresindeki en uygun kare (GameScene.useAtPointer kullanır)
+    scene.farmClickTarget = (wx, wy) => {
+      const id = scene.inventory.slots[scene.selected]?.id;
+      if (!isFarmTool(id)) return null;
+      const t = farmTarget(scene, id, wx, wy);
+      return t ? { x: t.tx * TILE + 8, y: t.ty * TILE + 8 } : null;
+    };
     scene.addInteraction(cropInteraction);
     scene.addInteraction(objectInteraction);
     scene.addInteraction(jobInteraction);
@@ -764,6 +774,14 @@ export default {
       scene.inventory.add('seed_potato', 3);
       scene.inventory.add('fertilizer', 3);
     }
+  },
+
+  // Çok oyunculu misafir: basılı tutunca tarla akışı (eylemler host'a gider), olgun ekin parıltısı, hedef vurgusu
+  guestInit() { [st.hl, st.ghost, st.glow].forEach((o) => { o.netLocal = true; }); },
+  guestUpdate(scene, dt) {
+    if (scene.hud.isModalOpen()) { st.hl.clear(); st.ghost.setVisible(false); return; }
+    updateFarmFlow(scene, dt);
+    updateRipeGlow(scene, dt);
   },
 
   update(scene, dt) {

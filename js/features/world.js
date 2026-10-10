@@ -356,8 +356,8 @@ function thunder(scene) {
     audio.noise({ dur: 0.5, vol: 0.4, freq: 130, delay: 0.3 });
     audio.tone({ type: 'sawtooth', freq: 60, to: 30, dur: 0.9, vol: 0.12 });
   });
-  // Gece ekrandaki bir zombiye yıldırım düşebilir
-  if (!scene.timeSys.isNight || Math.random() > 0.4) return;
+  // Gece ekrandaki bir zombiye yıldırım düşebilir (misafirde yalnızca görsel şimşek; hasar host'ta)
+  if (scene.net?.isGuest || !scene.timeSys.isNight || Math.random() > 0.4) return;
   const v = scene.cameras.main.worldView;
   const list = scene.zombies.getChildren().filter((z) => !z.dead && v.contains(z.x, z.y));
   if (!list.length) return;
@@ -396,6 +396,7 @@ function freeTile(scene, tx, ty) {
   if (tx < 1 || ty < 2 || tx >= MAP_W - 1 || ty >= MAP_H - 1) return false;
   const fz = FARM_ZONE;
   if (tx >= fz.x - 1 && ty >= fz.y - 1 && tx <= fz.x + fz.w && ty <= fz.y + fz.h) return false;
+  if (scene.farm.get(tx, ty)) return false;
   if (tx >= 24 && ty >= 9 && tx < 58 && ty < 36) return false;              // kasaba
   const t = scene.layer.getTileAt(tx, ty);
   if (!t || t.index > 2) return false;                                       // yalnızca çimen
@@ -481,7 +482,36 @@ function tryFish(scene, fromItem) {
     return;
   }
   if (!scene.player.useEnergy(3)) return;
+  // Çok oyunculu misafir: mini oyun misafirin ekranında oynanır, balığı host seçer ve sonucu doğrular
+  const p = scene.player;
+  if (p.netRemote?.send) {
+    const fish = pickFish(scene);
+    p.netFish = { id: fish.id, at: performance.now() };
+    p.netRemote.send({ t: 'fish', id: fish.id });
+    return;
+  }
   startFishing(scene);
+}
+
+// Yakalanan balığın ödülü (bağlamdaki oyuncuya)
+function rewardFish(scene, fish) {
+  const item = ITEMS[fish.id];
+  scene.giveItem(fish.id, 1);
+  scene.floatText(scene.player.x, scene.player.y - 14, `+1 ${item.name}`, fish.id === 'fish_gold' ? '#ffd166' : '#9fd0f0');
+  audio.sfx(fish.id === 'fish_gold' ? 'quest' : 'harvest');
+  scene.events.emit('fishCaught', fish.id);
+  if (fish.id === 'fish_gold') scene.hud.toast('✨ Altın balık! Çok nadir bir av.', 'ok');
+}
+
+// Host: misafirin mini oyun sonucu (misafir bağlamında). Süre makul değilse (hile/eski istek) yok sayılır.
+function onFishResult(scene, m) {
+  const p = scene.player, f = p.netFish;
+  if (!f) return;
+  p.netFish = null;
+  const dt = performance.now() - f.at;
+  const fish = FISH.find((x) => x.id === f.id);
+  if (!fish || !m.ok || dt < 1200 || dt > 30000) return;
+  rewardFish(scene, fish);
 }
 
 function pickFish(scene) {
@@ -493,8 +523,8 @@ function pickFish(scene) {
   return FISH[2];
 }
 
-function startFishing(scene) {
-  const fish = pickFish(scene);
+// onResult verilirse (çok oyunculu misafir) ödül yerelde verilmez, sonuç host'a bildirilir
+function startFishing(scene, fish = pickFish(scene), onResult = null) {
   const body = el('div', '', `
     <div class="fish-wrap">
       <div class="fish-track"><div class="fish-zone"></div><img class="fish-fish" alt=""></div>
@@ -530,14 +560,11 @@ function startFishing(scene) {
     if (g.done) return;
     g.done = true;
     cancelAnimationFrame(g.raf);
+    if (onResult) onResult(ok);
     if (ok) {
       const item = ITEMS[fish.id];
       msgEl.innerHTML = `🎉 ${item.name} yakaladın!`;
-      scene.giveItem(fish.id, 1);
-      scene.floatText(scene.player.x, scene.player.y - 14, `+1 ${item.name}`, fish.id === 'fish_gold' ? '#ffd166' : '#9fd0f0');
-      audio.sfx(fish.id === 'fish_gold' ? 'quest' : 'harvest');
-      scene.events.emit('fishCaught', fish.id);
-      if (fish.id === 'fish_gold') scene.hud.toast('✨ Altın balık! Çok nadir bir av.', 'ok');
+      if (!onResult) rewardFish(scene, fish);
     } else {
       msgEl.textContent = '💨 Balık kaçtı…';
       audio.sfx('error');
@@ -576,6 +603,39 @@ function startFishing(scene) {
   audio.sfx('water');
 }
 
+// ---------------- Misafir (çok oyunculu) ----------------
+// Host'tan gelen hava durumunu yalnızca görsel olarak uygula (tarla sulama/olay/bildirim host'ta)
+function applyWeatherVisual(scene, type) {
+  const st = scene._world;
+  if (!WEATHERS[type]) type = 'clear';
+  st.weather = type;
+  scene.weather = type;
+  scene.weatherInfo = WEATHERS[type];
+  st.lightMul = type === 'fog' ? FOG_LIGHT : 1;
+  const snow = scene.timeSys.season === 'winter', wet = isWet(type);
+  st.rain.emitting = false; st.snow.emitting = false;
+  if (wet) { if (snow) st.snow.start(); else st.rain.start(); }
+  else { st.rain.stop(); st.snow.stop(); }
+  st.fog.setVisible(type === 'fog');
+  st.wetKey = `${type}|${snow}`;
+  renderBadge(scene);
+}
+
+// Görsel kare güncellemesi (host'ta update içinde, misafirde guestUpdate)
+function updateVisuals(scene) {
+  const st = scene._world, v = scene.cameras.main.worldView;
+  st.seasonRect.setPosition(v.x - 2, v.y - 2).setSize(v.width + 4, v.height + 4);
+  if (st.fog.visible) {
+    const w = Math.ceil(v.width) + 4, h = Math.ceil(v.height) + 4;
+    if (st.fog.width !== w || st.fog.height !== h) st.fog.setSize(w, h);
+    st.fog.setPosition(v.x - 2, v.y - 2);
+    st.fog.tilePositionX = v.x * 0.9 + scene.time.now * 0.006;
+    st.fog.tilePositionY = v.y * 0.9 + Math.sin(scene.time.now / 4000) * 6;
+    st.fog.setAlpha(scene.timeSys.isNight ? 0.45 : 0.7);
+  }
+  if (st.rain.emitting || st.snow.emitting) fitRain(scene);
+}
+
 // ---------------- Mevsim görselleri ----------------
 function applySeason(scene) {
   const st = scene._world, fx = SEASON_FX[scene.timeSys.season] || SEASON_FX.spring;
@@ -599,6 +659,7 @@ export default {
     };
     scene.weather = 'clear';
     scene.weatherInfo = WEATHERS.clear;
+    scene.setWeather = (type, silent) => setWeather(scene, type, silent); // olaylar (events.js: sisli gece) kullanır
 
     // Katmanlar: mevsim zemin tonu (zeminin hemen üstü), sis (karanlığın altı), yağmur/kar (ekran sabit)
     st.seasonRect = scene.add.rectangle(0, 0, 10, 10, 0xffffff, 0).setOrigin(0, 0).setDepth(-9.5);
@@ -670,6 +731,51 @@ export default {
     scene.featureMenu.push({ id: 'world', icon: '🌦️', label: 'Hava & Mevsim', open: (s) => openInfo(s) });
     st.badge = ensureBadge(scene);
     if (st.badge) st.badge.classList.remove('show');
+    // Yerel görsel katmanlar: misafirde de görünür kalsın (host bunları zaten aynalamaz)
+    [st.seasonRect, st.fog, st.rain, st.snow].forEach((o) => { o.netLocal = true; });
+
+    // Çok oyunculu: misafirin balık tutma mini oyunu
+    const onNet = (m) => {
+      if (m?.t !== 'fish') return;
+      const fish = FISH.find((x) => x.id === m.id);
+      if (fish && !scene.hud.isModalOpen()) startFishing(scene, fish, (ok) => scene.net?.send({ t: 'fishDone', ok: ok ? 1 : 0 }));
+    };
+    const onGuest = (m) => { if (m?.t === 'fishDone') onFishResult(scene, m); };
+    scene.events.on('netMsg', onNet);
+    scene.events.on('netGuestMsg', onGuest);
+    scene.events.once('shutdown', () => { scene.events.off('netMsg', onNet); scene.events.off('netGuestMsg', onGuest); });
+  },
+
+  // Çok oyunculu: hava/mevsim misafirde görsel olarak (yağmur, kar, sis, zemin tonu, rozet)
+  netState(scene) {
+    const st = scene._world;
+    return st ? [st.weather, st.next, st.chestReady ? 1 : 0] : undefined;
+  },
+  netApply(scene, v) {
+    const st = scene._world;
+    if (!st || !Array.isArray(v)) return;
+    st.next = v[1];
+    st.chestReady = !!v[2];
+    const key = `${v[0]}|${scene.timeSys.season === 'winter'}`;
+    if (key !== st.wetKey) applyWeatherVisual(scene, v[0]);
+  },
+  guestUpdate(scene, dt) {
+    const st = scene._world;
+    if (!st) return;
+    // Mevsim değişimi (gün host'tan gelir): ağaç tonu + yağmur↔kar
+    const season = scene.timeSys.season;
+    if (season !== st.guestSeason) {
+      st.guestSeason = season;
+      applySeason(scene);
+      applyWeatherVisual(scene, st.weather);
+    }
+    updateVisuals(scene);
+    if (st.weather === 'storm') {
+      st.boltTimer -= dt;
+      if (st.boltTimer <= 0) { st.boltTimer = Phaser.Math.FloatBetween(20, 40); thunder(scene); }
+    }
+    st.badgeT = (st.badgeT || 0) - dt;
+    if (st.badgeT <= 0) { st.badgeT = 1; renderBadge(scene); }
   },
 
   begin(scene) {
@@ -691,18 +797,8 @@ export default {
   update(scene, dt) {
     const st = scene._world;
     if (!st) return;
-    const cam = scene.cameras.main, v = cam.worldView;
     // Zemin tonu ve sis kamerayı takip eder
-    st.seasonRect.setPosition(v.x - 2, v.y - 2).setSize(v.width + 4, v.height + 4);
-    if (st.fog.visible) {
-      const w = Math.ceil(v.width) + 4, h = Math.ceil(v.height) + 4;
-      if (st.fog.width !== w || st.fog.height !== h) st.fog.setSize(w, h);
-      st.fog.setPosition(v.x - 2, v.y - 2);
-      st.fog.tilePositionX = v.x * 0.9 + scene.time.now * 0.006;
-      st.fog.tilePositionY = v.y * 0.9 + Math.sin(scene.time.now / 4000) * 6;
-      st.fog.setAlpha(scene.timeSys.isNight ? 0.45 : 0.7);
-    }
-    if (st.rain.emitting || st.snow.emitting) fitRain(scene);
+    updateVisuals(scene);
 
     // Fırtına: şimşek
     if (st.weather === 'storm') {
