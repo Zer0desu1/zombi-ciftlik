@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Interp, NetClock } from '../../js/net/mirror.js';
-import { normalizeCode } from '../../js/net/transport.js';
+import { normalizeCode, parseTurn, encodeTurn, decodeTurn } from '../../js/net/transport.js';
 
 test('Interp: iki örnek arasında doğrusal, sonda bekler, sıra dışı örneği atar, büyük sıçramayı enterpole etmez', () => {
   const ip = new Interp();
@@ -43,4 +43,15 @@ test('oda kodu normalleştirme', () => {
   assert.equal(normalizeCode('zc-abcde'), 'ZC-ABCDE');
   assert.equal(normalizeCode('abcde'), 'ZC-ABCDE');
   assert.equal(normalizeCode('ab'), null);
+});
+
+test('TURN ayarı: ana makine adı genişletilir, JSON kabul edilir, davet kodlaması geri çözülür', () => {
+  const a = parseTurn('standard.relay.metered.ca', 'u1', 'p1');
+  assert.deepEqual(a.servers[0].urls, ['turn:standard.relay.metered.ca:80', 'turn:standard.relay.metered.ca:80?transport=tcp', 'turn:standard.relay.metered.ca:443', 'turns:standard.relay.metered.ca:443?transport=tcp']);
+  const j = parseTurn('[{"urls":"stun:stun.relay.metered.ca:80"},{"urls":"turn:x.example:80","username":"u","credential":"ç"}]');
+  assert.equal(j.servers.length, 1);
+  assert.deepEqual(decodeTurn(encodeTurn(j)), j);
+  assert.throws(() => parseTurn('turn:x.example:3478', '', ''));
+  assert.throws(() => parseTurn('stun:x.example:3478', 'u', 'p'), /turn/);
+  assert.equal(parseTurn('', 'u', 'p'), null);
 });

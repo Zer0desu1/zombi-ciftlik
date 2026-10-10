@@ -162,7 +162,7 @@ export class GameScene extends Phaser.Scene {
   joinGame(code, name, setStatus) {
     if (this.started || this.net) return;
     setStatus('Bağlanılıyor…');
-    NetGuest.join(this, code, name).then((g) => {
+    NetGuest.join(this, code, name, (t) => { if (!this.started) setStatus(t); }).then((g) => {
       this.net = g;
       g.onFail = (msg) => { setStatus(msg, true); this.net = null; g.close(); };
       setStatus('Dünya yükleniyor…');

@@ -48,6 +48,22 @@ Kurulacak bir bağımlılık yok. Phaser 3.80.1 CDN'den (cdnjs), fontlar Google 
 - **Oyun sonu:** Host "yeniden başla" deyince oda kapanmaz, kod aynı kalır; misafirler otomatik yeniden katılır (oyun sonu ekranında "Odaya yeniden katıl" da var).
 - **Senkron:** Dünya durumu güvenilir/sıralı kanaldan ~12 Hz fark olarak (oluşturma/silme, tarla, envanter, olaylar), konumlar ayrı güvenilmez kanaldan ~20 Hz gider; misafir konumları host saatine göre ~100–150 ms tamponla enterpole eder (ölçülen hata < 1 px). Misafir hareketi kendi ekranında anlıktır; host hız/ışınlanma ve duvar içinden geçme denetimi yapar, gerekirse konumu düzeltir. Parçacık/yüzen yazı/iz gibi kozmetikler aynalanmaz, misafirde olaydan yerel üretilir.
 - Host sekmesi arka plana geçse de (odak dışı/gizli) oyun bir Worker zamanlayıcısıyla akmaya devam eder.
+- **Bağlantı sağlamlığı:** Büyük mesajlar (ilk dünya görüntüsü ~20–110 KB, panel HTML'i) ~4000 karakterlik parçalara bölünür
+  (PeerJS `json` kanalı 16300 bayttan büyük tek mesajı reddeder); güvenilir kanalda `bufferedAmount` akış kontrolü, hızlı kanalda
+  tampon doluysa konum paketi atılır. Ping her iki tarafta Worker zamanlayıcısıyla gider; sekme arka plana geçince karşı tarafa
+  bildirilir ve zaman aşımı 12 sn → 45 sn olur. Misafir koparsa sınırsız, geri çekilen (≤10 sn) yeniden bağlanır; host karakterini
+  (envanter + konum) 60 sn tutar, aynı oturum dönerse karakter devralınır. Host sayfası yenilenirse son oda kodu (localStorage)
+  geri alınır, misafirler kendiliğinden döner. ICE `disconnected` 10 sn tolere edilir; `failed` → temiz yeniden bağlanma.
+  Sinyal sunucusu kopması oyunu etkilemez (geri çekilerek `peer.reconnect()`).
+- **Teşhis:** Oda panelinde **📶 Bağlantı**: ICE durumu, seçilen aday çifti (host / srflx / relay), ping, son mesajdan beri geçen
+  süre, yeniden bağlanma sayısı, son kopma nedeni, sinyal sunucusu durumu. **📋 Günlüğü kopyala** son 20 bağlantı olayını
+  (localStorage `zombi-ciftlik-net-log`) ortam bilgisiyle panoya kopyalar.
+- **TURN (farklı ağlar / mobil veri):** Varsayılan ICE: Google + Cloudflare STUN ve PeerJS'in genel TURN'ü (garanti değil).
+  Kendi TURN'ünü 📶 Bağlantı → TURN alanlarından (ya da ana menü → Çok Oyunculu → Gelişmiş) gir: adres alanına ana makine
+  (`standard.relay.metered.ca`), `turn:` URL listesi ya da sağlayıcının verdiği iceServers JSON'u yapıştırılabilir. Ayarlıysa davet
+  linkine kodlanmış olarak eklenir (`&turn=…`) ve misafire ilk bağlantıda da iletilir. URL ile: `?turnUrl=turn:…&turnUser=…&turnPass=…`.
+  `?relay=1` yalnızca TURN üzerinden bağlanmaya zorlar (teşhis).
+- Test parametreleri: `&maxMsg=16300` (tek iletim boyutu sınırı benzetimi), `&chunk=500` (parça boyutu).
 
 ## Oynanış
 
@@ -132,4 +148,5 @@ npm run test:all
 
 Co-op testleri: `tests/e2e/multiplayer`, `coop-sync` (özet eşleşmesi, konum hatası, bant genişliği, gecikme altında),
 `coop-dash`, `coop-features` (alan hasarı, HUD/hava, tüm paneller, oyuncu başına ilerleme, balık, yeniden katılma) ve
-isteğe bağlı `coop-peerjs` (gerçek PeerJS; internet yoksa atlanır).
+isteğe bağlı `coop-peerjs` (gerçek PeerJS + yeniden bağlanma; internet yoksa atlanır), `coop-resilience` (arka plan sekmesi,
+zorla kopma → dönüş, host yenileme → aynı kod, kayıp/gecikme, parçalı büyük görüntü).

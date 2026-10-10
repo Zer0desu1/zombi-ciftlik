@@ -3,7 +3,8 @@
 import { DIFFICULTIES } from '../config.js';
 import { audio } from '../audio.js';
 import { injectCSS, el } from '../ui/dom.js';
-import { normalizeCode } from './transport.js';
+import { normalizeCode, getTurn, setTurn, parseTurn, encodeTurn, turnLabel } from './transport.js';
+import { netLogText, clearNetLog } from './diag.js';
 
 const NAME_KEY = 'zombi-ciftlik-net-name';
 
@@ -36,6 +37,32 @@ body:not(.playing) #net-panel { display:none; }
 #net-panel li span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #net-panel li em { font-style:normal; color:var(--muted); font-variant-numeric:tabular-nums; }
 #net-panel.min ul, #net-panel.min .np-st { display:none; }
+#net-panel .np-diag-btn { display:block; width:100%; margin-top:6px; padding:3px 6px; font-size:11px; min-height:0; }
+#net-panel .np-diag { display:none; margin-top:6px; padding-top:6px; border-top:1px solid rgba(255,255,255,.12); max-height:52vh; overflow:auto; }
+#net-panel.diag { width:260px; }
+#net-panel.diag .np-diag { display:block; }
+#net-panel.min .np-diag, #net-panel.min .np-diag-btn { display:none; }
+#net-panel .np-lines { font-size:11px; line-height:1.45; color:var(--muted); word-break:break-word; margin:0 0 6px; }
+#net-panel .np-lines b { color:var(--text); font-weight:600; }
+#net-panel .np-adv { font-size:11px; color:#ffd166; margin:0 0 6px; }
+#net-panel .np-adv:empty { display:none; }
+#net-panel .np-diag button { padding:3px 8px; font-size:11px; min-height:0; margin:2px 4px 2px 0; }
+.turn-form { display:grid; gap:4px; margin-top:6px; }
+.turn-form h5 { margin:4px 0 0; font-size:11px; color:var(--text); }
+.turn-form p { margin:0; font-size:10.5px; color:var(--muted); }
+.turn-form input { width:100%; min-height:26px; padding:3px 6px; border-radius:6px; border:1px solid var(--stroke); background:rgba(255,255,255,.07); color:var(--text); font:inherit; font-size:11px; box-sizing:border-box; }
+.turn-form .tf-st { min-height:14px; }
+.turn-form .tf-st.err { color:var(--red); }
+.mp-pick details summary { cursor:pointer; font-size:12px; color:var(--muted); }
+.mp-pick .turn-form input { font-size:13px; min-height:34px; }
+.mp-pick .turn-form button { min-height:32px; margin-right:6px; }
+#net-reconnect { position:absolute; left:50%; top:38%; transform:translate(-50%,-50%); z-index:60; min-width:260px; max-width:min(92vw,420px); padding:16px 18px; text-align:center; pointer-events:auto; display:none; }
+#net-reconnect.show { display:block; }
+#net-reconnect h3 { margin:0 0 6px; font-size:16px; }
+#net-reconnect p { margin:0 0 10px; font-size:12.5px; color:var(--muted); }
+#net-reconnect .nr-tip { color:#ffd166; }
+#net-reconnect .nr-tip:empty, #net-reconnect .nr-why:empty, #net-reconnect .nr-step:empty { display:none; }
+body.is-touch #net-panel.diag, #net-panel.diag { max-width:calc(100vw - 16px); }
 body.is-touch #net-panel { top:calc(env(safe-area-inset-top, 0px) + 196px); right:8px; width:150px; padding:7px 9px; font-size:11px; }
 @media (max-width: 600px) { #net-panel { top:calc(env(safe-area-inset-top, 0px) + 196px); right:8px; width:150px; padding:7px 9px; font-size:11px; } }
 `;
@@ -45,14 +72,72 @@ export function playerName() {
 }
 function saveName(n) { try { localStorage.setItem(NAME_KEY, n); } catch { /* yok say */ } }
 
+// Davet linki: TURN ayarlıysa misafir de aynı TURN ile bağlansın diye kodlanmış hâli eklenir.
+// ?net=local (test) korunur.
 export function inviteLink(code) {
-  return `${location.origin}${location.pathname}?oda=${encodeURIComponent(code)}`;
+  let extra = '';
+  try { if (new URLSearchParams(location.search).get('net') === 'local') extra += '&net=local'; } catch { /* yok say */ }
+  const t = encodeTurn(getTurn());
+  if (t) extra += `&turn=${t}`;
+  return `${location.origin}${location.pathname}?oda=${encodeURIComponent(code)}${extra}`;
 }
 
-function copyText(text) {
-  try { navigator.clipboard.writeText(text); return true; } catch { /* aşağıda dene */ }
-  try { window.prompt('Kopyala:', text); } catch { /* yok say */ }
+export function copyText(text) {
+  const fallback = () => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      if (ok) return;
+    } catch { /* aşağıda dene */ }
+    try { window.prompt('Kopyala:', text); } catch { /* yok say */ }
+  };
+  try {
+    if (navigator.clipboard?.writeText) { navigator.clipboard.writeText(text).catch(fallback); return true; }
+  } catch { /* aşağıda */ }
+  fallback();
   return false;
+}
+
+// TURN ayar formu (oda paneli ve ana menü): adres (ana makine / turn: URL'leri / iceServers JSON), kullanıcı, şifre
+export function turnForm(onChange) {
+  const box = el('div', 'turn-form');
+  box.innerHTML = '<h5>TURN sunucusu (farklı ağlar için)</h5>'
+    + '<p>Farklı evlerden ya da mobil veriden bağlanıyorsanız doğrudan bağlantı NAT yüzünden kurulamayabilir/kopabilir. Ücretsiz bir TURN (ör. Metered.ca) bilgilerini gir; davet linkine otomatik eklenir.</p>'
+    + '<input class="tf-url" placeholder="standard.relay.metered.ca · turn:… · ya da iceServers JSON" autocomplete="off">'
+    + '<input class="tf-user" placeholder="Kullanıcı adı (username)" autocomplete="off">'
+    + '<input class="tf-pass" placeholder="Şifre (credential)" type="password" autocomplete="off">'
+    + '<div><button class="tf-save">💾 Kaydet</button><button class="tf-clear">Temizle</button></div><p class="tf-st"></p>';
+  const [u, n, pw] = ['.tf-url', '.tf-user', '.tf-pass'].map((q) => box.querySelector(q));
+  const st = box.querySelector('.tf-st');
+  const show = (t, err) => { st.textContent = t; st.classList.toggle('err', !!err); };
+  const cur = getTurn();
+  if (cur) {
+    const s0 = cur.servers[0];
+    u.value = cur.servers.length > 1 ? JSON.stringify(cur.servers) : [].concat(s0.urls).join(', ');
+    n.value = s0.username || ''; pw.value = s0.credential || '';
+    show(`Etkin: ${turnLabel(cur)}`);
+  }
+  [u, n, pw].forEach((i) => i.addEventListener('keydown', (e) => e.stopPropagation()));
+  box.querySelector('.tf-save').addEventListener('click', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    try {
+      const cfg = parseTurn(u.value, n.value.trim(), pw.value.trim());
+      if (!cfg) { show('Adres boş', true); return; }
+      setTurn(cfg);
+      show(`Kaydedildi: ${turnLabel(cfg)}. Yeni bağlantılarda kullanılır; davet linkini yeniden kopyala.`);
+      onChange?.(cfg);
+    } catch (err) { show(err.message || String(err), true); }
+  });
+  box.querySelector('.tf-clear').addEventListener('click', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    setTurn(null); u.value = n.value = pw.value = '';
+    show('TURN kaldırıldı (yalnızca STUN + PeerJS genel TURN).');
+    onChange?.(null);
+  });
+  return box;
 }
 
 // Ana menüye çok oyunculu bölümünü bağlar.
@@ -96,6 +181,10 @@ export function installNetMenu(scene, hasSave, cb) {
   jb.id = 'mp-join';
   row.append(codeIn, jb);
   join.appendChild(row);
+  const adv = el('details', 'mp-turn');
+  adv.innerHTML = `<summary>${getTurn() ? `⚙️ TURN etkin: ${turnLabel()}` : '⚙️ Gelişmiş: TURN sunucusu (farklı ağlardan bağlanamıyorsanız)'}</summary>`;
+  adv.appendChild(turnForm());
+  box.appendChild(adv);
   const status = el('p', 'mp-status');
   box.appendChild(status);
   const setStatus = (t, err) => { status.textContent = t || ''; status.classList.toggle('err', !!err); jb.disabled = !!t && !err; };
@@ -145,7 +234,68 @@ export class RoomPanel {
     });
     this.root.querySelector('.np-min').addEventListener('click', (e) => { e.stopPropagation(); this.root.classList.toggle('min'); });
     this.copyBtn = copy;
+    // Bağlantı teşhisi (açılır)
+    const db = el('button', 'np-diag-btn', '📶 Bağlantı ▸');
+    const diag = el('div', 'np-diag', '<div class="np-lines"></div><p class="np-adv"></p><div><button class="np-log">📋 Günlüğü kopyala</button><button class="np-clr">Günlüğü sil</button></div>');
+    this.root.append(db, diag);
+    this.diagBtn = db;
+    this.linesEl = diag.querySelector('.np-lines');
+    this.advEl = diag.querySelector('.np-adv');
+    diag.appendChild(turnForm(() => { this.onTurn?.(); this.refreshDiag(); }));
+    db.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const on = this.root.classList.toggle('diag');
+      db.textContent = on ? '📶 Bağlantı ▾' : '📶 Bağlantı ▸';
+      if (on) this.refreshDiag();
+    });
+    diag.querySelector('.np-log').addEventListener('click', (e) => {
+      e.stopPropagation();
+      copyText(netLogText(this.lastState));
+      this.onToast?.('Bağlantı günlüğü kopyalandı 📋');
+    });
+    diag.querySelector('.np-clr').addEventListener('click', (e) => { e.stopPropagation(); clearNetLog(); this.refreshDiag(); });
+    diag.addEventListener('keydown', (e) => e.stopPropagation());
+    this.diagTimer = setInterval(() => { if (this.root.classList.contains('diag')) this.refreshDiag(); }, 1000);
   }
+
+  // provider: async () => ({ lines: [[etiket, değer], …], advice })
+  setDiagProvider(fn) { this.diagFn = fn; }
+
+  async refreshDiag() {
+    if (!this.diagFn || this.busy) return null;
+    this.busy = true;
+    try {
+      const d = await this.diagFn();
+      this.lastState = Object.fromEntries(d.lines || []);
+      this.linesEl.innerHTML = '';
+      for (const [k, v] of d.lines || []) {
+        const row = document.createElement('div');
+        const b = document.createElement('b'); b.textContent = k + ': ';
+        row.append(b, document.createTextNode(String(v)));
+        this.linesEl.appendChild(row);
+      }
+      this.advEl.textContent = d.advice || '';
+      return d;
+    } catch (e) { console.warn('Teşhis', e); return null; } finally { this.busy = false; }
+  }
+
+  // Yeniden bağlanma göstergesi (ekran ortası): n = deneme sayısı, reason = Türkçe neden
+  showReconnect(n, reason, tip, onCancel, step) {
+    let o = document.getElementById('net-reconnect');
+    if (!o) {
+      o = el('div', 'glass', '<h3></h3><p class="nr-why"></p><p class="nr-step"></p><p class="nr-tip"></p><button class="nr-cancel">Vazgeç</button>');
+      o.id = 'net-reconnect';
+      (document.getElementById('feature-ui') || document.getElementById('ui')).appendChild(o);
+    }
+    o.querySelector('h3').textContent = `Yeniden bağlanılıyor… (${n})`;
+    o.querySelector('.nr-why').textContent = reason ? `Neden: ${reason}` : '';
+    o.querySelector('.nr-step').textContent = step || '';
+    o.querySelector('.nr-tip').textContent = tip || '';
+    o.querySelector('.nr-cancel').onclick = (e) => { e.stopPropagation(); onCancel?.(); };
+    o.classList.add('show');
+  }
+
+  hideReconnect() { document.getElementById('net-reconnect')?.classList.remove('show'); }
 
   setCode(code, canInvite) {
     this.code = code;
@@ -173,7 +323,7 @@ export class RoomPanel {
     }
   }
 
-  destroy() { this.root.remove(); }
+  destroy() { clearInterval(this.diagTimer); this.hideReconnect(); this.root.remove(); }
 }
 
 // Uzak panel HTML'indeki ikon dataURL'lerini kısa anahtara çevir / geri aç

@@ -18,7 +18,7 @@ async function online() {
   } catch { return false; }
 }
 
-test('co-op gerçek ağ: PeerJS ile iki bağlam bağlanır, eylemler senkron kalır', { timeout: 150000 }, async (t) => {
+test('co-op gerçek ağ: PeerJS ile iki bağlam bağlanır, eylemler senkron kalır, kopunca geri döner', { timeout: 200000 }, async (t) => {
   if (!(await online())) { t.skip('İnternet / PeerJS sinyal sunucusu erişilemiyor'); return; }
   const srv = await startServer();
   const browser = await launchMP();
@@ -70,6 +70,27 @@ test('co-op gerçek ağ: PeerJS ile iki bağlam bağlanır, eylemler senkron kal
   const st = await host.evaluate(() => { const g = [...game.scene.getScene('Game').net.guests.values()][0]; return { ping: Math.round(g.ping), out: g.conn.stats.out, sec: (performance.now() - g.conn.stats.t0) / 1000, fast: !!g.conn.fastFn }; });
   console.log(`[PeerJS] katılma ${joinMs} ms · ping ${st.ping} ms · hızlı kanal misafir:${fast} host:${st.fast} · ort. ${(st.out / st.sec / 1024).toFixed(1)} KB/sn · özet: ${sync.diff.length ? sync.diff.join(' | ') : 'aynı'}`);
   assert.deepEqual(sync.diff, [], 'gerçek ağda dünya özetleri eşleşmeli');
+  // Teşhis: ilk görüntü boyutu (PeerJS json kanalı 16300 bayttan büyük tek mesajı reddeder → parçalanmalı), aday çifti
+  const diag = await host.evaluate(async () => {
+    const g = [...game.scene.getScene('Game').net.guests.values()][0];
+    const inf = await g.conn.info();
+    return { maxMsg: g.conn.stats.maxMsg, chunked: g.conn.stats.chunked, chunks: g.conn.stats.chunks, peak: g.conn.stats.peakBuf, pair: inf.pair, sctp: inf.maxMsgSize };
+  });
+  console.log(`[PeerJS] en büyük mesaj ${diag.maxMsg} krk · ${diag.chunked} parçalı (${diag.chunks} parça) · tampon tepe ${diag.peak} B · aday ${JSON.stringify(diag.pair)} · SCTP maxMessageSize ${diag.sctp}`);
+
+  // Yeniden bağlanma: misafir veri kanalını kapatır → otomatik döner, konum korunur
+  await host.evaluate(() => { const g = [...game.scene.getScene('Game').net.guests.values()][0]; g.inv.add('stone', 5); });
+  await guest.waitForFunction(() => game.scene.getScene('Game').inventory.count('stone') >= 5, null, { timeout: 5000 });
+  const before = await guest.evaluate(() => { const p = game.scene.getScene('Game').player; return [p.x, p.y]; });
+  const r0 = Date.now();
+  await guest.evaluate(() => game.scene.getScene('Game').net.conn.close('dc-closed'));
+  const back = await guest.waitForFunction(() => { const n = game.scene.getScene('Game').net; return n.welcomed && n.conn.open && n.reconnects >= 1; }, null, { timeout: 45000 }).then(() => true, () => false);
+  assert.ok(back, 'misafir gerçek ağda yeniden bağlanmalı');
+  await host.waitForFunction(() => game.scene.getScene('Game').netPlayers?.length === 1, null, { timeout: 10000 });
+  const after = await guest.evaluate(() => { const s = game.scene.getScene('Game'); return [s.player.x, s.player.y, s.inventory.count('stone')]; });
+  console.log(`[PeerJS] yeniden bağlanma ${Date.now() - r0} ms · konum farkı ${Math.hypot(after[0] - before[0], after[1] - before[1]).toFixed(1)} px`);
+  assert.ok(Math.hypot(after[0] - before[0], after[1] - before[1]) < 4, 'konum korunmalı');
+  assert.ok(after[2] >= 5, 'envanter korunmalı');
   assert.deepEqual([...new Set(hostErr)], [], 'host hataları');
   assert.deepEqual([...new Set(guestErr)].filter((e) => !/peerjs|webrtc|ice/i.test(e)), [], 'misafir hataları');
 });

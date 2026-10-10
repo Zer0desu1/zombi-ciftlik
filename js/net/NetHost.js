@@ -13,8 +13,19 @@ import { Inventory } from '../systems/Inventory.js';
 import { useSelected } from '../systems/PlayerActions.js';
 import { iconCacheEntries } from '../textures.js';
 import { MirrorWriter } from './mirror.js';
-import { openRoom } from './transport.js';
+import { openRoom, getTurn, iceConfig } from './transport.js';
 import { RoomPanel, inviteLink, packIcons, byPath } from './NetUI.js';
+import { netLog, reasonText, workerInterval, pairText } from './diag.js';
+
+const ROOM_KEY = 'zombi-ciftlik-net-room';  // son oda kodu: host sayfası yenilenince aynı kod geri alınır
+const ROOM_TTL = 12 * 3600 * 1000;
+const SILENT_MS = 12000;                    // bu kadar sessizlik → kopmuş say
+const SILENT_HIDDEN_MS = 45000;             // karşı taraf arka planda ise (tarayıcı zamanlayıcıları kısar/dondurur)
+const HOLD_MS = 60000;                      // kopan misafirin konumu bu süre içinde dönerse korunur
+export function lastRoomCode() {
+  try { const r = JSON.parse(localStorage.getItem(ROOM_KEY) || 'null'); return r && Date.now() - r.t < ROOM_TTL ? r.code : null; } catch { return null; }
+}
+function saveRoomCode(code) { try { localStorage.setItem(ROOM_KEY, JSON.stringify({ code, t: Date.now() })); } catch { /* yok say */ } }
 
 export const PROTO = 1;
 export const MAX_GUESTS = 3;
@@ -73,27 +84,70 @@ export class NetHost {
     this.panel = new RoomPanel();
     this.panel.onToast = (m) => scene.hud.toast(m, 'ok');
     this.panel.setStatus('Oda açılıyor…');
+    this.panel.setDiagProvider(() => this.diagInfo());
     this.refreshRoster();
+    this.held = new Map(); // ad → { sid, t }: kopan misafirler (konum netGuestStore'da)
 
     this.installHooks();
-    // Oyun yeniden başlatıldıysa aynı oda (aynı kod) devralınır: misafirler aynı kodla geri döner
-    const ready = room ? Promise.resolve(room).then((h) => { h.rebind?.((conn) => this.onConn(conn)); return h; }) : openRoom((conn) => this.onConn(conn));
+    // Oyun yeniden başlatıldıysa aynı oda (aynı kod) devralınır: misafirler aynı kodla geri döner.
+    // Sayfa yenilendiyse son oda kodu (localStorage) geri alınmaya çalışılır.
+    const preferCode = room ? null : lastRoomCode();
+    const ready = room ? Promise.resolve(room).then((h) => { h.rebind?.((conn) => this.onConn(conn)); return h; })
+      : openRoom((conn) => this.onConn(conn), { preferCode, onStatus: (t) => this.panel.setStatus(t) });
     ready.then((h) => {
       if (this.closed) { if (!this.keepRoom) h.close(); return; }
       this.handle = h;
       this.code = h.code;
+      saveRoomCode(h.code);
+      netLog('host', 'room-open', `${h.code}${preferCode ? (preferCode === h.code ? ' (önceki kod geri alındı)' : ` (önceki ${preferCode} alınamadı)`) : ''} · TURN: ${getTurn() ? 'kullanıcı' : 'yok'}`);
       this.panel.setCode(h.code, true);
-      this.panel.setStatus('Arkadaşlarını davet et (en fazla 3)');
+      this.statusLine();
+      h.onSignal = () => this.statusLine();
       scene.hud.toast(room ? `Yeni oyun aynı odada: ${h.code}` : `Oda kuruldu: ${h.code} · Davet linki için 🔗`, 'ok');
     }).catch((e) => {
       console.warn('Oda kurulamadı', e);
+      netLog('host', 'room-failed', e?.type || e?.message || String(e));
       this.panel.setCode('Çevrimdışı', false);
       this.panel.setStatus(`Oda kurulamadı: ${e?.message || e}`, true);
       scene.hud.toast('Oda kurulamadı; tek başına devam ediyorsun.', 'warn');
     });
-    this.pingTimer = setInterval(() => this.heartbeat(), 2000);
+    // Ping/zaman aşımı denetimi Worker zamanlayıcısıyla: arka plan sekmesinde setInterval dakikada bire düşebilir
+    this.stopPing = workerInterval(() => this.heartbeat(), 2000);
+    this.onVis = () => {
+      const hidden = document.visibilityState === 'hidden';
+      netLog('host', hidden ? 'tab-hidden' : 'tab-visible');
+      this.broadcast({ t: 'vis', h: hidden ? 1 : 0 });
+      // Dönüşte (mobilde sayfa donmuş olabilir) misafirlerin sessizliğini hemen kopma sayma: 5 sn tanı
+      if (!hidden) { const now = performance.now(); for (const g of this.guests.values()) g.lastSeen = Math.max(g.lastSeen, now - SILENT_MS + 5000); }
+    };
+    document.addEventListener('visibilitychange', this.onVis);
     this.keepAlive(scene.game);
     scene.events.once('shutdown', () => this.close());
+  }
+
+  statusLine() {
+    if (!this.handle) return;
+    const ok = this.handle.signalOk?.() ?? true;
+    this.panel.setStatus(ok ? `Arkadaşlarını davet et (en fazla 3) · sinyal ✔` : 'Sinyal sunucusu koptu, yeniden bağlanılıyor… (oyun sürer)', !ok);
+  }
+
+  // Teşhis paneli verisi
+  async diagInfo() {
+    const now = performance.now(), lines = [];
+    const sig = this.handle ? (this.handle.signalOk?.() ? 'kayıtlı ✔' : `koptu (deneme ${this.handle.signal?.tries || 0})`) : 'oda açılmadı';
+    lines.push(['Rol', `host · oda ${this.code || '—'}`], ['Sinyal sunucusu', sig], ['TURN', getTurn() ? 'kullanıcı TURN ✔' : 'yok (STUN + PeerJS genel TURN)']);
+    if (document.visibilityState === 'hidden') lines.push(['Sekme', 'arka planda']);
+    let advice = '';
+    for (const g of this.guests.values()) {
+      const inf = await g.conn.info().catch(() => ({}));
+      lines.push([g.name, `ICE ${inf.ice || '?'} · ${pairText(inf.pair)} · ping ${Math.round(g.ping)} ms · son mesaj ${((now - g.lastSeen) / 1000).toFixed(1)} sn${g.hidden ? ' · arka planda' : ''}${inf.maxMsgSize ? ` · maxMsg ${inf.maxMsgSize}` : ''}`]);
+      if (inf.pair && inf.pair.local !== 'relay' && inf.pair.remote !== 'relay' && (this.drops?.[g.name] || 0) >= 2 && !getTurn()) advice = `${g.name} sık kopuyor ve bağlantı TURN üzerinden değil: farklı ağlardaysanız aşağıya bir TURN sunucusu ekleyin.`;
+    }
+    if (!this.guests.size) lines.push(['Misafir', 'yok']);
+    if (this.lastDrop) lines.push(['Son kopma', `${this.lastDrop.name}: ${reasonText(this.lastDrop.reason)} (${new Date(this.lastDrop.at).toLocaleTimeString()})`]);
+    lines.push(['Kopma sayısı', Object.values(this.drops || {}).reduce((a, b) => a + b, 0)]);
+    lines.push(['ICE sunucuları', iceConfig().iceServers.map((x) => [].concat(x.urls)[0].replace(/\?.*$/, '')).join(', ')]);
+    return { lines, advice };
   }
 
   // Host sekmesi arka plana geçince (başka sekme/pencere) tarayıcı rAF'ı durdurur/kısar ve Phaser oyunu duraklatır:
@@ -111,6 +165,7 @@ export class NetHost {
       w.onmessage = () => {
         // rAF durmuş ya da kısılmışsa (gizli/odak dışı sekme) döngüyü elle adımla
         const loop = game.loop, now = performance.now();
+        // rAF döngüsü bir istisnayla ölmüşse (loop.running ama adım gelmiyor) de bu yol oyunu sürdürür
         if (!loop?.running || now - (loop.now || 0) < 50) return;
         try { loop.step(now); } catch (e) { console.warn('Arka plan adımı', e); }
       };
@@ -193,26 +248,75 @@ export class NetHost {
 
   // ---------------- Bağlantılar ----------------
   onConn(conn) {
-    if (this.closed) { conn.close(); return; } // oda yeni oturuma devredilirken gelen bağlantı: misafir yeniden dener
+    if (this.closed) { conn.close('host-closed'); return; } // oda yeni oturuma devredilirken gelen bağlantı: misafir yeniden dener
     let g = null;
-    const timer = setTimeout(() => { if (!g) conn.close(); }, 10000);
+    const timer = setTimeout(() => { if (!g) conn.close('join-failed'); }, 15000);
     conn.onData((m) => {
       if (!m || typeof m !== 'object') return;
       if (!g) {
         if (m.t !== 'hello') return;
         clearTimeout(timer);
-        if (this.guests.size >= MAX_GUESTS) { conn.send({ t: 'full' }); setTimeout(() => conn.close(), 300); return; }
-        if (this.scene.gameOver) { conn.send({ t: 'over', stats: null }); setTimeout(() => conn.close(), 300); return; }
-        g = this.addGuest(conn, m.name);
+        try {
+          // Aynı oyuncu (oturum kimliği / aynı ad + eski bağlantı sessiz) yeni bağlantıyla döndü: karakteri devral
+          const old = this.findReturning(m);
+          if (old) { g = this.takeover(old, conn); return; }
+          if (this.guests.size >= MAX_GUESTS) { conn.send({ t: 'full' }); setTimeout(() => conn.close('manual'), 300); return; }
+          if (this.scene.gameOver) { conn.send({ t: 'over', stats: null }); setTimeout(() => conn.close('manual'), 300); return; }
+          g = this.addGuest(conn, m.name, m.sid);
+        } catch (e) {
+          console.warn('Misafir eklenemedi', e);
+          netLog('host', 'handler-error', `hello: ${e?.message || e}`);
+        }
         return;
       }
+      if (g.conn !== conn) return; // devralınmış eski bağlantı
       g.lastSeen = performance.now();
-      try { this.onMsg(g, m); } catch (e) { console.warn('Misafir mesajı işlenemedi', m?.t, e); }
+      try { this.onMsg(g, m); } catch (e) {
+        console.warn('Misafir mesajı işlenemedi', m?.t, e);
+        const now = performance.now();
+        if (!this.errAt || now - this.errAt > 5000) { this.errAt = now; netLog('host', 'handler-error', `${m?.t}: ${e?.message || e}`); }
+      }
     });
-    conn.onClose(() => { clearTimeout(timer); if (g) this.removeGuest(g); });
+    conn.onClose((reason) => { clearTimeout(timer); if (g && g.conn === conn) this.removeGuest(g, reason || conn.reason); });
   }
 
-  addGuest(conn, rawName) {
+  findReturning(m) {
+    const now = performance.now();
+    for (const g of this.guests.values()) {
+      if (m.sid && g.sid === m.sid) return g;
+      if (g.name === String(m.name || '').trim().slice(0, 14) && now - g.lastSeen > 3000) return g;
+    }
+    return null;
+  }
+
+  // Bağlantı değişimi: karakter, envanter, konum aynen kalır; yeni bağlantıya tam dünya gönderilir
+  takeover(g, conn) {
+    const old = g.conn;
+    g.conn = conn;
+    g.lastSeen = performance.now();
+    g.hidden = false;
+    g.mvQ = 0; g.lastMe = ''; g.uiModal = null; g.uiHtml = ''; g.lastQuests = ''; g.invDirty = true;
+    try { old.close('replaced'); } catch { /* yok say */ }
+    netLog('host', 'guest-returned', `${g.name} (bağlantı devralındı)`);
+    this.sendSnapshot();
+    this.welcome(g);
+    this.scene.hud.toast(`${g.name} yeniden bağlandı`, 'ok');
+    this.refreshRoster();
+    return g;
+  }
+
+  welcome(g) {
+    const s = this.scene, p = g.player;
+    const turn = getTurn();
+    this.send(g, {
+      t: 'welcome', v: PROTO, id: g.id, name: g.name, color: g.color, diff: s.difficulty?.id || 'normal', x: p.x, y: p.y,
+      snap: this.fullSnapshot(), quests: this.withGuest(g, () => this.questList()) || [], roster: this.rosterList(),
+      ice: turn ? turn.servers : undefined // misafir yeniden bağlanırken aynı TURN'ü kullansın
+    });
+    this.sendMe(g, true);
+  }
+
+  addGuest(conn, rawName, sid) {
     const s = this.scene;
     let name = String(rawName || 'Misafir').trim().slice(0, 14) || 'Misafir';
     const taken = new Set([this.name, ...[...this.guests.values()].map((x) => x.name)]);
@@ -223,7 +327,7 @@ export class NetHost {
     const door = s.shelter.door;
     const p = new Player(s, door.x - 16 + slot * 8, door.y + 14);
     const g = {
-      id, slot, conn, name, color: PLAYER_COLORS[slot] || 0xffffff, player: p, inv: new Inventory(), selected: 0,
+      id, slot, conn, name, sid: sid || null, hidden: false, color: PLAYER_COLORS[slot] || 0xffffff, player: p, inv: new Inventory(), selected: 0,
       hud: null, out: [], sfx: [], lastMe: '', invDirty: true, uiInvDirty: false, uiModal: null, uiHtml: '',
       lastSeen: performance.now(), ping: 0, tx: p.x, ty: p.y, flip: false, moving: false, angle: 0, hint: '', hintT: 0, sentTp: -1
     };
@@ -244,7 +348,14 @@ export class NetHost {
       p.hp = Math.max(1, Math.min(p.maxHp, saved.hp ?? p.maxHp));
       p.energy = Math.min(p.maxEnergy, saved.energy ?? p.maxEnergy);
       g.selected = saved.selected || 0;
+      // Kısa süre önce koptuysa kaldığı yerden devam (konum + hayatta olma)
+      const pos = saved.pos;
+      if (pos && Date.now() - pos.t < HOLD_MS && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
+        p.setPosition(pos.x, pos.y);
+        g.restored = true;
+      }
     } else START_INVENTORY.forEach(([iid, n]) => g.inv.add(iid, n));
+    g.tx = p.x; g.ty = p.y;
     g.inv.onChange(() => {
       g.invDirty = true; g.uiInvDirty = true;
       this.withGuest(g, () => s.events.emit('guestInventoryChanged')); // ör. ilan panosu toplama görevleri
@@ -257,18 +368,18 @@ export class NetHost {
     // Mevcut misafirlerin taban durumu güncel olsun, sonra yeniye tamamını gönder
     if (this.guests.size > 1) this.sendSnapshot();
     else this.resetBaseline();
-    this.send(g, {
-      t: 'welcome', v: PROTO, id, name, color: g.color, diff: s.difficulty?.id || 'normal', x: p.x, y: p.y,
-      snap: this.fullSnapshot(), quests: this.withGuest(g, () => this.questList()) || [], roster: this.rosterList()
-    });
-    this.sendMe(g, true);
-    s.hud.toast(`${name} oyuna katıldı 👋`, 'ok');
-    this.broadcast({ t: 'toast', m: `${name} oyuna katıldı 👋`, ty: 'ok' }, g);
+    if (g.restored) { try { s.netMoveCheck?.(g); } catch (e) { console.warn('Konum doğrulama', e); } }
+    this.welcome(g);
+    const back = this.held.has(name);
+    this.held.delete(name);
+    netLog('host', back ? 'guest-returned' : 'guest-joined', `${name}${g.restored ? ' (konum korundu)' : ''}`);
+    s.hud.toast(back ? `${name} geri döndü 👋` : `${name} oyuna katıldı 👋`, 'ok');
+    this.broadcast({ t: 'toast', m: back ? `${name} geri döndü 👋` : `${name} oyuna katıldı 👋`, ty: 'ok' }, g);
     this.refreshRoster();
     return g;
   }
 
-  removeGuest(g) {
+  removeGuest(g, reason) {
     if (!this.guests.has(g.id)) return;
     const s = this.scene;
     if (this.ctx === g) this.ctx = null;
@@ -277,8 +388,18 @@ export class NetHost {
     s.netPlayers = s.netPlayers.filter((p) => p !== g.player);
     g.player.destroy();
     g.label.destroy();
-    if (!this.closed) s.hud.toast(`${g.name} ayrıldı`, 'warn');
-    this.broadcast({ t: 'toast', m: `${g.name} ayrıldı`, ty: 'warn' });
+    const voluntary = reason === 'peer-left' || reason === 'manual' || reason === 'host-closed';
+    if (!this.closed) {
+      netLog('host', 'guest-lost', `${g.name}: ${reasonText(reason)}`);
+      if (!voluntary) {
+        this.drops = this.drops || {};
+        this.drops[g.name] = (this.drops[g.name] || 0) + 1;
+        this.lastDrop = { name: g.name, reason, at: Date.now() };
+        this.held.set(g.name, { sid: g.sid, t: Date.now() });
+      }
+      s.hud.toast(voluntary ? `${g.name} ayrıldı` : `${g.name} bağlantısı koptu (${reasonText(reason).split(':')[0]}); 60 sn içinde dönerse kaldığı yerden devam eder`, 'warn');
+    }
+    this.broadcast({ t: 'toast', m: voluntary ? `${g.name} ayrıldı` : `${g.name} bağlantısı koptu, bekleniyor…`, ty: 'warn' });
     this.refreshRoster();
   }
 
@@ -288,7 +409,8 @@ export class NetHost {
       if (!f.playerState || !g.fstate?.[f.id]) continue;
       try { fs[f.id] = f.playerState.save(g.fstate[f.id]); } catch (e) { console.warn(f.id, e); }
     }
-    this.scene.netGuestStore[g.name] = { inv: g.inv.serialize(), coins: p.coins, hp: Math.max(1, Math.round(p.hp)), energy: Math.round(p.energy), selected: g.selected, fs };
+    const pos = p.alive ? { x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, t: Date.now() } : null;
+    this.scene.netGuestStore[g.name] = { inv: g.inv.serialize(), coins: p.coins, hp: Math.max(1, Math.round(p.hp)), energy: Math.round(p.energy), selected: g.selected, fs, pos };
   }
 
   // Oyuncu başına özellik durumları (yetenek ağacı, silah seviyeleri, güçlendirmeler): kayıttan ya da sıfırdan
@@ -345,10 +467,11 @@ export class NetHost {
   close() {
     if (this.closed) return;
     this.closed = true;
-    clearInterval(this.pingTimer);
+    this.stopPing?.();
+    document.removeEventListener('visibilitychange', this.onVis);
     this.unhook?.();
     this.broadcast(this.keepRoom ? { t: 'restart' } : { t: 'bye' });
-    for (const g of [...this.guests.values()]) g.conn.close();
+    for (const g of [...this.guests.values()]) g.conn.close('host-closed');
     if (!this.keepRoom) setTimeout(() => this.handle?.close(), 300);
     this.panel.destroy();
   }
@@ -356,9 +479,13 @@ export class NetHost {
   heartbeat() {
     const now = performance.now();
     for (const g of [...this.guests.values()]) {
-      if (now - g.lastSeen > 12000) { g.conn.close(); this.removeGuest(g); continue; }
+      const limit = g.hidden ? SILENT_HIDDEN_MS : SILENT_MS;
+      if (now - g.lastSeen > limit) { g.conn.close(g.hidden ? 'peer-hidden' : 'ping-timeout'); this.removeGuest(g, g.hidden ? 'peer-hidden' : 'ping-timeout'); continue; }
       this.send(g, { t: 'ping', c: now });
     }
+    for (const [n, h] of this.held) if (Date.now() - h.t > HOLD_MS) this.held.delete(n);
+    if (this.code && (!this.roomSavedAt || now - this.roomSavedAt > 30000)) { this.roomSavedAt = now; saveRoomCode(this.code); }
+    if (this.handle) this.statusLine();
     this.refreshRoster();
   }
 
@@ -419,7 +546,12 @@ export class NetHost {
         g.ping = performance.now() - (+m.c || 0);
         return;
       case 'bye':
-        g.conn.close();
+        g.conn.close('peer-left');
+        return;
+      case 'vis': // misafir sekmesi arka plana geçti / döndü: zaman aşımı eşiği buna göre
+        g.hidden = !!m.h;
+        netLog('host', m.h ? 'peer-hidden' : 'peer-visible', g.name);
+        if (m.h) s.hud.toast(`${g.name} sekmeyi arka plana aldı`, 'info');
         return;
       default:
         // Özellik modüllerinin misafir istekleri (ör. balık tutma sonucu): misafir bağlamında
@@ -616,8 +748,17 @@ export class NetHost {
   }
 
   // ---------------- Kare güncellemesi ----------------
+  // Ağ güncellemesindeki bir istisna oyun döngüsünü öldürmesin (Phaser rAF döngüsü istisnada durur)
   update(dt) {
-    for (const g of this.guests.values()) this.tickGuest(g, dt);
+    try { this.updateInner(dt); } catch (e) {
+      console.warn('Ağ güncellemesi hata verdi', e);
+      const now = performance.now();
+      if (!this.updErrAt || now - this.updErrAt > 5000) { this.updErrAt = now; netLog('host', 'handler-error', `update: ${e?.message || e}`); }
+    }
+  }
+
+  updateInner(dt) {
+    for (const g of this.guests.values()) { try { this.tickGuest(g, dt); } catch (e) { console.warn('tickGuest', g.name, e); } }
     if (this.hist) this.recordHistory();
     if (!this.guests.size) return;
     this.snapT -= dt;

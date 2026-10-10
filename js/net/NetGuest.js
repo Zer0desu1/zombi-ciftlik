@@ -8,9 +8,22 @@ import { iconURL } from '../textures.js';
 import { features } from '../features/index.js';
 import { regrowResource, depleteResource } from '../systems/MapBuilder.js';
 import { MirrorReader, Interp, NetClock } from './mirror.js';
-import { joinRoom } from './transport.js';
+import { joinRoom, getTurn, setTurn, iceConfig } from './transport.js';
 import { PROTO } from './NetHost.js';
 import { RoomPanel, unpackIcons, pathOf } from './NetUI.js';
+import { netLog, reasonText, workerInterval, pairText } from './diag.js';
+
+const SILENT_MS = 12000;           // host'tan bu kadar veri gelmezse kopmuş say
+const SILENT_HIDDEN_MS = 45000;    // host (ya da biz) arka plandayken
+const WELCOME_STALL_MS = 15000;    // ilk dünya verisi bu kadar ilerlemezse yeniden dene
+const SID_KEY = 'zombi-ciftlik-net-sid';
+function sessionId() {
+  try {
+    let s = sessionStorage.getItem(SID_KEY);
+    if (!s) { s = Math.random().toString(36).slice(2, 12); sessionStorage.setItem(SID_KEY, s); }
+    return s;
+  } catch { return Math.random().toString(36).slice(2, 12); }
+}
 
 // Misafirde de çalışan özellik parçaları (yalnızca görsel/arayüz). Diğer özellikler guestInit/guestUpdate
 // (registry sözleşmesi) ile yalnızca görsel kısımlarını misafirde çalıştırır.
@@ -24,10 +37,12 @@ const BOW_CHARGE = 0.4;
 const HEAR = 230; // px: ortam seslerinin duyulduğu mesafe
 
 export class NetGuest {
-  static async join(scene, code, name) {
-    const conn = await joinRoom(code);
+  static async join(scene, code, name, onStatus) {
+    netLog('misafir', 'join', `${code} · TURN: ${getTurn() ? 'kullanıcı' : 'yok'}`);
+    const conn = await joinRoom(code, { onStatus });
     const g = new NetGuest(scene, conn, code, name);
-    conn.send({ t: 'hello', name, v: PROTO });
+    g.onStatus = onStatus;
+    g.hello();
     return g;
   }
 
@@ -36,6 +51,10 @@ export class NetGuest {
     this.scene = scene;
     this.code = code;
     this.name = name;
+    this.sid = sessionId();
+    this.drops = 0;
+    this.reconnects = 0;
+    this.peerHidden = false;
     this.started = false;
     this.avatars = new Map();
     this.hint = '';
@@ -56,17 +75,40 @@ export class NetGuest {
     this.charge = null;
     this.lastSeen = performance.now();
     this.attach(conn);
-    this.pingTimer = setInterval(() => this.heartbeat(), 2000);
+    // Ping + zaman aşımı Worker zamanlayıcısıyla (arka plan sekmesinde setInterval kısılır)
+    this.stopPing = workerInterval(() => this.heartbeat(), 2000);
+    this.onVis = () => this.visibility();
+    document.addEventListener('visibilitychange', this.onVis);
     scene.events.once('shutdown', () => this.close());
+  }
+
+  hello() {
+    this.welcomeWait = performance.now();
+    this.send({ t: 'hello', name: this.name, v: PROTO, sid: this.sid });
+    if (document.visibilityState === 'hidden') this.send({ t: 'vis', h: 1 });
   }
 
   attach(conn) {
     this.conn = conn;
     conn.onData((m) => {
+      if (this.conn !== conn) return;
       this.lastSeen = performance.now();
-      try { this.onMsg(m); } catch (e) { console.warn('Host mesajı işlenemedi', m?.t, e); }
+      try { this.onMsg(m); } catch (e) {
+        console.warn('Host mesajı işlenemedi', m?.t, e);
+        const now = performance.now();
+        if (!this.errAt || now - this.errAt > 5000) { this.errAt = now; netLog('misafir', 'handler-error', `${m?.t}: ${e?.message || e}`); }
+      }
     });
-    conn.onClose(() => { if (this.conn === conn) this.onLost(); });
+    // İlk dünya verisi parça parça gelir: ilerleme göster, takılırsa yeniden dene
+    conn.onProgress = (got, n) => {
+      this.welcomeWait = performance.now();
+      if (!this.welcomed && n > 1) {
+        const pct = Math.round((got / n) * 100);
+        if (!this.started) this.onStatus?.(`Dünya yükleniyor… %${pct}`);
+        else this.panel?.showReconnect(this.retries, reasonText(this.lastReason), this.tip(), () => this.giveUp(), `Dünya verisi alınıyor… %${pct}`);
+      }
+    };
+    conn.onClose((reason) => { if (this.conn === conn) this.onLost(reason || conn.reason); });
   }
 
   send(m) { this.conn?.send(m); }
@@ -74,43 +116,144 @@ export class NetGuest {
   close() {
     if (this.closed) return;
     this.closed = true;
-    clearInterval(this.pingTimer);
+    this.stopPing?.();
+    document.removeEventListener('visibilitychange', this.onVis);
     clearTimeout(this.retryTimer);
     this.send({ t: 'bye' });
-    this.conn?.close();
+    this.conn?.close('peer-left');
     this.panel?.destroy();
     this.chargeGfx?.destroy();
   }
 
   heartbeat() {
+    if (this.closed || !this.conn?.open) return;
+    const now = performance.now();
+    // İlk dünya verisi (welcome) bekleniyor ve ilerlemiyor
+    if (!this.welcomed && this.welcomeWait && now - this.welcomeWait > WELCOME_STALL_MS) {
+      this.conn.close('welcome-stall');
+      return;
+    }
+    const hidden = this.peerHidden || document.visibilityState === 'hidden';
+    if (now - this.lastSeen > (hidden ? SILENT_HIDDEN_MS : SILENT_MS)) { this.conn.close(this.peerHidden ? 'peer-hidden' : 'ping-timeout'); return; }
+    this.send({ t: 'ping', c: now });
+  }
+
+  // Sekme görünürlüğü: host'a bildir (eşiği uzatsın); dönüşte bağlantıyı hızla doğrula / yeniden bağlan
+  visibility() {
     if (this.closed) return;
-    if (this.conn?.open && performance.now() - this.lastSeen > 12000) { this.conn.close(); return; }
-    this.send({ t: 'ping', c: performance.now() });
+    const hidden = document.visibilityState === 'hidden';
+    netLog('misafir', hidden ? 'tab-hidden' : 'tab-visible');
+    if (this.conn?.open) this.send({ t: 'vis', h: hidden ? 1 : 0 });
+    if (hidden) return;
+    const now = performance.now();
+    if (this.reconnecting) {
+      // Bekleyen geri çekilmeyi atla, hemen dene
+      clearTimeout(this.retryTimer);
+      if (!this.joining) this.retry();
+    } else if (this.conn?.open) {
+      // Mobilde sayfa donmuş olabilir: 5 sn içinde host'tan veri gelmezse kopmuş say
+      this.lastSeen = Math.max(this.lastSeen, now - SILENT_MS + 5000);
+      this.send({ t: 'ping', c: now });
+    }
   }
 
   // ---------------- Bağlantı kopması / yeniden bağlanma ----------------
-  onLost() {
+  onLost(reason) {
     if (this.closed || this.ended) return;
-    if (!this.started) { this.onFail?.('Bağlantı koptu'); return; }
-    this.panel?.setStatus('Bağlantı koptu, yeniden bağlanılıyor…', true);
-    this.scene.hud.toast('Host ile bağlantı koptu, yeniden bağlanılıyor…', 'warn');
+    this.drops++;
+    this.lastReason = reason || 'dc-closed';
+    this.lastLostAt = Date.now();
+    this.welcomed = false;
+    netLog('misafir', 'lost', `${this.lastReason} · ${reasonText(this.lastReason)}`);
+    if (!this.started) {
+      // İlk katılma: birkaç kez sessizce tekrar dene, sonra menüye hata
+      this.preTries = (this.preTries || 0) + 1;
+      if (this.preTries <= 3) {
+        this.onStatus?.(`Bağlantı koptu (${reasonText(this.lastReason).split(':')[0]}), tekrar deneniyor… (${this.preTries}/3)`);
+        this.reconnecting = true;
+        this.retryTimer = setTimeout(() => this.retry(), 1500);
+        return;
+      }
+      this.onFail?.(`Bağlantı yok: ${reasonText(this.lastReason)}`);
+      return;
+    }
+    this.scene.hud.toast(`Host ile bağlantı koptu: ${reasonText(this.lastReason)}`, 'warn');
+    this.panel?.setStatus(`Bağlantı koptu: ${reasonText(this.lastReason).split(':')[0]}`, true);
+    this.reconnecting = true;
     this.retries = 0;
     this.retry();
   }
 
+  tip() {
+    const r = this.joinErr === 'ice-failed' || this.joinErr === 'join-failed' ? this.joinErr : this.lastReason;
+    if (r === 'ice-failed' || r === 'ice-disconnected' || r === 'join-failed' || (this.drops >= 2 && this.pair && this.pair.local !== 'relay' && this.pair.remote !== 'relay'))
+      return getTurn() ? '' : 'Farklı ağlardan bağlanıyorsanız oda panelindeki 📶 Bağlantı → TURN sunucusu ekleyin.';
+    if (r === 'room-not-found') return 'Host\'un sayfası açık mı? Host sayfayı yenilediyse aynı kodla geri gelmesi beklenir.';
+    return '';
+  }
+
+  // Sınırsız, geri çekilen yeniden bağlanma (1, 2, 3, 5, 8, 10, 10… sn)
   retry() {
-    if (this.closed) return;
-    if (this.retries++ >= 6) {
-      this.panel?.setStatus('Bağlantı kurulamadı. Sayfayı yenileyip tekrar katıl.', true);
-      this.scene.hud.toast('Host\'a yeniden bağlanılamadı.', 'warn');
-      return;
-    }
-    joinRoom(this.code).then((conn) => {
-      if (this.closed) { conn.close(); return; }
+    if (this.closed || this.ended) return;
+    this.retries = (this.retries || 0) + 1;
+    this.reconnects++;
+    if (this.started) this.panel?.showReconnect(this.retries, reasonText(this.lastReason), this.tip(), () => this.giveUp());
+    this.joining = true;
+    joinRoom(this.code, { onStatus: (t) => { if (this.started) this.panel?.showReconnect(this.retries, reasonText(this.lastReason), this.tip(), () => this.giveUp(), t); else this.onStatus?.(t); } }).then((conn) => {
+      this.joining = false;
+      if (this.closed || this.ended) { conn.close('peer-left'); return; }
       this.attach(conn);
       this.lastSeen = performance.now();
-      conn.send({ t: 'hello', name: this.name, v: PROTO });
-    }).catch(() => { this.retryTimer = setTimeout(() => this.retry(), 2500); });
+      this.hello();
+      if (this.started) this.panel?.showReconnect(this.retries, reasonText(this.lastReason), '', () => this.giveUp(), 'Bağlandı, dünya verisi bekleniyor…');
+    }).catch((e) => {
+      this.joining = false;
+      if (this.closed || this.ended) return;
+      this.joinErr = e?.code || 'join-failed';
+      if (!this.started) this.lastReason = this.joinErr;
+      if (!this.started) {
+        this.preTries = (this.preTries || 0) + 1;
+        if (this.preTries > 3) { this.onFail?.(e?.message || 'Bağlanılamadı'); return; }
+        this.onStatus?.(`${e?.message || 'Bağlanılamadı'} — tekrar deneniyor (${this.preTries}/3)`);
+      }
+      const delay = [1000, 2000, 3000, 5000, 8000][this.retries - 1] ?? 10000;
+      if (this.started) this.panel?.showReconnect(this.retries, reasonText(this.lastReason), this.tip(), () => this.giveUp(), `Son deneme: ${e?.message || reasonText(this.joinErr)} — ${Math.round(delay / 1000)} sn sonra tekrar`);
+      this.retryTimer = setTimeout(() => this.retry(), delay);
+    });
+  }
+
+  // "Vazgeç": yeniden bağlanmayı bırak, ana menüye dön (davet linki korunur)
+  giveUp() {
+    netLog('misafir', 'give-up', `${this.retries || 0} deneme`);
+    this.ended = true;
+    this.close();
+    try { location.reload(); } catch { /* yok say */ }
+  }
+
+  // Teşhis paneli verisi
+  async diagInfo() {
+    const now = performance.now(), c = this.conn;
+    const inf = c ? await c.info().catch(() => ({})) : {};
+    if (inf.pair) this.pair = inf.pair;
+    const lines = [
+      ['Rol', `misafir · oda ${this.code}`],
+      ['Durum', c?.open ? (this.welcomed ? 'bağlı ✔' : 'dünya verisi bekleniyor') : (this.reconnecting ? `yeniden bağlanılıyor (${this.retries || 0})` : 'bağlı değil')],
+      ['ICE', inf.ice || '—'],
+      ['Aday çifti', pairText(inf.pair)],
+      ['Ping', this.rtt != null ? `${Math.round(this.rtt)} ms` : '—'],
+      ['Son mesaj', `${((now - this.lastSeen) / 1000).toFixed(1)} sn önce`],
+      ['Hızlı kanal', c?.fastOpen ? 'açık' : 'yok (konumlar güvenilir kanaldan)'],
+      ['Yeniden bağlanma', `${this.reconnects} deneme · ${this.drops} kopma`],
+      ['Son kopma', this.lastReason ? `${reasonText(this.lastReason)} (${new Date(this.lastLostAt).toLocaleTimeString()})` : '—'],
+      ['Host sekmesi', this.peerHidden ? 'arka planda' : 'açık'],
+      ['TURN', getTurn() ? 'kullanıcı TURN ✔' : 'yok (STUN + PeerJS genel TURN)'],
+      ['En büyük mesaj', c ? `${c.stats.maxMsg} krk giden · ${c.stats.chunked} parçalı · tampon tepe ${c.stats.peakBuf} B${inf.maxMsgSize ? ` · SCTP maxMsg ${inf.maxMsgSize}` : ''}` : '—'],
+      ['ICE sunucuları', iceConfig().iceServers.map((x) => [].concat(x.urls)[0].replace(/\?.*$/, '')).join(', ')]
+    ];
+    let advice = '';
+    if (this.drops >= 2 && inf.pair && inf.pair.local !== 'relay' && inf.pair.remote !== 'relay' && !getTurn())
+      advice = 'Bağlantı sık kopuyor ve TURN aktarması kullanılmıyor: farklı ağlardaysanız aşağıya bir TURN sunucusu ekleyin (host da aynı bilgileri girsin).';
+    return { lines, advice };
   }
 
   // Oyun bitti / host yeni oyun başlattı: sahneyi yeniden kur ve aynı oda koduyla tekrar katıl
@@ -143,7 +286,7 @@ export class NetGuest {
       case 'roster': this.setRoster(m.l); return;
       case 'ping': this.send({ t: 'pong', c: m.c }); return;
       case 'pong': this.rtt = performance.now() - m.c; return;
-      case 'full': this.ended = true; this.onFail?.('Oda dolu (en fazla 4 oyuncu)'); this.conn.close(); return;
+      case 'full': this.ended = true; this.onFail?.('Oda dolu (en fazla 4 oyuncu)'); this.conn.close('manual'); return;
       case 'over': this.onOver(m.stats); return;
       case 'restart':
         // Host yeni oyun başlattı: oda kodu aynı, otomatik yeniden katıl
@@ -153,8 +296,18 @@ export class NetGuest {
         return;
       case 'bye':
         this.ended = true;
-        if (this.started) { this.panel?.setStatus('Host odayı kapattı.', true); s.hud.toast('Host odayı kapattı.', 'warn'); }
+        this.lastReason = 'host-closed';
+        netLog('misafir', 'lost', 'host-closed · Host odayı kapattı');
+        if (this.started) { this.panel?.hideReconnect(); this.panel?.setStatus('Host odayı kapattı.', true); s.hud.toast('Host odayı kapattı.', 'warn'); }
         else this.onFail?.('Host odayı kapattı');
+        return;
+      case 'vis':
+        this.peerHidden = !!m.h;
+        if (this.started) {
+          s.hud.toast(m.h ? 'Arkadaşın (host) sekmeyi arka plana aldı; oyun akmaya devam eder' : 'Host sekmeye geri döndü', 'info');
+          this.panel?.setStatus(m.h ? 'Host sekmesi arka planda' : '');
+        }
+        if (!m.h) this.lastSeen = performance.now();
         return;
       default:
         s.events.emit('netMsg', m); // özellik modüllerinin mesajları (ör. zones 'zn', balık 'fish')
@@ -167,13 +320,28 @@ export class NetGuest {
     this.color = w.color;
     this.tp = 0;
     this.placed = false;
+    this.welcomed = true;
+    this.reconnecting = false;
+    this.retries = 0;
+    this.preTries = 0;
+    this.joinErr = null;
+    this.fastQ = 0;
+    // Host'un TURN ayarı: bizde yoksa sakla (yeniden bağlanmalarda kullanılır)
+    if (Array.isArray(w.ice) && w.ice.length && !getTurn()) { setTurn({ servers: w.ice }); netLog('misafir', 'turn-from-host', 'host TURN ayarı alındı'); }
+    netLog('misafir', this.started ? 'reconnected' : 'joined', `${this.code}${this.conn?.stats ? ` · ilk veri ${this.conn.stats.in} B` : ''}`);
     if (!this.started) this.start(w);
     else {
       // Yeniden bağlanma: tüm vekilleri sıfırla
       this.mirror.clear();
       for (const a of this.avatars.values()) this.destroyAvatar(a);
       this.avatars.clear();
+      this.Lbuf = [];
+      this.clock = new NetClock(50);
       this.panel.setStatus('');
+      this.panel.hideReconnect();
+      // Tam görüntüde olmayan tarlalar (host kayıttan döndüyse) silinsin
+      const keep = new Set((w.snap?.fa || []).map((r) => s.farm.key(r[0], r[1])));
+      for (const [key, p] of [...s.farm.plots]) if (!keep.has(key)) s.farm.removePlot(p);
       s.hud.toast('Yeniden bağlandın ✔', 'ok');
     }
     s.player.setPosition(w.x, w.y);
@@ -230,6 +398,8 @@ export class NetGuest {
     s.hud.renderHotbar();
     s.hud.renderQuests();
     this.panel = new RoomPanel();
+    this.panel.onToast = (m) => s.hud.toast(m, 'ok');
+    this.panel.setDiagProvider(() => this.diagInfo());
     this.panel.setCode(this.code, false);
     this.night = null;
     s.hud.toast(`Odaya katıldın: ${this.code}. İyi eğlenceler!`, 'ok');
@@ -570,7 +740,16 @@ export class NetGuest {
   }
 
   // ---------------- Kare güncellemesi (GameScene.update misafirde bunu çağırır) ----------------
+  // Bir istisna Phaser döngüsünü öldürmesin
   update(dt) {
+    try { this.updateInner(dt); } catch (e) {
+      console.warn('Misafir güncellemesi hata verdi', e);
+      const now = performance.now();
+      if (!this.updErrAt || now - this.updErrAt > 5000) { this.updErrAt = now; netLog('misafir', 'handler-error', `update: ${e?.message || e}`); }
+    }
+  }
+
+  updateInner(dt) {
     const s = this.scene;
     if (!this.started || !s.started) { s.drawDarkness(); return; }
     this.rt = this.clock.renderTime(dt);
