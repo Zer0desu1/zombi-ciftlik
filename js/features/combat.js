@@ -5,6 +5,7 @@ import { ITEMS, RECIPES, SHOPS, HOTBAR_SIZE } from '../config.js';
 import { audio } from '../audio.js';
 import { addCanvas, R } from '../textures.js';
 import { injectCSS, el, featureLayer, topExtra } from '../ui/dom.js';
+import { isTouch } from '../ui/device.js';
 import { melee, rollDamage, hitTarget, fail } from '../systems/PlayerActions.js';
 import { DODGE } from '../entities/Player.js';
 
@@ -28,7 +29,6 @@ const fresh = () => ({
 const lvl = (id) => Phaser.Math.Clamp(S?.levels?.[id] || 1, 1, MAX_LEVEL);
 const selectedSlot = (scene) => scene.inventory.slots[scene.selected];
 const isWeapon = (id) => !!id && WEAPONS.includes(id);
-const isTouch = () => { try { return window.matchMedia('(pointer: coarse)').matches; } catch { return false; } };
 
 function zeynep(scene, range = 40) {
   const n = scene.npcs?.find((x) => x.key === 'blacksmith');
@@ -127,7 +127,7 @@ function useBow(scene, ctx) {
   const ptr = scene.input.activePointer;
   // Fare/boşluk basılıysa ger, bırakınca at; dokunmatik/mobil butonda otomatik tam gerilme
   if (ptr.isDown && !ptr.wasTouch && ptr.leftButtonDown()) S.charge = { t: 0, src: 'mouse' };
-  else if (S.space?.isDown && !isTouch()) S.charge = { t: 0, src: 'space' };
+  else if (S.space?.isDown) S.charge = { t: 0, src: 'space' };
   else { fireArrow(scene, Phaser.Math.Angle.Between(scene.player.x, scene.player.y - 2, ctx.wx, ctx.wy), 1); return; }
   scene.player.speedMul = 0.55;
   audio.tone({ type: 'triangle', freq: 220, to: 330, dur: 0.3, vol: 0.08 });
@@ -163,6 +163,8 @@ function trackSelection(scene) {
   S.selKey = key;
   if (S.charge && slot?.id !== 'bow') releaseCharge(scene, true);
   if (slot && isWeapon(slot.id) && S.recent[0] !== slot.id) S.recent = [slot.id, S.recent[0]].filter(Boolean);
+  // Boş şarjörlü tabancaya geçince sessizce doldurmaya başla (ilk tıklama boşa gitmesin)
+  if (slot?.id === 'pistol' && S.mag <= 0 && scene.player.alive) startReload(scene, true);
   refreshAmmo(scene);
 }
 
@@ -186,14 +188,14 @@ function openWeaponPanel(scene) {
     const crit = Math.round(scene.combat.critChance() * 100);
     let html = `<p class="muted">${z ? '🔨 Zeynep örsün başında, silahını yükseltebilir.' : '🔨 Yükseltmek için Zeynep\'in yanına git.'}</p>`;
     html += `<div class="cb-stats"><span>🎯 Kritik %${crit} (x2)</span><span>💨 Yuvarlanma ${DODGE.energy}⚡</span>`;
-    html += isTouch() ? '<span>Slota çift dokun: hızlı geçiş</span></div>' : '<span>Shift kaç · Q geçiş · R doldur</span></div>';
+    html += isTouch ? '<span>Slota çift dokun: hızlı geçiş</span></div>' : '<span>Shift kaç · Q geçiş · R doldur</span></div>';
     if (!owned.length) html += '<p class="muted">Henüz silahın yok.</p>';
     body.innerHTML = html;
     owned.forEach((id) => {
       const it = ITEMS[id], lv = lvl(id), next = lv + 1, cost = UPGRADE_COST[next];
       const dmg = Math.round(it.dmg * scene.combat.damageMult(id) * 10) / 10;
       const ok = z && cost && scene.player.coins >= cost.coins && scene.inventory.count('stone') >= cost.stone;
-      const stars = '★'.repeat(lv) + '☆'.repeat(MAX_LEVEL - lv);
+      const stars = '★'.repeat(lv) + `<i>${'★'.repeat(MAX_LEVEL - lv)}</i>`;
       const row = el('div', 'shop-row',
         `<img src="${scene.hud.icon(id)}" alt=""><div class="rinfo"><b>${it.name} <span class="cb-stars">${stars}</span></b>` +
         `<span class="muted">Hasar ${dmg}${id === 'shotgun' ? ' ×5' : ''}${cost ? ` → ${Math.round(it.dmg * (1 + 0.25 * lv) * 10) / 10}` : ' · en üst seviye'}</span></div>` +
@@ -236,13 +238,16 @@ const CSS = `
   background:rgba(18,22,32,.55); border:1px solid rgba(255,255,255,.22); color:#fff; font-size:20px; display:none;
   align-items:center; justify-content:center; padding:0; -webkit-user-select:none; user-select:none; z-index:5; }
 .cb-dodge.show { display:flex; }
+body.modal-open .cb-dodge, body:not(.playing) .cb-dodge { display:none; }
 .cb-dodge.cd { opacity:.45; }
 .cb-dodge:active { transform:scale(.92); }
 .cb-panel .cb-stats { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 10px; font-size:12px; }
 .cb-panel .cb-stats span { background:rgba(255,255,255,.07); padding:3px 8px; border-radius:8px; }
 .cb-panel .shop-row { margin-bottom:6px; }
-.cb-panel .shop-row button { min-height:40px; white-space:nowrap; }
+.cb-panel .shop-row .rinfo { flex:1; min-width:0; }
+.cb-panel .shop-row button { min-height:40px; flex-shrink:0; max-width:46%; white-space:normal; line-height:1.2; }
 .cb-stars { color:var(--accent,#ffd166); font-size:11px; letter-spacing:1px; }
+.cb-stars i { font-style:normal; opacity:.3; filter:grayscale(1); }
 .cb-talk { width:100%; margin-top:6px; min-height:44px; }
 `;
 
@@ -258,7 +263,7 @@ function buildUI(scene) {
     S.cleanup.push(() => S.ammoEl?.remove());
   }
   const layer = featureLayer();
-  if (layer && isTouch()) {
+  if (layer && isTouch) {
     const b = el('button', 'cb-dodge', '💨');
     b.setAttribute('aria-label', 'Kaçış yuvarlanması');
     b.addEventListener('pointerdown', (e) => {

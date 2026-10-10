@@ -116,7 +116,16 @@ const CSS = `
 function hudBottom() {
   const h = document.getElementById('hud-top');
   const r = h ? h.getBoundingClientRect() : null;
-  return r && r.height ? Math.round(r.bottom) : 60;
+  let bottom = r && r.height ? Math.round(r.bottom) : 60;
+  // Dar ekranda hava rozeti ve mini harita kartla çakışır → onların altına in
+  if (window.innerWidth < 640) {
+    for (const sel of ['#wx-badge.show', '#jc-minimap.show']) {
+      const n = document.querySelector(sel);
+      const nr = n ? n.getBoundingClientRect() : null;
+      if (nr && nr.height) bottom = Math.max(bottom, Math.round(nr.bottom));
+    }
+  }
+  return bottom;
 }
 
 function buildUI(scene) {
@@ -140,9 +149,12 @@ function placeTop(ui) {
   ui.arrows[0].style.top = `${top + cardH + 4}px`;
 }
 
+// Türkçe küçük harf ('İri' → 'iri'; toLowerCase 'i̇ri' üretir)
+const lname = (k) => ZOMBIE_TYPES[k].name.toLocaleLowerCase('tr-TR');
+
 function planChips(plan) {
   return KIND_ORDER.filter((k) => plan.counts[k] > 0)
-    .map((k) => `<span>${ZOMBIE_TYPES[k].icon} ${plan.counts[k]} ${ZOMBIE_TYPES[k].name.toLowerCase()}</span>`).join('');
+    .map((k) => `<span>${ZOMBIE_TYPES[k].icon} ${plan.counts[k]} ${lname(k)}</span>`).join('');
 }
 const sideText = (plan) => plan.sides.map((s) => SIDE_NAMES[s]).join(', ');
 const planTotal = (plan) => Object.values(plan.counts).reduce((a, b) => a + (b || 0), 0);
@@ -349,7 +361,7 @@ export default {
         audio.sfx('quest');
       }
     });
-    ev.on('bossSpawned', (z) => {
+    const onBoss = (z) => {
       if (!z) return;
       st.boss = z; st.bossHp = -1;
       if (!st.seen.includes('boss')) st.seen.push('boss');
@@ -359,9 +371,10 @@ export default {
       scene.hud.banner('👑 Mezar Bekçisi', 'Patron uyandı! Yer sarsıntısından uzak dur.');
       audio.sfx('alarm');
       scene.cameras.main.shake(400, 0.006);
-    });
+    };
+    ev.on('bossSpawned', onBoss);
     ev.once('shutdown', () => {
-      ev.off('bossSpawned');
+      ev.off('bossSpawned', onBoss);
       document.querySelectorAll('.zb-ui').forEach((n) => n.remove());
     });
   },
@@ -390,7 +403,7 @@ export default {
         if (st.previewShown !== w.nextPlan.wave) {
           const plan = w.nextPlan;
           showPreview(scene, plan);
-          const kinds = KIND_ORDER.filter((k) => plan.counts[k] > 0).map((k) => `${plan.counts[k]} ${ZOMBIE_TYPES[k].name.toLowerCase()}`).join(', ');
+          const kinds = KIND_ORDER.filter((k) => plan.counts[k] > 0).map((k) => `${plan.counts[k]} ${lname(k)}`).join(', ');
           scene.hud.toast(`${plan.blood ? '🩸 Kanlı Ay yaklaşıyor! ' : '🔭 Keşif: '}Bu gece ${kinds} — ${sideText(plan)}`, 'warn');
           if (plan.blood) audio.sfx('alarm');
         }

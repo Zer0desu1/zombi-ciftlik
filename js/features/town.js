@@ -60,11 +60,11 @@ const TALK_PTS = 20, QUEST_PTS = 60, BOARD_PTS = 40;
 // Listedeki eşya oyunda yoksa (başka modül tanımlamadıysa) arayüzde gösterilmez
 const REL = {
   farmer: {
-    loved: ['strawberry', 'soup', 'veggie_stew'], liked: ['carrot', 'wheat', 'pumpkin', 'bread', 'egg', 'milk'], disliked: ['ammo', 'stone', 'rare_core'],
+    loved: ['strawberry', 'soup', 'veggie_stew'], liked: ['carrot', 'wheat', 'pumpkin', 'bread', 'egg', 'egg_big', 'milk', 'milk_big', 'berry'], disliked: ['ammo', 'stone', 'rare_core'],
     recipe: () => ({ out: 'veggie_stew', qty: 1, cost: { carrot: 2, wheat: 2 } }), gift: () => ({ items: { seed_pumpkin: 6, soup: 2 } })
   },
   merchant: {
-    loved: ['goldfish', 'gold_fish', 'fish_gold', 'golden_fish', 'cheese', 'pumpkin'], liked: ['bread', 'soup', 'egg', 'milk', 'spice_bread', 'fish'], disliked: ['wood', 'stone'],
+    loved: ['fish_gold', 'cheese', 'pumpkin'], liked: ['bread', 'soup', 'egg', 'egg_big', 'milk', 'milk_big', 'spice_bread', 'fish_bass', 'fish_grilled'], disliked: ['wood', 'stone', 'scrap'],
     recipe: () => ({ out: 'spice_bread', qty: 1, cost: { wheat: 2, carrot: 1 } }), gift: () => ({ coins: 250 })
   },
   blacksmith: {
@@ -76,11 +76,11 @@ const REL = {
     recipe: () => ({ out: 'turret', qty: 1, cost: { wood: 3, stone: 4, ammo: 6 } }), gift: () => ({ items: { ammo: 40 } })
   },
   doctor: {
-    loved: ['veggie_stew', 'carrot', 'strawberry'], liked: ['soup', 'bread', 'milk', 'egg', 'bandage'], disliked: ['ammo', 'pistol', 'rare_core'],
+    loved: ['veggie_stew', 'carrot', 'strawberry'], liked: ['soup', 'bread', 'milk', 'egg', 'berry', 'mushroom', 'fish_grilled'], disliked: ['ammo', 'pistol', 'rare_core', 'scrap'],
     recipe: () => ({ out: 'medkit', qty: 1, cost: { bandage: 2, carrot: 1 } }), gift: () => ({ items: { medkit: 3 } })
   },
   hunter: {
-    loved: ['soup', 'arrow', 'cheese'], liked: ['bread', 'wood', 'carrot', 'spice_bread'], disliked: ['seed_wheat', 'wheat', 'pumpkin'],
+    loved: ['soup', 'arrow', 'cheese'], liked: ['bread', 'wood', 'carrot', 'spice_bread', 'fish_grilled', 'fish_carp', 'mushroom'], disliked: ['seed_wheat', 'wheat', 'pumpkin'],
     recipe: () => (ITEMS.arrow ? { out: 'arrow', qty: 10, cost: { wood: 2, stone: 1 } } : { out: 'ammo', qty: 8, cost: { wood: 1, stone: 2 } }),
     gift: () => ({ items: { [arrowId()]: 30 } })
   }
@@ -129,9 +129,11 @@ function heartsHTML(h) {
   return `<span class="th-full">${'♥'.repeat(h)}</span><span class="th-empty">${'♥'.repeat(10 - h)}</span>`;
 }
 
-function nextRewardText(h) {
-  if (h < 3) return '3♥: dükkânda %10 indirim';
-  if (h < 6) return '6♥: %20 indirim + özel tarif';
+// Dükkânı olmayan NPC'ler indirim yerine 3♥'de küçük bir altın hediyesi verir
+const TIER3_COINS = 40;
+function nextRewardText(h, hasShop) {
+  if (h < 3) return hasShop ? '3♥: dükkânda %10 indirim' : `3♥: ${TIER3_COINS}🪙 hediye`;
+  if (h < 6) return hasShop ? '6♥: %20 indirim + özel tarif' : '6♥: özel tarif';
   if (h < 8) return '8♥: özel hediye';
   return 'Tüm ödüller açıldı';
 }
@@ -156,7 +158,10 @@ function checkTierRewards(scene, key) {
   const r = relOf(scene, key), h = heartsOf(scene, key), def = REL[key];
   const npc = npcByKey(scene, key), name = npc?.npcName || key;
   const claim = (tier) => { if (h >= tier && !r.claimed.includes(tier)) { r.claimed.push(tier); return true; } return false; };
-  if (claim(3) && npc?.shop) scene.hud.toast(`${name} artık sana %10 indirim yapıyor!`, 'ok');
+  if (claim(3)) {
+    if (npc?.shop) scene.hud.toast(`${name} artık sana %10 indirim yapıyor!`, 'ok');
+    else { scene.player.addCoins(TIER3_COINS); scene.hud.toast(`${name} dostluğunuz için ${TIER3_COINS} 🪙 verdi!`, 'ok'); }
+  }
   if (claim(6)) {
     const rec = def.recipe();
     syncRecipes(scene);
@@ -256,10 +261,16 @@ function patchHUD(scene) {
   };
 }
 
+// HUD'un bilmediği yeni NPC durumlarının Türkçe adları
+const STATE_NAMES = { clinic: 'klinikte', treat: 'yaralı tedavi ediyor', stand: 'tezgâhta', post: 'nöbette', fight: 'savaşıyor', idle: 'iş bekliyor' };
+
 function decorateDialog(scene, custom) {
   const hud = scene.hud, npc = hud.npc, d = hud.e.dialog;
   if (!npc) return;
   const body = d.querySelector('.dlg-body') || d;
+  const st = STATE_NAMES[npc.sm?.name];
+  const roleEl = body.querySelector('.npc-role');
+  if (st && roleEl) roleEl.textContent = `${npc.role} · ${npc.key === 'survivor' && npc.job === 'sentry' && npc.sm.name === 'stand' ? 'çevreyi kolluyor' : st}`;
   let row = body.querySelector('.town-hearts');
   if (!row) {
     row = el('div', 'town-hearts');
@@ -390,7 +401,7 @@ function payWages(scene) {
 function genBoard(scene) {
   const day = today(scene);
   const pool = [['wheat', 6, 12], ['carrot', 4, 8], ['pumpkin', 2, 3], ['wood', 10, 18], ['stone', 8, 14], ['bread', 2, 3],
-    ['egg', 3, 5], ['milk', 2, 3], ['strawberry', 3, 6], ['fish', 2, 4]].filter(([id]) => ITEMS[id]);
+    ['egg', 3, 5], ['milk', 2, 3], ['strawberry', 3, 6], ['fish_carp', 2, 4], ['mushroom', 3, 6], ['cheese', 1, 2]].filter(([id]) => ITEMS[id]);
   const tasks = [];
   const usedTypes = [];
   for (let i = 0; i < 3; i++) {
@@ -506,17 +517,18 @@ function openRelations(scene) {
   const body = el('div', 'town-panel');
   const render = () => {
     const day = today(scene);
-    body.innerHTML = '<p class="town-sub">Her gün konuş (+20) ve hediye ver (günde 1). 3♥ %10 indirim · 6♥ %20 + özel tarif · 8♥ özel hediye.</p>';
+    body.innerHTML = '<p class="town-sub">Her gün konuş (+20) ve hediye ver (günde 1). 3♥ indirim (dükkânı yoksa altın) · 6♥ %20 + özel tarif · 8♥ özel hediye.</p>';
     REL_KEYS.forEach((key) => {
       const npc = npcByKey(scene, key);
       if (!npc) return;
       const r = relOf(scene, key), h = heartsOf(scene, key);
-      const loved = REL[key].loved.filter((id) => ITEMS[id]).map((id) => `<img class="town-ico" src="${icon(scene, id)}" title="${itemName(id)}" alt="${itemName(id)}">`).join('');
+      const icons = (ids) => ids.filter((id) => ITEMS[id]).map((id) => `<img class="town-ico" src="${icon(scene, id)}" title="${itemName(id)}" alt="${itemName(id)}">`).join('');
+      const loved = icons(REL[key].loved), disliked = icons(REL[key].disliked);
       body.appendChild(el('div', 'town-card',
         `<img class="town-por" src="${iconURL(scene, npc.texKey)}" alt="">
          <div class="town-info"><b>${npc.npcName} <small>${npc.role}</small></b>
          <span class="town-h">${heartsHTML(h)}</span>
-         <span class="town-prog">💬${r.talk === day ? '✓' : '—'} 🎁${r.gift === day ? '✓' : '—'} · Sever: ${loved || '?'} · ${nextRewardText(h)}</span></div>`));
+         <span class="town-prog">💬${r.talk === day ? '✓' : '—'} 🎁${r.gift === day ? '✓' : '—'} · Sever: ${loved || '?'} · Sevmez: ${disliked || '?'} · ${nextRewardText(h, !!npc.shop)}</span></div>`));
     });
     const list = survivors(scene);
     body.appendChild(el('h4', 'town-h4', `Hayatta kalanlar (${list.length}/${MAX_SURVIVORS})`));
@@ -637,6 +649,10 @@ const CSS = `
 .town-prog .town-ico { width: 14px; height: 14px; margin: 0 1px; }
 .town-card > button, .town-btns button { min-height: 40px; min-width: 84px; flex: none; }
 .town-btns { display: flex; flex-direction: column; gap: 6px; }
+.town-prog, .town-sub { overflow-wrap: anywhere; }
+.town-panel { max-width: 100%; min-width: 0; }
+/* #modal-feature'ın sabit 560px genişliği dikey mobilde taşıyor; yalnızca kasaba panellerinde düzelt */
+body.is-touch.portrait #modal-feature:has(.town-panel) { width: 100%; }
 @media (max-width: 520px) {
   .town-card { flex-wrap: wrap; }
   .town-card > button { width: 100%; min-height: 44px; }

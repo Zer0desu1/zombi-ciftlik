@@ -184,7 +184,9 @@ function updateNums(dt) {
 function onZombieHit(z, dmg, source, opts) {
   const scene = J.scene;
   if (!scene) return;
-  const crit = !!(opts === true || opts?.crit || source?.crit || source?.isCrit || z.lastHitCrit || z._crit);
+  // combatHit olayı bu vuruşun kritik olduğunu önceden bildirir (z.lastHitCrit kalıcı olduğu için tek başına güvenilmez)
+  const crit = !!(opts === true || opts?.crit || source?.crit || J.critTarget === z);
+  J.critTarget = null;
   if (dmg > 0) J.queue.push({ target: z, x: z.x, y: z.y - 10 * (z.scaleY || 1), dmg, crit, kind: 'z' });
   // Vuruş kıvılcımı
   spark(scene, z.x + Phaser.Math.Between(-2, 2), z.y - 2, crit ? 0xffd166 : 0xffffff);
@@ -626,10 +628,11 @@ export default {
 
   init(scene) {
     Object.assign(J, {
-      scene, queue: [], stopUntil: 0, dustT: 0, trailT: 0, perfT: 0, bad: 0, good: 0, sndT: 0, treeT: 0, mmT: 0, waterT: 0,
+      scene, queue: [], critTarget: null, stopUntil: 0, dustT: 0, trailT: 0, perfT: 0, bad: 0, good: 0, sndT: 0, treeT: 0, mmT: 0, waterT: 0,
       lowHp: false, swayed: false, squash: false, tileCols: null, waterIdx: null, mmBgDirty: true
     });
-    scene.lowFx = cfg.quality === 'low';
+    // 'auto' modunda mobile modülünün dokunmatik ön ayarını koru; FPS iyiyse updatePerf yükseltir
+    scene.lowFx = cfg.quality === 'auto' ? !!scene.lowFx : cfg.quality === 'low';
     injectCSS('juice', CSS);
     audio.setVolumes({ music: cfg.music, sfx: cfg.sfx, amb: cfg.amb });
 
@@ -701,6 +704,19 @@ export default {
       }
     });
     ['crit', 'criticalHit'].forEach((n) => listen(n, markCrit));
+    listen('combatHit', (h) => { J.critTarget = h?.crit ? h.target : null; });
+    listen('playerDodge', (d) => {
+      audio.sfx('roll');
+      // Yuvarlanma başında arkada küçük toz bulutu
+      const n = lowFx() ? 1 : 3;
+      for (let i = 0; i < n; i++) dust(scene, (d?.x ?? scene.player.x) - (d?.dx || 0) * 4 + Phaser.Math.Between(-3, 3), (d?.y ?? scene.player.y) + 7);
+    });
+    listen('fishCaught', () => audio.sfx('splash'));
+    listen('bossSpawned', () => {
+      vignette('wave');
+      scene.cameras.main.shake(400, 0.008);
+      audio.sfx('drum');
+    });
     listen('weatherChanged', () => updateSoundscape(scene));
     listen('seasonChanged', () => {
       // Mevsim dokusu değişmiş olabilir: ağaçları sıfırla, varyantları biraz sonra yeniden üret

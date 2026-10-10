@@ -287,6 +287,12 @@ function placeOnUse(kind, lvl) {
 // Gübre: sürülmüş toprağa uygulanır
 function fertilizeOnUse(scene, ctx) {
   const fail = (msg) => { audio.sfx('error'); if (msg) scene.hud.notice(msg); };
+  // Hedef uygun değilse (ör. mobil eylem butonu oyuncunun önünü hedefler) erişimdeki en yakın gübresiz toprağı seç
+  const ok = (p) => p && !p.fert && !p.crop?.dead;
+  if (!ctx.inReach || !ok(scene.farm.get(ctx.tx, ctx.ty))) {
+    const alt = nearestPlot(scene, ok);
+    if (alt) ctx = { ...ctx, tx: alt.tx, ty: alt.ty, cx: alt.tx * TILE + 8, cy: alt.ty * TILE + 8, inReach: true };
+  }
   if (!ctx.inReach) return fail('Çok uzak');
   const plot = scene.farm.get(ctx.tx, ctx.ty);
   if (!plot) return fail('Önce çapa ile toprağı sür');
@@ -298,6 +304,20 @@ function fertilizeOnUse(scene, ctx) {
   scene.spawnParticles(ctx.cx, ctx.cy + 2, 0x5a3a20, 8);
   scene.floatText(ctx.cx, ctx.cy - 6, 'Gübrelendi', '#a6e07a');
   audio.sfx('plant');
+}
+
+// Oyuncunun çevresindeki (3x3 tile) koşula uyan en yakın tarla
+function nearestPlot(scene, pred) {
+  const pl = scene.player, px = pl.x, py = pl.y + 4;
+  const { tx, ty } = tileOf(px, py);
+  let best = null, bestD = 40;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const p = scene.farm.get(tx + dx, ty + dy);
+    if (!pred(p)) continue;
+    const d = Math.hypot(p.tx * TILE + 8 - px, p.ty * TILE + 8 - py);
+    if (d <= bestD) { bestD = d; best = p; }
+  }
+  return best;
 }
 
 ITEMS.fertilizer.onUse = fertilizeOnUse;
@@ -403,12 +423,22 @@ function flyCrow(scene, x, y, delay) {
 
 function onDawn(scene) {
   // Farm.onDawn (GameScene) önce çalışır: kuraklık sayacı ve toprak kuruması
-  let withered = 0;
-  for (const p of scene.farm.plots.values()) if (scene.farm.isWithered(p)) withered++;
   const watered = runSprinklers(scene);
   crowAttack(scene);
+  // Solgun sayımı fıskiyelerden sonra: sulananlar artık solgun sayılmaz
+  let withered = 0;
+  for (const p of scene.farm.plots.values()) if (scene.farm.isWithered(p)) withered++;
   if (watered) scene.time.delayedCall(2600, () => scene.hud?.toast(`Fıskiyeler ${watered} tarlayı suladı 💧`, 'info'));
   if (withered) scene.time.delayedCall(3600, () => scene.hud?.toast(`${withered} ekin soluyor! Sulamazsan yarın kuruyacak.`, 'warn'));
+}
+
+// Mevsim değişince mevsim dışı kalan ekinleri bildir (büyümeleri durur)
+function onSeasonChanged(scene) {
+  const farm = scene.farm;
+  const season = farm.season();
+  let off = 0;
+  for (const p of farm.plots.values()) if (p.crop && !p.crop.dead && !farm.inSeason(p.crop.type, season)) off++;
+  if (off) scene.time.delayedCall(4200, () => scene.hud?.toast(`${SEASON_NAMES[season] || 'Yeni mevsim'}: ${off} ekin mevsim dışı kaldı, büyümesi durdu.`, 'warn'));
 }
 
 // ---------------- Hasat efekti ----------------
@@ -535,6 +565,7 @@ export default {
     scene.addInteraction(objectInteraction);
     scene.featureMenu.push({ id: 'farming', icon: '🌱', label: 'Tarla', open: (s) => openFarmBook(s) });
     scene.timeSys.on('dawn', () => onDawn(scene));
+    scene.timeSys.on('seasonChanged', () => onSeasonChanged(scene));
     const harvest = (e) => onHarvest(scene, e);
     const died = (n) => scene.time.delayedCall(3000, () => scene.hud?.toast(`${n} ekin susuzluktan kurudu 🥀`, 'warn'));
     scene.events.on('cropHarvested', harvest);

@@ -20,7 +20,8 @@ export class Animal extends Actor {
     this.type = type;
     this.def = def;
     this.animalName = data.name || Phaser.Utils.Array.GetRandom(ANIMAL_NAMES[type]);
-    this.love = Phaser.Math.Clamp(Number(data.love) || 1, 0, 5);  // 0–5 kalp
+    const love = Number(data.love);
+    this.love = Number.isFinite(love) ? Phaser.Math.Clamp(love, 0, 5) : 1;  // 0–5 kalp (0 da geçerli kayıt)
     this.fed = !!data.fed;          // bugün yedi mi
     this.petted = !!data.petted;    // bugün okşandı mı
     this.product = data.product || null; // toplanmayı bekleyen ürün eşya id'si

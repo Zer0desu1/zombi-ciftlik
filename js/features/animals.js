@@ -1,10 +1,10 @@
 // 'animals' özellik modülü — Hayvancılık: tavuk/inek, ağıl, yalak, sevgi, günlük ürün, gece tehdidi.
 // Sözleşme için registry.js'e bak.
-import { TILE, ITEMS, RECIPES, SHOPS } from '../config.js';
+import { TILE, ITEMS, RECIPES, SHOPS, QUESTS, FARM_ZONE } from '../config.js';
 import { addCanvas, makeCanvas, R } from '../textures.js';
 import { audio } from '../audio.js';
 import { injectCSS, el } from '../ui/dom.js';
-import { Animal, ANIMAL_TYPES } from '../entities/Animal.js';
+import { Animal, ANIMAL_TYPES, ANIMAL_NAMES } from '../entities/Animal.js';
 
 // ---------- Veri tabloları (modül yüklenirken genişletilir) ----------
 Object.assign(ITEMS, {
@@ -37,6 +37,12 @@ SHOPS.animals = [
   { id: 'feed', qty: 10, price: 45 }
 ];
 SHOPS.merchant.push({ id: 'feed', qty: 10, price: 45 }, { id: 'animal_chicken', qty: 1, price: 120 }, { id: 'animal_cow', qty: 1, price: 400 });
+
+// Hayvan ürünleri isteyen görevler (zinciri mevcut görevlerin sonuna eklenir)
+[
+  { id: 'q_eggs',   npc: 'farmer',   title: 'Taze Yumurta',   desc: "Ayşe'ye 6 yumurta getir.", type: 'deliver', item: 'egg',    amount: 6, reward: { coins: 70, items: { feed: 10 } } },
+  { id: 'q_cheese', npc: 'merchant', title: 'Köy Peyniri',     desc: "Kemal'e 2 peynir getir.",  type: 'deliver', item: 'cheese', amount: 2, reward: { coins: 180 } }
+].forEach((q) => { if (!QUESTS.some((o) => o.id === q.id)) QUESTS.push(q); });
 
 // ---------- Ağıl yerleşimi (tile) — çiftliğin doğusu ----------
 const PEN = { x0: 23, y0: 3, x1: 31, y1: 11, gate: 27 };         // çit çerçevesi (dahil)
@@ -234,12 +240,17 @@ function buildPen(scene) {
     img.setDepth(depth);
     return img;
   };
+  // Tarla çitiyle bitişik kısımda çift çit çizme; o aralıkta tarlanın sağ çiti duvar görevi görür
+  const sharesFarm = (y) => FARM_ZONE.x + FARM_ZONE.w === PEN.x0 - 1 && y >= FARM_ZONE.y - 1;
   for (let x = PEN.x0; x <= PEN.x1; x++) {
     block(T(x) + 8, T(PEN.y0) + 8, 'fence', 16, 6, 0, 8, T(PEN.y0) + 14);
-    if (x !== PEN.gate) block(T(x) + 8, T(PEN.y1) + 8, 'fence', 16, 6, 0, 8, T(PEN.y1) + 14);
+    if (x === PEN.gate) continue;
+    // Köşedeki ilk parça, tarla çitine kadar uzanan geniş gövdeyle aradaki boşluğu kapatır
+    if (x === PEN.x0 && sharesFarm(PEN.y1 - 1)) block(T(x) + 8, T(PEN.y1) + 8, 'fence', 22, 6, -6, 8, T(PEN.y1) + 14);
+    else block(T(x) + 8, T(PEN.y1) + 8, 'fence', 16, 6, 0, 8, T(PEN.y1) + 14);
   }
   for (let y = PEN.y0 + 1; y < PEN.y1; y++) {
-    block(T(PEN.x0) + 8, T(y) + 8, 'fence', 4, 16, 6, 0, T(y) + 14);
+    if (!sharesFarm(y)) block(T(PEN.x0) + 8, T(y) + 8, 'fence', 4, 16, 6, 0, T(y) + 14);
     block(T(PEN.x1) + 8, T(y) + 8, 'fence', 4, 16, 6, 0, T(y) + 14);
   }
   S.coop = block(COOP.x, COOP.y, 'a_coop', 28, 12, 2, 14, COOP.y + 14);
@@ -284,7 +295,7 @@ function addAnimal(scene, type) {
   const def = ANIMAL_TYPES[type];
   if (countType(scene, type) >= def.cap) { scene.hud.notice(`${def.house === 'coop' ? 'Kümes' : 'Ahır'} dolu! (en fazla ${def.cap} ${def.name.toLowerCase()})`); audio.sfx('error'); return null; }
   const used = new Set(st(scene).animals.map((x) => x.animalName));
-  const pool = (type === 'chicken' ? ['Pamuk', 'Fındık', 'Tüylü', 'Minnoş', 'Zeytin', 'Cıvcıv', 'Bıcır', 'Leblebi'] : ['Sarıkız', 'Benekli', 'Papatya', 'Karamel', 'Menekşe', 'Nazlı']).filter((n) => !used.has(n));
+  const pool = ANIMAL_NAMES[type].filter((n) => !used.has(n));
   const a = spawnAnimal(scene, type, { name: pool.length ? Phaser.Utils.Array.GetRandom(pool) : undefined });
   scene.hud.toast(`🎉 ${a.animalName} adlı ${def.name.toLowerCase()} ağıla yerleşti!`, 'ok');
   return a;
@@ -417,7 +428,7 @@ function toggleDoorsQuiet(scene) {
 
 // ---------- Panel ----------
 const CSS = `
-.anm { display: flex; flex-direction: column; gap: 10px; min-width: min(440px, 82vw); max-width: 100%; }
+.anm { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 100%; }
 .anm .tabs { display: flex; gap: 6px; }
 .anm .tabs button { flex: 1; min-height: 40px; }
 .anm .tabs button.on { border-color: var(--accent); background: rgba(255, 209, 102, 0.16); }
@@ -435,6 +446,8 @@ const CSS = `
 .anm .tags { display: flex; flex-wrap: wrap; gap: 4px; font-size: 11px; }
 .anm .row button { min-height: 44px; min-width: 76px; }
 .anm .tip { font-size: 12px; color: var(--muted); line-height: 1.45; }
+/* style.css'teki #modal-feature { width: 560px } kimlik seçicisi mobil alt sayfa genişliğini eziyordu */
+body.is-touch.portrait #modal-feature { width: 100%; }
 `;
 
 const hearts = (love) => {

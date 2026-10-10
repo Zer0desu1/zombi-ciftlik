@@ -78,7 +78,6 @@ const STAT_DEFAULTS = {
   coinsEarned: 0, coinsSpent: 0, nights: 0, bestWave: 0, deaths: 0, streak: 0, bestStreak: 0,
   diedTonight: false, playTime: 0
 };
-const FORAGE = /fish|balik|mushroom|mantar|berry|bogurtlen|carp|bass|sazan|levrek/;
 
 // Genel ITEMS değişiklikleri (isim/açıklama/satış/onUse) yeni oyunda geri alınabilsin diye ilk hâl
 let ORIG = null;
@@ -141,8 +140,8 @@ function addXP(scene, skill, amt, x, y) {
 
 function levelUp(scene, skill, level) {
   const S = SKILLS[skill];
+  // Ses ve parıltı juice modülünde (levelUp olayı)
   scene.hud.banner(`${S.icon} ${S.name} Sv. ${level}`, `+1 yetenek puanı · Yetenekler menüsünden (L) harca`);
-  audio.sfx('quest');
   scene.events.emit('levelUp', { skill, level });
   const p = scene.player;
   if (p?.alive) { p.restore(15, 15); scene.spawnParticles(p.x, p.y - 6, 0xffd166, 14); }
@@ -159,6 +158,7 @@ function checkAch(scene) {
       if (a[4](P.stats, P) >= a[5]) {
         P.ach.add(a[0]);
         scene.hud.toast(`🏆 Başarım: <b>${a[1]}</b> · +${a[6]} 🪙`, 'ok');
+        audio.sfx('achievement');
         scene.player.addCoins(a[6]);
         scene.events.emit('achievement', { id: a[0], name: a[1] });
       }
@@ -301,15 +301,15 @@ const CSS = `
 #prog-badge .dot{position:absolute;top:-3px;right:-3px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--red);color:#fff;font-size:10px;line-height:16px;font-weight:700;display:none}
 #prog-badge.pts .dot{display:block}
 .pg-tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
-.pg-tabs button{min-height:38px;flex:1 1 auto}
+.pg-tabs button{min-height:38px;flex:1 1 0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pg-tabs button.on{background:rgba(255,209,102,.22);border-color:rgba(255,209,102,.6)}
-.pg-skills{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
+.pg-skills{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:10px}
 .pg-sk{background:rgba(255,255,255,.05);border:1px solid var(--stroke);border-radius:10px;padding:8px;font-size:12px}
 .pg-sk b{font-size:13px}.pg-sk .lv{float:right;color:var(--accent);font-weight:600}
 .pg-bar{height:6px;background:rgba(255,255,255,.1);border-radius:4px;overflow:hidden;margin:6px 0 3px}
 .pg-bar i{display:block;height:100%;border-radius:4px}
 .pg-pts{font-size:13px;margin:6px 0 10px}.pg-pts b{color:var(--accent)}
-.pg-tree{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.pg-tree{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 .pg-col{display:flex;flex-direction:column;gap:6px}
 .pg-node{min-height:54px;padding:6px 8px;text-align:left;display:flex;gap:6px;align-items:center;font-size:12px;line-height:1.2}
 .pg-node .ic{font-size:20px;flex-shrink:0}.pg-node small{display:block;color:var(--muted);font-size:10px}
@@ -333,7 +333,10 @@ const CSS = `
 .pg-invbar{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
 .pg-invbar button{min-height:34px;font-size:12px;padding:6px 10px}
 #modal-inventory.pg-big #inv-grid{max-height:min(46vh,360px);overflow-y:auto;padding-right:4px}
+/* style.css'teki #modal-feature{width:560px} ID seçicisi mobil alt sayfa kuralını eziyor; panelimiz için düzelt */
+body.is-touch.portrait #modal-feature:has(.pg-wrap){width:100%}
 @media (max-width:600px){
+ .pg-tabs{gap:4px}.pg-tabs button{padding:6px 4px;font-size:12px}
  .pg-skills{gap:5px}.pg-sk{padding:6px;font-size:11px}.pg-sk .lv{float:none;display:block}
  .pg-tree{gap:5px}.pg-node{flex-direction:column;text-align:center;gap:2px;padding:6px 4px;font-size:11px;min-height:64px}
  .pg-ach,.pg-stats{grid-template-columns:1fr}
@@ -474,9 +477,16 @@ function renderShop(scene, body) {
   body.appendChild(row);
   const sort = el('div', 'pg-row', `<span class="ic">⇅</span><div><b>Çantayı sırala</b><small>Türe ve ada göre dizer, yığınları birleştirir (hotbar sabit kalır).</small></div>`);
   const sb = el('button', '', 'Sırala');
-  sb.addEventListener('click', () => { scene.inventory.sort(); audio.sfx('click'); scene.hud.toast('Çanta sıralandı', 'ok'); });
+  sb.addEventListener('click', () => { sortBag(scene); scene.hud.toast('Çanta sıralandı', 'ok'); });
   sort.appendChild(sb);
   body.appendChild(sort);
+}
+
+// Sıralama sonrası seçili (yer değiştirme bekleyen) slot artık geçersiz
+function sortBag(scene) {
+  if (scene.hud) scene.hud.pickedSlot = null;
+  scene.inventory.sort();
+  audio.sfx('click');
 }
 
 // Envanter penceresine sıralama + çanta butonları
@@ -487,7 +497,7 @@ function buildInvBar(scene) {
   const bar = el('div', 'pg-invbar');
   bar.id = 'pg-invbar';
   const sort = el('button', '', '⇅ Sırala');
-  sort.addEventListener('click', () => { scene.inventory.sort(); audio.sfx('click'); });
+  sort.addEventListener('click', () => sortBag(scene));
   const bag = el('button', 'accent', '');
   bag.addEventListener('click', () => { buyBag(scene); updateInvBar(scene); });
   bar.append(sort, bag);
@@ -546,9 +556,15 @@ export default {
       openPanel(scene, tab);
     };
     scene.input.keyboard?.on('keydown', onKey);
+    // GameScene'in temizlemediği (world modülü) olaylar: yalnızca kendi dinleyicilerimizi kaldır
+    const onForage = (id, n) => { st.forage += n || 1; addXP(scene, 'gather', XP.gather); };
+    const onFish = () => { st.forage++; addXP(scene, 'gather', XP.gather); };
+    scene.events.on('foraged', onForage);
+    scene.events.on('fishCaught', onFish);
     scene.events.once('shutdown', () => {
       scene.input.keyboard?.off('keydown', onKey);
-      scene.events.off('levelUp'); scene.events.off('achievement');
+      scene.events.off('foraged', onForage);
+      scene.events.off('fishCaught', onFish);
       P.panel = null;
     });
 
@@ -576,10 +592,12 @@ export default {
       }
       return r;
     };
-    // Toplanan kaynaklar (kesim/kırma/toplayıcılık giveItem üzerinden gelir)
+    // Kesim/kırma giveItem üzerinden gelir; görev ödülü, hediye, sandık gibi kaynaklar
+    // bonus/XP vermesin diye yalnızca elde balta/kazma varken sayılır
     const oGive = scene.giveItem.bind(scene);
     scene.giveItem = (id, n) => {
-      if (id === 'wood' || id === 'stone') {
+      const sel = scene.inventory.slots[scene.selected]?.id;
+      if ((id === 'wood' && sel === 'axe') || (id === 'stone' && sel === 'pickaxe')) {
         if (has(scene, id === 'wood' ? 'g1' : 'g2')) n += 1;
         st[id] += n;
         const p = scene.player;
@@ -589,9 +607,6 @@ export default {
           p.addCoins(c);
           scene.floatText(p.x, p.y - 28, `💎 +${c}🪙`, '#ffd166');
         }
-      } else if (FORAGE.test(id) && ITEMS[id]?.type !== 'seed') {
-        st.forage += n;
-        addXP(scene, 'gather', XP.gather);
       }
       return oGive(id, n);
     };

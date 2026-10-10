@@ -35,7 +35,8 @@ const distTo = (t, x, y) => (t.distanceFrom ? t.distanceFrom(x, y) : Phaser.Math
 // Alan hasarı: oyuncu, NPC, yapılar (barikatlar dahil) ve isteğe bağlı diğer zombiler
 export function areaDamage(scene, x, y, r, dmg, { structMul = 1, zombieDmg = 0, source = null } = {}) {
   const hit = new Set();
-  const list = [...scene.zombieTargets(), ...scene.barricades.getChildren()];
+  // Savunma modülünün yapıları (duvar, kapı, tuzak, lamba) da patlamadan etkilenir
+  const list = [...scene.zombieTargets(), ...scene.barricades.getChildren(), ...(scene.defStructs?.getChildren() || [])];
   for (const t of list) {
     if (!t || !t.active || t.hidden || hit.has(t)) continue;
     const pad = t.distanceFrom ? 0 : (t.radius || 6) * 0.5;
@@ -204,7 +205,9 @@ export class Zombie extends Actor {
 
     let a = Phaser.Math.Angle.Between(this.x, this.y, t.x, t.y);
     if (this.sidestep > 0) { this.sidestep -= dt; a += this.sideDir * Math.PI / 2; }
-    this.setVelocity(Math.cos(a) * this.speed, Math.sin(a) * this.speed);
+    // speedMul: diğer modüllerin geçici yavaşlatma/hızlandırma çarpanı (ör. tuzak, ışık)
+    const spd = this.speed * (this.speedMul ?? 1);
+    this.setVelocity(Math.cos(a) * spd, Math.sin(a) * spd);
     if (Math.abs(this.body.velocity.x) > 2) this.setFlipX(this.body.velocity.x < 0);
     this.walk(true);
   }

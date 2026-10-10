@@ -29,6 +29,10 @@ Kurulacak bir bağımlılık yok. Phaser 3.80.1 CDN'den (cdnjs), fontlar Google 
 | I / Tab | Envanter ve üretim |
 | K | Kaydet (sadece gündüz) |
 | M | Sesi aç/kapat |
+| Shift | Kaçış yuvarlanması |
+| Q / R | Son iki silah arasında geçiş / tabancayı doldur |
+| L / J | Yetenek ağacı / Başarımlar |
+| N | Mini harita |
 | Esc | Pencereyi kapat |
 
 ## Oynanış
@@ -36,6 +40,24 @@ Kurulacak bir bağımlılık yok. Phaser 3.80.1 CDN'den (cdnjs), fontlar Google 
 - **Gündüz (06:00–20:00):** Çapayla tarla alanını sür, tohum ek, sula. Ekinler yalnızca sulanmışken büyür ve toprak her şafakta kurur. Olgunlaşan ekine tıklayarak hasat edersin. Odun ve taş topla, ürünlerini sat.
 - **Gece (20:00–06:00):** Zombiler dalgalar halinde harita kenarlarından gelir. Her dalga bir öncekinden büyük olur ve 3. dalgadan sonra iri "brute" zombiler de katılır. Kılıç, tabanca, barikat ve taretlerle savun. **Sığınak düşerse oyun biter.** Şafakta kalan zombiler güneşte yanar ve dalga ödülünü alırsın.
 - **Üretim:** Barikat, taret, mermi, tabanca, ekmek, balkabağı çorbası ve tohum.
+
+## Telefonda (dikey) oynanış
+
+- Sol altta sürüklenebilir joystick, sağ altta büyük **eylem** butonu. Eylem butonu seçili eşyayı otomatik hedefe uygular; basılı tutunca tekrarlar, sürükleyince elle nişan alırsın.
+- ✋ butonu yakındaki etkileşimi gösterir, 🎒 envanteri açar, ☰ ise tüm panelleri içeren menü sayfasını açar.
+- Paneller alttan açılır, aşağı kaydırınca kapanır. Kontroller sayfasında titreşim, solak düzen ve buton saydamlığı ayarlanabilir.
+
+## Eklenen sistemler (bkz. PLAN.md)
+
+- **Dünya:** 4 mevsim (7'şer gün), yağmur/kar/sis/fırtına (yağmur ekinleri sular), göl ve balık tutma mini oyunu, mantar ve böğürtlen toplama, terk edilmiş evdeki sandık.
+- **Çiftçilik:** domates, mısır, çilek, patates; mevsime uygun ekim; gübre, fıskiye, korkuluk; normal/gümüş/altın kalite; sulanmayan ekinin solması.
+- **Hayvancılık:** tavuk ve inek, kümes ve ahır, yem, yumurta/süt/peynir, sevgi seviyesi, gece zombilerden koruma.
+- **Savaş:** kaçış yuvarlanması, yay (şarjlı), pompalı tüfek, mızrak, silah seviyeleri, kritik vuruş, şarjör.
+- **Zombiler:** koşucu, tükürükçü, patlayan, zırhlı ve her 5. dalgada boss; Kanlı Ay gecesi; ganimet; dalga önizlemesi.
+- **Savunma:** taş duvar, dikenli tuzak, kapı, 3 seviyeli taret, alev tareti, ışık direği, çekiçle onarım.
+- **Kasaba:** kalp/arkadaşlık sistemi ve hediyeler, Doktor ve Avcı NPC'leri, ilan panosu görevleri, kasabaya katılan hayatta kalanlar.
+- **İlerleme:** 3 beceri dalı, yetenek ağacı, başarımlar, istatistikler, alet yükseltmeleri, çanta genişletme ve sıralama.
+- **Cila:** hasar sayıları, vuruş duraksaması, parçacıklar, ortam sesleri, yeni müzik parçaları, mini harita, düşük donanımda otomatik efekt azaltma.
 
 ## Otonom NPC'ler (durum makineleri)
 

@@ -101,11 +101,13 @@ export class HUD {
   }
 
   toast(msg, type = 'info') {
-    const t = el('div', `toast ${type}`, msg);
+    const touch = document.body.classList.contains('is-touch');
+    const t = el('div', `toast ${type}`, touch ? touchText(msg) : msg);
     this.e.toasts.appendChild(t);
     setTimeout(() => t.classList.add('out'), 2600);
     setTimeout(() => t.remove(), 3000);
-    while (this.e.toasts.children.length > 5) this.e.toasts.firstChild.remove();
+    // Dar ekranda en fazla 3 bildirim üst üste
+    while (this.e.toasts.children.length > (touch ? 3 : 5)) this.e.toasts.firstChild.remove();
   }
 
   // Aynı uyarıyı kısa sürede tekrar tekrar göstermemek için
@@ -343,4 +345,9 @@ export class HUD {
     g.classList.add('show');
     g.querySelector('button').onclick = () => { g.classList.remove('show'); onRestart(); };
   }
+}
+
+// Dokunmatikte klavye ipuçlarını buton karşılıklarına çevir ("E tuşuyla" → "✋ ile")
+function touchText(msg) {
+  return String(msg).replace(/(^|\s)E tuşuyla/g, '$1✋ butonuyla').replace(/(^|\s)E ile/g, '$1✋ ile').replace(/\(E\)/g, '(✋)');
 }

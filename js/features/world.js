@@ -173,20 +173,22 @@ const CSS = `
   #wx-badge { top: calc(env(safe-area-inset-top, 0px) + 62px); left: 8px; padding: 4px 8px; font-size: 11px; min-width: 0; }
   #wx-badge .s { font-size: 10px; }
 }
+/* mobile.css alt sayfa genişliği #modal-feature { width: 560px } kuralına yeniliyordu (ID özgüllüğü) */
+body.is-touch.portrait #modal-feature { width: 100%; }
 .wx-info { display: grid; gap: 10px; font-size: 14px; }
 .wx-info .row { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border-radius: 10px; background: rgba(255,255,255,0.05); }
 .wx-info .ic { font-size: 26px; line-height: 1; } .wx-info p { color: var(--muted); font-size: 13px; margin-top: 2px; }
 .wx-seasons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; text-align: center; font-size: 12px; }
 .wx-seasons div { padding: 6px 2px; border-radius: 8px; background: rgba(255,255,255,0.04); }
 .wx-seasons .on { background: rgba(255,209,102,0.18); outline: 1px solid rgba(255,209,102,0.5); }
-.fish-wrap { display: grid; grid-template-columns: 64px 18px 1fr; gap: 12px; align-items: stretch; touch-action: none; user-select: none; -webkit-user-select: none; }
+.fish-wrap { display: grid; grid-template-columns: 64px 18px minmax(0, 1fr); gap: 12px; align-items: stretch; touch-action: none; user-select: none; -webkit-user-select: none; }
 .fish-track { position: relative; height: 230px; border-radius: 12px; background: linear-gradient(#2f6aa8, #1d4a7c); overflow: hidden; border: 1px solid var(--stroke); }
 .fish-zone { position: absolute; left: 4px; right: 4px; bottom: 0; border-radius: 8px; background: rgba(110,224,110,0.35); border: 2px solid rgba(110,224,110,0.9); transition: background 0.1s; }
 .fish-zone.in { background: rgba(110,224,110,0.6); }
 .fish-fish { position: absolute; left: 50%; bottom: 0; width: 26px; height: 26px; margin-left: -13px; image-rendering: pixelated; }
 .fish-prog { position: relative; height: 230px; border-radius: 99px; background: rgba(255,255,255,0.1); overflow: hidden; }
 .fish-prog i { position: absolute; left: 0; right: 0; bottom: 0; height: 20%; background: linear-gradient(0deg, #ffd166, #6ee06e); border-radius: inherit; }
-.fish-side { display: flex; flex-direction: column; gap: 10px; justify-content: space-between; font-size: 13px; }
+.fish-side { display: flex; flex-direction: column; gap: 10px; justify-content: space-between; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
 .fish-side .msg { font-size: 15px; font-weight: 600; min-height: 40px; }
 .fish-btn { width: 100%; min-height: 64px; font-size: 16px; border-radius: 14px; touch-action: none; }
 .fish-btn.hold { filter: brightness(1.25); transform: scale(0.98); }
@@ -453,7 +455,8 @@ function startFishing(scene) {
   const zoneEl = $('.fish-zone'), fishEl = $('.fish-fish'), progEl = $('.fish-prog i'), msgEl = $('.msg'), btn = $('.fish-btn');
   fishEl.src = scene.hud.icon ? scene.hud.icon(fish.id) : '';
   const TRACK = 230, FISH_PX = 26;
-  const g = { zone: 0, zv: 0, size: fish.zone, fishY: 0.5, fishT: 0.5, fishTimer: 0, prog: 0.25, hold: false, time: 0, done: false, raf: 0, last: performance.now() };
+  // Alan balığın altında başlar; ilk 1.2 sn ilerleme düşmez (oyuncu panele alışsın)
+  const g = { zone: 0.5 - fish.zone / 2, zv: 0, size: fish.zone, fishY: 0.5, fishT: 0.5, fishTimer: 1.2, prog: 0.3, hold: false, time: 0, done: false, raf: 0, last: performance.now() };
   zoneEl.style.height = `${g.size * TRACK}px`;
 
   const setHold = (v) => { g.hold = v; btn.classList.toggle('hold', v); };
@@ -502,8 +505,10 @@ function startFishing(scene) {
     g.fishTimer -= dt;
     if (g.fishTimer <= 0) { g.fishTimer = Phaser.Math.FloatBetween(0.35, 1.2) / fish.speed; g.fishT = Phaser.Math.FloatBetween(0.05, 0.95); }
     g.fishY += (g.fishT - g.fishY) * Math.min(1, dt * 2.2 * fish.speed);
-    const inZone = g.fishY >= g.zone && g.fishY <= g.zone + g.size;
-    g.prog += inZone ? dt / 2 : -dt / 3.2;  // ~2 sn alanda tut
+    const fc = (g.fishY * (TRACK - FISH_PX) + FISH_PX / 2) / TRACK; // balığın merkezi (0..1)
+    const inZone = fc >= g.zone && fc <= g.zone + g.size;
+    if (inZone) g.prog += dt / 2;            // ~2 sn alanda tut
+    else if (g.time > 1.2) g.prog -= dt / 4;
     zoneEl.style.transform = `translateY(${-g.zone * TRACK}px)`;
     zoneEl.classList.toggle('in', inZone);
     fishEl.style.transform = `translateY(${-(g.fishY * (TRACK - FISH_PX))}px)`;

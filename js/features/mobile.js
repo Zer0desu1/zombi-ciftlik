@@ -32,7 +32,24 @@ function setupGlobals() {
     installTapFilter(() => current);
   }
   installSheetSwipe(() => current);
+  trackHudHeight();
   window.addEventListener('orientationchange', () => setTimeout(() => { if (current) applyZoom(current); }, 250));
+}
+
+// Üst barın alt kenarını --hud-h olarak yayınla (rozet/mini harita altına hizalanır); yalnız boyut değişince yazar
+function trackHudHeight() {
+  const top = document.getElementById('hud-top');
+  if (!top) return;
+  let last = -1;
+  const sync = () => {
+    const h = Math.round(top.getBoundingClientRect().bottom);
+    if (h === last || h <= 0) return;
+    last = h;
+    document.documentElement.style.setProperty('--hud-h', `${h}px`);
+  };
+  if (window.ResizeObserver) new ResizeObserver(sync).observe(top);
+  window.addEventListener('resize', sync);
+  sync();
 }
 
 export default {
