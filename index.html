@@ -8,9 +8,10 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>Hasat & Hayatta Kal</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧟</text></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Pixelify+Sans:wght@500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Pixelify+Sans:wght@500;700&family=Press+Start+2P&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/style.css">
   <link rel="stylesheet" href="css/mobile.css">
 </head>
@@ -27,11 +28,11 @@
       <div class="sep"></div>
       <div class="block stat b-hp">
         <span class="lbl">❤</span>
-        <div class="bar hp"><i id="hud-hp"></i></div><span id="hud-hp-txt" class="num">100</span>
+        <div class="bar hp"><b class="trail"></b><i id="hud-hp"></i></div><span id="hud-hp-txt" class="num">100</span>
       </div>
       <div class="block stat b-en">
         <span class="lbl">⚡</span>
-        <div class="bar en"><i id="hud-en"></i></div><span id="hud-en-txt" class="num">100</span>
+        <div class="bar en"><b class="trail"></b><i id="hud-en"></i></div><span id="hud-en-txt" class="num">100</span>
       </div>
       <div class="sep"></div>
       <div class="block b-coins"><span class="lbl">🪙</span><span id="hud-coins" class="num big">0</span></div>
@@ -40,7 +41,7 @@
       <div class="block b-zom"><span class="lbl">🧟</span><span id="hud-zombies" class="num">—</span></div>
       <div class="sep"></div>
       <div class="block stat b-shelter" title="Sığınak dayanıklılığı — sıfırlanırsa oyun biter">
-        <span class="lbl">🏠</span><div class="bar shelter"><i id="hud-shelter"></i></div>
+        <span class="lbl">🏠</span><div class="bar shelter"><b class="trail"></b><i id="hud-shelter"></i></div>
       </div>
       <div id="hud-extra" class="block"></div>
       <div class="brk" aria-hidden="true"></div>
@@ -97,7 +98,21 @@
 
     <!-- Ana menü -->
     <section id="menu">
+      <div class="menu-bg" aria-hidden="true">
+        <i class="moon"></i><i class="fog"></i><i class="fog f2"></i><i class="embers"></i>
+        <svg viewBox="0 0 400 60" preserveAspectRatio="xMidYMax slice" shape-rendering="crispEdges" fill="#070a08">
+          <rect x="0" y="50" width="400" height="10"/>
+          <path d="M20 50V30l18-12 18 12v20zM62 50V24h4v-4h4v30z"/>
+          <path d="M88 50v-8h2v-2h-2v-2h40v2h-2v2h2v8M92 38v12M100 38v12M108 38v12M116 38v12M124 38v12" stroke="#070a08" stroke-width="2"/>
+          <path d="M300 50V26l24-14 24 14v24zM318 50V38h12v12z"/>
+          <path d="M356 50V18h3v-6h3v6h3v32z"/>
+          <g class="zw"><rect x="169" y="28" width="5" height="5"/><rect x="168" y="33" width="6" height="9"/><rect x="174" y="34" width="7" height="2"/><rect x="168" y="42" width="2" height="8"/><rect x="172" y="42" width="2" height="8"/></g>
+          <g class="zw z2"><rect x="211" y="28" width="5" height="5"/><rect x="210" y="33" width="6" height="9"/><rect x="216" y="34" width="7" height="2"/><rect x="210" y="42" width="2" height="8"/><rect x="214" y="42" width="2" height="8"/></g>
+          <g class="zw z3"><rect x="249" y="29" width="5" height="5"/><rect x="248" y="34" width="6" height="8"/><rect x="254" y="35" width="7" height="2"/><rect x="248" y="42" width="2" height="8"/><rect x="252" y="42" width="2" height="8"/></g>
+        </svg>
+      </div>
       <div class="menu-card glass">
+        <div class="kicker">🌾 Çiftlik · 🧟 Savunma</div>
         <h1>Hasat <span>&</span> Hayatta Kal</h1>
         <p class="tag">Gündüz ek, sula, hasat et. Gece kasabanı zombi dalgalarına karşı savun.</p>
         <div class="menu-btns">
@@ -120,6 +135,7 @@
       <div class="menu-card glass">
         <h1 class="go-title">Kasaba Düştü</h1>
         <p class="stats"></p>
+        <div class="go-chips"></div>
         <div class="go-score"></div>
         <div class="menu-btns"><button class="primary">Yeniden Başla</button></div>
       </div>

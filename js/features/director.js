@@ -1,9 +1,11 @@
 // Oyun yönetmeni: tempo (erken gece / erken şafak), adım adım hedefler, ana hedef (Radyo Kulesi → kurtarma = zafer),
-// sürü uyarıları. Oyunun "ne yapmalıyım?" ve "neden devam etmeliyim?" sorularına cevap verir.
-import { ITEMS, NIGHT_START } from '../config.js';
+// sürü uyarıları, hedef oku, tek seferlik ipuçları, yardım paneli ve zafer sonrası sonsuz mod.
+// Oyunun "ne yapmalıyım?" ve "neden devam etmeliyim?" sorularına cevap verir.
+import { ITEMS, NIGHT_START, TILE, FARM_ZONE } from '../config.js';
 import { addCanvas, R } from '../textures.js';
 import { injectCSS, el, featureLayer } from '../ui/dom.js';
 import { audio } from '../audio.js';
+import { loadRecords, recordEndlessNight } from '../systems/Records.js';
 
 // ---------------- Adım adım hedefler ----------------
 const cropsWhere = (s, fn) => { let n = 0; for (const p of s.farm.plots.values()) if (p.crop && fn(p)) n++; return n; };
@@ -22,6 +24,33 @@ const OBJECTIVES = [
   { id: 'tower1',    text: 'Radyo Kulesi\'nin 1. aşamasını kur',      hint: 'Sığınağın solundaki kule temeline git',       goal: 1, prog: (s, st) => Math.min(1, st.tower), reward: 0 }
 ];
 
+// Hedef okunun gösterdiği dünya konumu (yoksa null → ok gizlenir)
+const farmCenter = () => ({ x: (FARM_ZONE.x + FARM_ZONE.w / 2) * TILE, y: (FARM_ZONE.y + FARM_ZONE.h / 2) * TILE });
+const plotPos = (p) => ({ x: p.tx * TILE + 8, y: p.ty * TILE + 8 });
+function nearest(s, list, pos = (o) => o) {
+  let best = null, bd = Infinity;
+  for (const o of list) {
+    const q = pos(o), d = Phaser.Math.Distance.Squared(s.player.x, s.player.y, q.x, q.y);
+    if (d < bd) { bd = d; best = q; }
+  }
+  return best;
+}
+const npcPos = (s, key) => { const n = s.npcs.find((o) => o.key === key && !o.hidden); return n ? { x: n.x, y: n.y } : null; };
+const doorFront = (s) => ({ x: s.shelter.door.x, y: s.shelter.door.y + 14 });
+const TARGETS = {
+  till: farmCenter,
+  plant: (s) => nearest(s, [...s.farm.plots.values()].filter((p) => !p.crop), plotPos) || farmCenter(),
+  water: (s) => nearest(s, s.farm.unwatered(), plotPos) || farmCenter(),
+  wood: (s) => (s.inventory.count('axe') ? nearest(s, s.resources.getChildren().filter((r) => r.kind === 'tree' && !r.depleted)) : null),
+  barricade: doorFront,
+  night1: doorFront,
+  harvest: (s) => nearest(s, s.farm.ripe(), plotPos),
+  sell: (s) => npcPos(s, 'merchant'),
+  pantry: (s) => ({ x: s.shelter.door.x + 30, y: s.shelter.door.y }),
+  turret: doorFront,
+  tower1: () => (tower ? { x: tower.x, y: tower.y + 16 } : null)
+};
+
 // ---------------- Radyo Kulesi (ana hedef) ----------------
 const STAGES = [
   { cost: { wood: 15, stone: 10 },              coins: 0,   perk: 'Kule ışığı + sığınak +100 can' },
@@ -32,7 +61,7 @@ const STAGES = [
 const RESCUE_DELAY = 3;
 const SHELTER_BONUS = [0, 100, 100, 300, 300];
 
-const st0 = () => ({ done: [], tower: 0, rescueDay: 0, harvested: false, sold: false, earlyStart: false, finalNight: false });
+const st0 = () => ({ done: [], tower: 0, rescueDay: 0, harvested: false, sold: false, earlyStart: false, finalNight: false, endless: false, endlessStart: 0 });
 let st = st0();
 let ff = false;            // gece temizlendi → şafağa hızlı ileri
 let objTimer = 0;
@@ -68,6 +97,7 @@ function buildStage(s) {
   s.player.addCoins(-stage.coins);
   st.tower++;
   applyPerks(s);
+  s.events.emit('towerBuilt', st.tower);
   audio.sfx('craft');
   s.spawnParticles(tower.x, tower.y - 20, 0xffd166, 18);
   s.cameras.main.shake(150, 0.004);
@@ -134,7 +164,10 @@ function renderObjective(s) {
   const night = s.timeSys.isNight;
   let html = '';
   const o = currentObjective();
-  if (st.rescueDay) {
+  if (st.endless) {
+    const n = s.waves.wave - st.endlessStart;
+    html = `♾️ <b>Sonsuz Mod · kurtarmadan sonra ${n}. gece</b><span>Rekor: ${Math.max(loadRecords().bestEndless, s.waves.wave)}. gece · dalgalar her gece büyüyor</span>`;
+  } else if (st.rescueDay) {
     const left = st.rescueDay - s.timeSys.day;
     html = left > 0 ? `🚁 <b>Kurtarma ${left} gün sonra</b><span>Savunmanı güçlendir, son gece büyük olacak</span>`
       : `🚁 <b>SON GECE!</b><span>Şafağa kadar dayan, helikopter geliyor</span>`;
@@ -159,10 +192,207 @@ function checkObjectives(s) {
   }
 }
 
+// Gösterilecek hedef konumu: önce adım hedefi, sonra kule (kurtarma çağrılana kadar)
+function targetPos(s) {
+  if (s.timeSys.isNight || st.endless || st.rescueDay) return null;
+  const o = currentObjective();
+  if (o) return TARGETS[o.id]?.(s) || null;
+  return st.tower < STAGES.length && tower ? { x: tower.x, y: tower.y + 16 } : null;
+}
+
+// ---------------- Hedef oku (dünya içi) ----------------
+let guide = null;
+function makeGuide(s) {
+  const arrow = s.add.image(0, 0, 'dr_arrow').setDepth(10003).setVisible(false);
+  const dist = s.add.text(0, 0, '', { fontFamily: 'Outfit, sans-serif', fontSize: '6px', color: '#ffd166', stroke: '#000', strokeThickness: 2, resolution: 4 })
+    .setOrigin(0.5).setDepth(10003).setVisible(false);
+  const pin = s.add.image(0, 0, 'dr_pin').setDepth(10003).setVisible(false);
+  guide = { arrow, dist, pin, t: 0 };
+}
+
+function updateGuide(s, dt) {
+  if (!guide) return;
+  const { arrow, dist, pin } = guide;
+  const target = prefs.arrow && s.player.alive ? targetPos(s) : null;
+  const p = s.player;
+  const d = target ? Phaser.Math.Distance.Between(p.x, p.y, target.x, target.y) : 0;
+  const show = !!target && d > 36;
+  arrow.setVisible(show); dist.setVisible(show);
+  pin.setVisible(!!target);
+  if (!target) return;
+  guide.t += dt;
+  pin.setPosition(target.x, target.y - 14 + Math.sin(guide.t * 5) * 2);
+  if (!show) return;
+  const a = Phaser.Math.Angle.Between(p.x, p.y, target.x, target.y);
+  const r = 18 + Math.sin(guide.t * 6) * 1.5;
+  arrow.setPosition(p.x + Math.cos(a) * r, p.y - 2 + Math.sin(a) * r).setRotation(a);
+  dist.setPosition(p.x + Math.cos(a) * (r + 10), p.y - 2 + Math.sin(a) * (r + 10)).setText(`${Math.round(d / TILE)}m`);
+  if (!st.done.length) tip(s, 'arrow');
+}
+
+// ---------------- Tek seferlik bağlamsal ipuçları ----------------
+const TIP_KEY = 'zombi-ciftlik-tips-v1';
+const PREF_KEY = 'zombi-ciftlik-guide-v1';
+const isTouch = () => document.body.classList.contains('is-touch');
+const TIPS = {
+  move: () => (isTouch() ? 'Sol alttaki joystick ile yürü, sağdaki büyük butonla seçili aleti kullan.' : 'WASD / ok tuşlarıyla yürü. Seçili aleti fareyle tıklayarak (ya da Boşluk) kullan. 1–8 ile alet seç.'),
+  arrow: () => 'Sarı ok sıradaki hedefi gösteriyor; yanındaki sayı kalan mesafe. Hedefin üstünde de küçük bir işaret var.',
+  talk: () => (isTouch() ? 'Yakındaki kişiyle ✋ butonuyla konuş: görev, ticaret ve hediye.' : 'E tuşuyla yakındaki kişiyle konuş: görev, ticaret ve hediye.'),
+  dusk: () => 'Hava kararıyor: 20:00\'de zombiler gelir. Sığınağın yakınında ol ve silahını seç.',
+  night: () => 'Sürüler harita kenarlarından gelir; kırmızı uyarı yönü gösterir. Sığınak düşerse oyun biter!',
+  lowhp: () => 'Canın az! Yiyecek seçip kullan ya da Doktor Selin\'e git. Bayılırsan altının bir kısmını kaybedersin.',
+  energy: () => 'Enerjin bitiyor. Yemek ye; şafakta enerjin de yenilenir.',
+  board: () => 'Sığınağın sağındaki 📋 İlan Panosu\'nda her gün 3 yeni görev var: teslim, öldür, hayatta kal.',
+  help: () => (isTouch() ? 'Takılırsan ☰ menüsündeki ❓ Yardım sayfasına bak.' : 'Takılırsan ❓ Yardım (H) sayfasına bak.')
+};
+let seenTips = new Set();
+let prefs = { arrow: true };
+let tipQueue = [];
+let tipCd = 0;
+let tipT = 0;
+
+function loadTipState() {
+  try { seenTips = new Set(JSON.parse(localStorage.getItem(TIP_KEY)) || []); } catch { seenTips = new Set(); }
+  try { prefs = { arrow: true, ...(JSON.parse(localStorage.getItem(PREF_KEY)) || {}) }; } catch { prefs = { arrow: true }; }
+}
+function saveJSON(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* depolama kapalı */ } }
+
+function tip(s, id) {
+  if (seenTips.has(id) || tipQueue.includes(id)) return;
+  tipQueue.push(id);
+}
+
+function showTip(id) {
+  const box = document.getElementById('dr-tip');
+  if (!box) return;
+  seenTips.add(id);
+  saveJSON(TIP_KEY, [...seenTips]);
+  box.innerHTML = `<span>💡 ${TIPS[id]()}</span>`;
+  const x = el('button', 'dr-tip-x', '✕');
+  x.setAttribute('aria-label', 'Kapat');
+  x.onclick = () => { box.classList.remove('show'); tipT = 0; };
+  box.appendChild(x);
+  box.classList.add('show');
+  tipT = 8;
+  placeTip();
+}
+
+// Hedef kutusu yüksekliği (mobilde birkaç satır) değişebildiği için ipucu her zaman onun altına yerleşir
+function placeTip() {
+  const box = document.getElementById('dr-tip'), ob = document.getElementById('dr-objective');
+  if (!box || !ob) return;
+  box.style.top = ob.classList.contains('show') ? `${ob.offsetTop + ob.offsetHeight + 8}px` : '';
+}
+
+function updateTips(s, dt) {
+  const p = s.player, ts = s.timeSys;
+  if (!ts.isNight && ts.minutes >= 18 * 60) tip(s, 'dusk');
+  if (s.waves.active) tip(s, 'night');
+  if (p.alive && p.hp < p.maxHp * 0.35) tip(s, 'lowhp');
+  if (p.energy < p.maxEnergy * 0.2) tip(s, 'energy');
+  if (ts.day >= 2 && !ts.isNight) tip(s, 'board');
+  if (s.npcs.some((n) => !n.hidden && Phaser.Math.Distance.Between(p.x, p.y, n.x, n.y) < 30)) tip(s, 'talk');
+  if (s.prog?.stats?.playTime > 50 || ts.day >= 2) tip(s, 'help');
+  if (tipT > 0) {
+    tipT -= dt;
+    placeTip();
+    if (tipT <= 0) document.getElementById('dr-tip')?.classList.remove('show');
+    return;
+  }
+  tipCd -= dt;
+  // Dalga/olay bannerı ekrandayken ipucu bekler; aksi halde üst üste biniyorlar
+  if (tipCd > 0 || !tipQueue.length || s.hud.bannerTimer) return;
+  showTip(tipQueue.shift());
+  tipCd = 4;
+}
+
+// ---------------- Yardım paneli ----------------
+function openHelp(s) {
+  const touch = isTouch();
+  const ctl = touch
+    ? [['Yürü', 'Sol alttaki joystick'], ['Kullan / saldır', 'Sağdaki büyük buton (basılı tut = tekrar, sürükle = nişan)'], ['Konuş / etkileş', '✋ butonu'], ['Envanter', '🎒'], ['Tüm paneller', '☰ menü']]
+    : [['Yürü', 'WASD / Ok tuşları'], ['Kullan / saldır', 'Sol tık veya Boşluk'], ['Alet seç', '1–8 / fare tekerleği'], ['Konuş / etkileş', 'E'], ['Envanter', 'I / Tab'], ['Kaçış', 'Shift'], ['Kaydet', 'K (gündüz)'], ['Yetenek / Başarım', 'L / J'], ['Yardım', 'H']];
+  const body = el('div', 'dr-help', `
+    <h4>🎯 Amaç</h4>
+    <p>Gündüz tarlanı işle ve hazırlan, gece kasabayı zombilere karşı savun. <b>Radyo Kulesi</b>'ni 4 aşamada kur; kurtarma ekibi gelene kadar dayanırsan kazanırsın. Kurtarmadan sonra istersen <b>Sonsuz Mod</b> ile devam edebilirsin.</p>
+    <h4>🎮 Kontroller</h4>
+    <div class="dr-keys">${ctl.map(([a, b]) => `<div><span>${a}</span><b>${b}</b></div>`).join('')}</div>
+    <h4>☀️ Gündüz</h4>
+    <p>Çapala → tohum ek → sula (kuru toprakta ekin büyümez). Ağaç kes, taş kır, ürün sat. Ekranın üstündeki hedef ve sarı ok sıradaki adımı gösterir.</p>
+    <h4>🌙 Gece</h4>
+    <p>Sürüler kenarlardan gelir. Barikat ve taretleri sığınağın çevresine kur. Sürüyü erken temizlersen şafak çabuk gelir ve ödül alırsın.</p>
+    <h4>❤️ Kasaba</h4>
+    <p>Her gün konuş ve sevdikleri şeyleri hediye et. 3♥ indirim, 4♥ gece yardımı, 6♥ özel tarif, 8♥ özel hediye. 📋 İlan Panosu'nda her gün 3 görev var.</p>
+    <h4>🧺 Kiler</h4>
+    <p>Kasaba tokken savunucular güçlenir. Fazla ürünü sığınak kapısının sağındaki sandığa bağışla.</p>`);
+  const row = el('div', 'dr-help-btns');
+  const arrowBtn = el('button', '', '');
+  const syncArrow = () => { arrowBtn.textContent = prefs.arrow ? '➤ Hedef oku: Açık' : '➤ Hedef oku: Kapalı'; };
+  syncArrow();
+  arrowBtn.onclick = () => { prefs.arrow = !prefs.arrow; saveJSON(PREF_KEY, prefs); audio.sfx('click'); syncArrow(); };
+  const resetBtn = el('button', '', '💡 İpuçlarını yeniden göster');
+  resetBtn.onclick = () => { seenTips.clear(); saveJSON(TIP_KEY, []); audio.sfx('click'); resetBtn.textContent = '✓ İpuçları sıfırlandı'; resetBtn.disabled = true; };
+  row.append(arrowBtn, resetBtn);
+  body.appendChild(row);
+  s.hud.openPanel('❓ Yardım', body);
+}
+
+// ---------------- Sonsuz mod ----------------
+function offerEndless(s) {
+  if (s.gameOver) return;
+  let won = false;
+  const best = loadRecords().bestEndless;
+  const body = el('div', 'dr-end', `
+    <p>Helikopter indi, kasaba kurtarıldı! İstersen burada zaferle bitir ya da kalıp savunmaya devam et.</p>
+    <p class="muted">Sonsuz modda dalgalar her gece büyür. Dayandığın en yüksek gece rekorlara yazılır${best ? ` (rekor: <b>${best}. gece</b>)` : ''}. Zafer puanın korunur.</p>`);
+  const row = el('div', 'dr-help-btns');
+  const win = el('button', '', '🏁 Zaferle bitir');
+  const go = el('button', 'primary', '♾️ Devam et (sonsuz)');
+  win.onclick = () => { won = true; s.hud.closeAll(); s.onVictory(); };
+  go.onclick = () => s.hud.closeAll();
+  row.append(win, go);
+  body.appendChild(row);
+  // Panel nasıl kapanırsa kapansın (Esc, arka plan) varsayılan devam etmektir: oyuncu ilerlemesini kaybetmesin
+  s.hud.openPanel('🚁 Kurtarıldınız!', body, () => { if (!won) startEndless(s); });
+}
+
+function startEndless(s) {
+  if (s.gameOver || st.endless) return;
+  st.endless = true;
+  st.finalNight = false;
+  st.endlessStart = s.waves.wave;
+  s.hud.banner('♾️ Sonsuz Mod', 'Kasaba seninle. Dalgalar her gece büyüyecek — ne kadar dayanabilirsin?');
+  s.saveGame(false);
+}
+
+// Sonsuz modda oyun sonu: sonuç ekranını kurtarma sonrası geceleri anlatacak şekilde düzelt
+function endlessGameOverText(s) {
+  const g = document.getElementById('gameover');
+  if (!g) return;
+  const n = s.waves.wave - st.endlessStart;
+  g.querySelector('.go-title').textContent = 'Sonsuz Mod Bitti';
+  const stats = g.querySelector('.stats');
+  const extra = stats.textContent.includes(' · Hasat:') ? stats.textContent.slice(stats.textContent.indexOf(' · Hasat:')) : '';
+  stats.textContent = `Kurtarmadan sonra ${n} gece daha dayandın (${s.waves.wave}. gece). Öldürülen zombi: ${s.kills}${extra}`;
+}
+
 export default {
   id: 'director',
 
   textures(scene) {
+    // Sağa bakan ok: önce koyu dış hat, sonra sarı gövde (döndürülerek hedefe çevrilir)
+    addCanvas(scene, 'dr_arrow', 11, 11, (ctx) => {
+      const shape = (c, o) => {
+        R(ctx, 1 - o, 4 - o, 5 + o, 3 + o * 2, c);
+        for (let i = 0; i < 5; i++) R(ctx, 5 + i, 1 + i - o, 1 + o, 9 - i * 2 + o * 2, c);
+      };
+      shape('#1a1a1a', 1);
+      shape('#ffd166', 0);
+    });
+    addCanvas(scene, 'dr_pin', 7, 8, (ctx) => {
+      R(ctx, 0, 0, 7, 3, '#1a1a1a'); R(ctx, 1, 3, 5, 2, '#1a1a1a'); R(ctx, 2, 5, 3, 2, '#1a1a1a'); R(ctx, 3, 7, 1, 1, '#1a1a1a');
+      R(ctx, 1, 1, 5, 2, '#ffd166'); R(ctx, 2, 3, 3, 2, '#ffd166'); R(ctx, 3, 5, 1, 2, '#ffd166');
+    });
     // Kule: 0 = temel kazıkları … 4 = tamamlanmış anten
     for (let k = 0; k <= 4; k++) {
       addCanvas(scene, `radio_tower_${k}`, 24, 56, (ctx) => {
@@ -184,6 +414,11 @@ export default {
     objTimer = 0;
     gunCd = 0;
     baseShelterMax = scene.shelter.maxHp;
+    tipQueue = [];
+    tipCd = 2;
+    tipT = 0;
+    loadTipState();
+    makeGuide(scene);
 
     injectCSS('director', `
       #dr-objective { position: absolute; left: 50%; top: calc(var(--hud-h, 72px) + 8px); transform: translateX(-50%) translateY(-6px);
@@ -203,9 +438,38 @@ export default {
       .dr-tower .dr-stage.done { opacity: .55; } .dr-tower .dr-stage.cur { border: 1px solid rgba(255,209,102,.45); }
       .dr-tower .dr-n { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.1); font-weight: 700; flex-shrink: 0; }
       .dr-tower .rinfo { min-width: 0; } .dr-rescue { margin-top: 12px; color: var(--accent); }
+      #dr-tip { position: absolute; left: 50%; top: calc(var(--hud-h, 72px) + 66px); transform: translateX(-50%) translateY(-6px); z-index: 25;
+        max-width: min(420px, calc(100vw - 32px)); display: flex; gap: 8px; align-items: flex-start; padding: 8px 8px 8px 12px; border-radius: 12px;
+        font-size: 12.5px; line-height: 1.35; opacity: 0; pointer-events: none; transition: opacity .25s, transform .25s;
+        background: var(--glass-strong); border: 1px solid rgba(110,182,255,.4); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+      #dr-tip.show { opacity: 1; transform: translateX(-50%); pointer-events: auto; }
+      body.modal-open #dr-tip.show { opacity: 0; pointer-events: none; }
+      #dr-tip span { flex: 1; }
+      #dr-tip .dr-tip-x { min-width: 32px; min-height: 32px; padding: 0; flex: none; font-size: 12px; }
+      .dr-help h4 { margin: 12px 0 4px; font-size: 14px; } .dr-help h4:first-child { margin-top: 0; }
+      .dr-help p { margin: 0; font-size: 13px; line-height: 1.45; opacity: .9; }
+      .dr-help, .dr-end { max-height: 64vh; overflow-y: auto; }
+      .dr-keys { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 14px; font-size: 12.5px; }
+      .dr-keys div { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,.07); }
+      .dr-keys b { color: var(--accent); font-weight: 600; text-align: right; }
+      .dr-help-btns { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+      .dr-help-btns button { flex: 1 1 160px; min-height: 44px; }
+      .dr-end p { margin: 0 0 8px; font-size: 13.5px; line-height: 1.45; }
+      body.is-touch.portrait #modal-feature:has(.dr-help), body.is-touch.portrait #modal-feature:has(.dr-end) { width: 100%; }
+      @media (max-width: 520px) { .dr-keys { grid-template-columns: 1fr; } }
     `);
     featureLayer()?.querySelector('#dr-objective')?.remove();
     featureLayer()?.appendChild(el('div', '', '')).setAttribute('id', 'dr-objective');
+    featureLayer()?.querySelector('#dr-tip')?.remove();
+    featureLayer()?.appendChild(el('div', '', '')).setAttribute('id', 'dr-tip');
+    scene.featureMenu.push({ id: 'help', icon: '❓', label: 'Yardım', key: 'H', open: (s) => openHelp(s) });
+    const onKey = (e) => {
+      if (!scene.started || scene.gameOver || e.repeat) return;
+      if (e.key.toLowerCase() !== 'h' && e.key !== '?') return;
+      if (document.querySelector('#modal-feature .dr-help')) { scene.hud.closeAll(); return; }
+      if (!scene.hud.isModalOpen()) openHelp(scene);
+    };
+    scene.input.keyboard?.on('keydown', onKey);
 
     // Kule
     const p = placeTower(scene);
@@ -253,7 +517,7 @@ export default {
     const onWaveStart = (w) => {
       ff = false;
       scene.timeSys.speedMul = 1;
-      if (st.rescueDay && scene.timeSys.day >= st.rescueDay) {
+      if (st.rescueDay && !st.endless && scene.timeSys.day >= st.rescueDay) {
         st.finalNight = true;
         scene.hud.banner('SON GECE', 'Kurtarma helikopteri şafakta geliyor. Dayan!');
       }
@@ -266,8 +530,13 @@ export default {
         st.earlyStart = false;
       }
       if (st.finalNight) {
+        st.finalNight = false;
         scene.hud.banner('🚁 Kurtarma geldi!', 'Kasaba hayatta kaldı!');
-        scene.time.delayedCall(2600, () => scene.onVictory());
+        scene.events.emit('rescued');
+        scene.time.delayedCall(2600, () => offerEndless(scene));
+      } else if (st.endless) {
+        scene.events.emit('endlessNight', w - st.endlessStart);
+        if (recordEndlessNight(w)) scene.hud.toast(`♾️ Yeni sonsuz mod rekoru: ${w}. gece!`, 'ok');
       }
     };
     ev.on('hordeIncoming', onHorde);
@@ -275,26 +544,45 @@ export default {
     ev.on('waveEnd', onWaveEnd);
     // Son gece: kanlı ay + garantili boss
     const prevDecider = scene.waves.bloodDecider;
-    scene.waves.bloodDecider = (w) => (st.rescueDay && scene.timeSys.day >= st.rescueDay) || (prevDecider ? prevDecider(w) : false);
+    const finalNow = () => st.rescueDay && !st.endless && scene.timeSys.day >= st.rescueDay;
+    scene.waves.bloodDecider = (w) => finalNow() || (prevDecider ? prevDecider(w) : false);
     const makePlan = scene.waves.makePlan.bind(scene.waves);
     scene.waves.makePlan = (w, blood) => {
       const plan = makePlan(w, blood);
-      if (st.rescueDay && scene.timeSys.day >= st.rescueDay) {
+      if (finalNow()) {
         plan.counts.boss = Math.max(1, plan.counts.boss || 0);
         plan.sides = [0, 1, 2, 3];
+      } else if (st.endless) {
+        // Sonsuz mod: normal büyümenin üstüne her gece %12 daha kalabalık, 3 gecede bir boss, 2. geceden sonra her yönden
+        const k = Math.max(1, w - st.endlessStart);
+        const mul = 1 + 0.12 * k;
+        for (const key of Object.keys(plan.counts)) if (key !== 'boss') plan.counts[key] = Math.round(plan.counts[key] * mul);
+        if (k % 3 === 0) plan.counts.boss = Math.max(1, plan.counts.boss || 0) + Math.floor(k / 6);
+        if (k >= 2) plan.sides = [0, 1, 2, 3];
       }
       return plan;
     };
+    // Sonsuz modda kaybedilse de kurtarma gerçekleşti: zafer sayılır, sonsuz gece rekoru işlenir
+    const runStats = scene.runStats.bind(scene);
+    scene.runStats = (victory) => (st.endless ? { ...runStats(true), endless: true } : runStats(victory));
+    const onFallen = () => { if (st.endless) endlessGameOverText(scene); };
+    ev.on('shelterFallen', onFallen);
     scene.timeSys.on('dawn', () => { ff = false; scene.timeSys.speedMul = 1; });
     scene.events.once('shutdown', () => {
-      ev.off('hordeIncoming', onHorde); ev.off('waveStart', onWaveStart); ev.off('waveEnd', onWaveEnd);
+      ev.off('hordeIncoming', onHorde); ev.off('waveStart', onWaveStart); ev.off('waveEnd', onWaveEnd); ev.off('shelterFallen', onFallen);
+      scene.input.keyboard?.off('keydown', onKey);
       document.getElementById('dr-objective')?.remove();
+      document.getElementById('dr-tip')?.remove();
+      guide = null;
     });
   },
 
   begin(scene, isNew) {
     applyPerks(scene);
-    if (isNew) scene.time.delayedCall(3500, () => scene.hud.toast('🎯 Ekranın üstündeki hedefleri takip et. Ana hedef: Radyo Kulesi\'ni kurup kurtarma çağırmak.', 'info'));
+    if (isNew) {
+      scene.time.delayedCall(3500, () => scene.hud.toast('🎯 Ekranın üstündeki hedefleri ve sarı oku takip et. Ana hedef: Radyo Kulesi\'ni kurup kurtarma çağırmak.', 'info'));
+      tip(scene, 'move');
+    }
     renderObjective(scene);
   },
 
@@ -328,6 +616,8 @@ export default {
         } else gunCd = 0.3;
       }
     }
+    updateGuide(scene, dt);
+    updateTips(scene, dt);
     objTimer -= dt;
     if (objTimer <= 0) {
       objTimer = 0.5;
@@ -344,6 +634,8 @@ export default {
     st.tower = Phaser.Math.Clamp(st.tower | 0, 0, STAGES.length);
     st.finalNight = false;
     st.earlyStart = false;
+    st.endless = !!d.endless;
+    st.endlessStart = st.endless ? Math.max(0, d.endlessStart | 0) : 0;
     applyPerks(scene);
   }
 };

@@ -1,9 +1,23 @@
-// Oyunlar arası rekorlar (en iyi gün/dalga/puan, zaferler). Kayıttan bağımsız tutulur.
+// Oyunlar arası rekorlar (en iyi gün/dalga/puan, zaferler, sonsuz modda en yüksek gece). Kayıttan bağımsız tutulur.
 const KEY = 'zombi-ciftlik-records-v1';
+const DEFAULTS = { bestDay: 0, bestWave: 0, bestScore: 0, wins: 0, runs: 0, bestEndless: 0 };
 
 export function loadRecords() {
-  try { return { bestDay: 0, bestWave: 0, bestScore: 0, wins: 0, runs: 0, ...(JSON.parse(localStorage.getItem(KEY)) || {}) }; }
-  catch { return { bestDay: 0, bestWave: 0, bestScore: 0, wins: 0, runs: 0 }; }
+  try { return { ...DEFAULTS, ...(JSON.parse(localStorage.getItem(KEY)) || {}) }; }
+  catch { return { ...DEFAULTS }; }
+}
+
+function store(r) {
+  try { localStorage.setItem(KEY, JSON.stringify(r)); } catch { /* depolama kapalı */ }
+}
+
+// Sonsuz mod: her atlatılan gecede hemen kaydedilir (sekme kapansa da rekor kaybolmasın)
+export function recordEndlessNight(wave) {
+  const r = loadRecords();
+  if (wave <= r.bestEndless) return false;
+  r.bestEndless = wave;
+  store(r);
+  return true;
 }
 
 // Puan: hayatta kalınan dalgalar ağır basar; zorluk çarpanı ve zafer bonusu eklenir
@@ -22,6 +36,7 @@ export function recordRun(stats) {
   r.bestWave = Math.max(r.bestWave, stats.wave || 0);
   r.bestScore = Math.max(r.bestScore, score);
   if (stats.victory) r.wins++;
-  try { localStorage.setItem(KEY, JSON.stringify(r)); } catch { /* depolama kapalı */ }
+  if (stats.endless) r.bestEndless = Math.max(r.bestEndless, stats.wave || 0);
+  store(r);
   return { records: r, score, newBest };
 }

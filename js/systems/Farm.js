@@ -8,7 +8,7 @@ export const SEASON_NAMES = { spring: 'İlkbahar', summer: 'Yaz', autumn: 'Sonba
 
 // Kalite: 0 normal, 1 gümüş, 2 altın → ayrı eşya kimlikleri (wheat, wheat_s, wheat_g)
 export const QUALITY_SUFFIX = ['', '_s', '_g'];
-export const FERT_GROWTH = 1.25;     // gübreli büyüme çarpanı
+export const FERT_GROWTH = 1.35;     // gübreli büyüme çarpanı
 const WITHER_DAYS = 2;               // bu kadar gün sulanmayan ekin solar
 const DEATH_DAYS = 3;                // bu kadar günde ölür
 

@@ -20,6 +20,12 @@ export function fireArrow(scene, x, y, angle, dmg, range = 160, speed = 260) {
   return b;
 }
 
+// Kiler (harvest modülü) günlük ihtiyacı karşılamıyorsa kasaba aç sayılır; gece moral durumuna bakılır
+function townHungry(s) {
+  if (s.timeSys.isNight && s.morale) return s.morale.id === 'hungry';
+  return !!s.pantry && s.pantry.pantry < 2 * s.npcs.length;
+}
+
 // Otonom NPC tabanı. Her alt sınıf kendi durum makinesini kurar.
 export class NPC extends Actor {
   constructor(scene, x, y, cfg) {
@@ -104,9 +110,17 @@ export class NPC extends Actor {
     }
   }
 
+  // Duruma göre satır: oyuncu yaralıysa, kasaba açsa, araları iyiyse (kalp) önce bunlardan biri gelir
   talkLine() {
-    const pool = this.timeSys.isNight ? this.lines.night : this.lines.day;
-    return Phaser.Utils.Array.GetRandom(pool);
+    const L = this.lines, s = this.scene, p = s.player;
+    const extra = [];
+    if (L.lowHp && p && p.hp < p.maxHp * 0.35) extra.push(...L.lowHp);
+    if (L.hungry && townHungry(s)) extra.push(...L.hungry);
+    const hearts = Math.floor((s.town?.rel?.[this.key]?.pts || 0) / 100);
+    if (hearts >= 5 && L.friend) extra.push(...L.friend);
+    else if (hearts < 1 && L.stranger && !this.timeSys.isNight) extra.push(...L.stranger);
+    if (extra.length && Math.random() < 0.7) return Phaser.Utils.Array.GetRandom(extra);
+    return Phaser.Utils.Array.GetRandom(this.timeSys.isNight ? L.night : L.day);
   }
 
   // Ortak durumlar: sığınağa git + saklan
@@ -193,7 +207,11 @@ export class Farmer extends NPC {
       key: 'farmer', name: 'Ayşe', role: 'Çiftçi', texture: 'npc_farmer', speed: 34,
       lines: {
         day: ['Sulanmayan ekin büyümez, unutma!', 'Buğday en hızlı büyür. Balkabağı sabır ister ama çok para eder.', 'Çapa ile çimi sür, tohumu ek, sonra sula.', 'Senin tarlanı da suluyorum, merak etme.'],
-        night: ['Burada ne arıyorsun? İçeri gir!', 'Zombilerin iniltisini duyuyor musun?']
+        night: ['Burada ne arıyorsun? İçeri gir!', 'Zombilerin iniltisini duyuyor musun?'],
+        lowHp: ['Yüzün bembeyaz olmuş! Bir şeyler ye, sonra konuşuruz.', 'Kanıyorsun… Selin\'e uğra, tarla bekler.'],
+        hungry: ['Kiler bomboş… Fazla ürününü sandığa bırakır mısın?', 'Aç karınla kimse nöbet tutamaz. Kileri doldurmalıyız.'],
+        friend: ['Sen olmasan bu tarla çoktan kurumuştu. İyi ki geldin.', 'Annemin güveç tarifini sana anlatmış mıydım? Sevgiyle pişer!'],
+        stranger: ['Yenisin galiba. Tarlaya saygılı ol, yeter.']
       }
     });
     this.workState = 'tend';
@@ -209,7 +227,11 @@ export class Merchant extends NPC {
       key: 'merchant', name: 'Kemal', role: 'Tüccar', texture: 'npc_merchant', shop: 'merchant',
       lines: {
         day: ['Taze tohumlar, uygun fiyatlar!', 'Ürününü bana sat, adil fiyat veririm.', 'Balkabağı bulursan bana getir, iyi para var.'],
-        night: ['Dükkân kapalı! Hayatta kalmaya bak.']
+        night: ['Dükkân kapalı! Hayatta kalmaya bak.', 'Kasam kilitli, ben de kilitliyim. İyi geceler!'],
+        lowHp: ['Ölü müşteri alışveriş yapmaz, dostum. Önce kendine bak.', 'Sargı mı? Selin\'de var. Ben komisyon almam, söz.'],
+        hungry: ['Kasabada yiyecek kıt, fiyatlar uçacak… Şaka şaka. Ama kileri doldur.', 'Aç kasabada ticaret de durur. Ürün bekliyorum!'],
+        friend: ['Senin için en iyi malı ayırdım, kimseye söyleme.', 'Ortak olsak mı? Sen ekersin, ben satarım, zombiler kıskanır.'],
+        stranger: ['Bakmak bedava, almak paralı. Hoş geldin.']
       }
     });
     this.workState = 'tradeStand';
@@ -243,7 +265,11 @@ export class Blacksmith extends NPC {
       key: 'blacksmith', name: 'Zeynep', role: 'Demirci', texture: 'npc_blacksmith', shop: 'blacksmith', hp: 40,
       lines: {
         day: ['Barikatları gece ben onarırım, sen yeter ki dik.', 'Taretler için taş ve odun lazım.', 'Tabanca mı? Mermi olmadan süs eşyası.'],
-        night: ['Çekiçle zombi de dövülür ama tavsiye etmem!', 'Hasarlı barikat görürsem onarırım.']
+        night: ['Çekiçle zombi de dövülür ama tavsiye etmem!', 'Hasarlı barikat görürsem onarırım.'],
+        lowHp: ['Zırhın yok, canın yok… Bu gidişle seni de onarmam gerekecek.', 'Otur biraz. Kırık kılıçla, yorgun kolla savaşılmaz.'],
+        hungry: ['Örsün başında aç durulmuyor. Kiler ne âlemde?', 'Karnım guruldarken çekiç tutamam!'],
+        friend: ['Barikatlarına özel perçin çaktım. Fark ettin mi?', 'Sen gelince ocak daha iyi yanıyor sanki.'],
+        stranger: ['İşim var. Malzeme getirirsen konuşuruz.']
       }
     });
     this.workState = 'forge';
@@ -322,7 +348,11 @@ export class Guard extends NPC {
       key: 'guard', name: 'Demir', role: 'Muhafız', texture: 'npc_guard', hp: 90, speed: 44,
       lines: {
         day: ['Gece olunca ben de nöbetteyim. Taretleri sığınağın çevresine kur.', 'Dalgalar her gece büyüyor.', 'İri mor olanlardan uzak dur, sert vururlar.'],
-        night: ['Arkamı kolla!', 'Sığınağı korumalıyız, düşerse her şey biter!']
+        night: ['Arkamı kolla!', 'Sığınağı korumalıyız, düşerse her şey biter!'],
+        lowHp: ['Asker, geri çekil ve yaralarını sar. Bu bir emirdir!', 'Bu halde nöbete çıkma. Önce iyileş.'],
+        hungry: ['Aç asker savaşmaz. Kiler boşsa bu gece zor geçer.', 'Erzak olmadan moral olmaz. Kileri doldur.'],
+        friend: ['Sırtımı güvenle dönebildiğim tek kişi sensin.', 'Bu gece yanımda ol, ikimiz yeteriz.'],
+        stranger: ['Seni tanımıyorum. Kendini gece kanıtla.']
       }
     });
     this.workState = 'patrol';
@@ -364,7 +394,7 @@ export class Guard extends NPC {
           if (d < 120 && n.shootCd <= 0) {
             // Kasaba morali (kiler doluluğu) savunucuların atış hızını ve hasarını etkiler
             const mo = n.scene.morale;
-            n.shootCd = 1.1 / (mo?.rate ?? 1);
+            n.shootCd = 1.1 / (mo?.rate ?? 1) / (n.friendRate || 1);
             n.scene.fireBullet(n.x, n.y - 2, Phaser.Math.Angle.Between(n.x, n.y, z.x, z.y), 1 * (mo?.dmg ?? 1), 240);
             audio.sfx('turret');
           }
@@ -402,7 +432,11 @@ export class Doctor extends NPC {
       key: 'doctor', name: 'Selin', role: 'Doktor', texture: 'npc_doctor', shop: 'doctor', speed: 36,
       lines: {
         day: ['Yaralanırsan sargı kullan, kanaman durur.', 'Yorgun düşersen sana bakarım, ama ücretsiz değil!', 'Gece sığınakta yaralılarla ilgileniyorum.', 'Havuç göze iyi gelir derler. Bilimsel değil ama yine de ye.'],
-        night: ['İçeride yaralılar var, acele et!', 'Isırıldın mı? Hemen göster!']
+        night: ['İçeride yaralılar var, acele et!', 'Isırıldın mı? Hemen göster!'],
+        lowHp: ['Dur! Bu yaralarla dolaşamazsın. Muayene olmalısın.', 'Nabzın zayıf. Hemen bir sargı kullan, lütfen.'],
+        hungry: ['Hastalarım aç. İlaç bile aç karına işe yaramıyor.', 'Kilere havuç ya da çorba bırakırsan herkes daha çabuk iyileşir.'],
+        friend: ['Sağlığına dikkat ediyorsun, gurur duyuyorum. Biraz.', 'Senin için en iyi sargıları ayırıyorum.'],
+        stranger: ['Yeni yüz. Aşı kartın var mı? Şaka, burada kart yok.']
       }
     });
     this.workState = 'clinic';
@@ -516,7 +550,7 @@ export class Fighter extends NPC {
           else { n.halt(); n.setFlipX(z.x < n.x); }
           if (d < n.range && n.shootCd <= 0) {
             const mo = n.scene.morale;
-            n.shootCd = n.fireRate / (mo?.rate ?? 1);
+            n.shootCd = n.fireRate / (mo?.rate ?? 1) / (n.friendRate || 1);
             const dmg = n.dmg * (mo?.dmg ?? 1);
             const a = Phaser.Math.Angle.Between(n.x, n.y - 2, z.x, z.y);
             if (n.projectile === 'arrow') { fireArrow(n.scene, n.x, n.y - 2, a, dmg, n.range + 20); audio.sfx('swing'); }
@@ -558,7 +592,11 @@ export class Hunter extends Fighter {
       key: 'hunter', name: 'Murat', role: 'Avcı', texture: 'npc_hunter', shop: 'hunter', hp: 60, speed: 42,
       lines: {
         day: ['Okun sesi zombileri çekmez, tabancadan iyidir.', 'Gece sığınağın önünde ben beklerim.', 'Ok ucu için taş, gövdesi için odun lazım.', 'Kafasına nişan al. Ya da en azından kafasına yakın bir yere.'],
-        night: ['Yay gergin, gözler açık!', 'Arkamda dur, önüme geçme!']
+        night: ['Yay gergin, gözler açık!', 'Arkamda dur, önüme geçme!'],
+        lowHp: ['Yaralı av en kolay avdır. Saklan ve iyileş.', 'Kan kokusu onları çeker. Sargını sar!'],
+        hungry: ['Av hayvanı kalmadı, kiler de boş. Tarla bize bakmalı.', 'Aç kurt cesur olur ama aç insan dikkatsiz.'],
+        friend: ['Okçuluğu sana da öğretirim, ama önce nişan almayı.', 'İzini sürdüğüm en iyi dostsun.'],
+        stranger: ['Ayak sesin çok gürültülü. Zombiler duyar.']
       }
     });
     this.workState = 'stand';

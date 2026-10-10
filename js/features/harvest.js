@@ -166,11 +166,11 @@ function openPantry(scene) {
     scene.inventory.slots.forEach((s) => {
       if (!s || seen.has(s.id) || !foodValue(s.id)) return;
       seen.add(s.id);
-      const v = foodValue(s.id), n = scene.inventory.count(s.id);
+      const v = foodValue(s.id), n = scene.inventory.countExact(s.id);
       const row = el('div', 'shop-row', `<img src="${scene.hud.icon(s.id)}" alt=""><div class="rinfo"><b>${ITEMS[s.id].name}</b><span class="muted">Elinde ${n} · adet başı ${v} erzak</span></div><button>1 koy</button><button class="primary">Hepsi (+${v * n})</button>`);
       const [one, all] = row.querySelectorAll('button');
       one.onclick = () => donate(scene, s.id, 1, render);
-      all.onclick = () => donate(scene, s.id, scene.inventory.count(s.id), render);
+      all.onclick = () => donate(scene, s.id, scene.inventory.countExact(s.id), render);
       list.appendChild(row);
     });
     if (!seen.size) list.innerHTML = '<p class="muted center">Bağışlayacak yiyeceğin yok. Ekin hasat et, yumurta/süt topla veya balık tut.</p>';
@@ -215,7 +215,8 @@ function renderBadge(scene) {
 function trample(scene) {
   let hit = null;
   for (const z of scene.zombies.getChildren()) {
-    if (z.dead) continue;
+    // Yağmacılar ekini ısırarak zaten zarar veriyor (Zombie.js); çift ceza olmasın
+    if (z.dead || z.role === 'raider') continue;
     const p = scene.farm.get(Math.floor(z.x / TILE), Math.floor((z.y + 6) / TILE));
     if (!p || !p.crop || p.trampled || p.crop.stage <= 0) continue;
     p.crop.stage--;

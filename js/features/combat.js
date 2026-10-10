@@ -8,6 +8,7 @@ import { injectCSS, el, featureLayer, topExtra } from '../ui/dom.js';
 import { isTouch } from '../ui/device.js';
 import { melee, rollDamage, hitTarget, fail } from '../systems/PlayerActions.js';
 import { DODGE } from '../entities/Player.js';
+import { aimAssist, setAimAssist } from '../ui/TouchControls.js';
 
 const MAG_SIZE = 8;         // tabanca şarjörü
 const RELOAD_TIME = 1.2;    // sn
@@ -17,12 +18,16 @@ const MAX_LEVEL = 3;
 const UPGRADE_COST = { 2: { coins: 80, stone: 5 }, 3: { coins: 200, stone: 10 } };
 const WEAPONS = ['sword', 'spear', 'bow', 'pistol', 'shotgun'];
 const DEG = Math.PI / 180;
+const COMBO_WINDOW = 0.8;   // kılıç kombosu: bu süre içinde tekrar vurursan seri sürer
+const BLOOM_MAX = 7 * DEG;  // tabanca seri atış sapması
+const BLOOM_DECAY = 18 * DEG; // sn başına toparlanma
 
 // Sahne başına durum (init'te sıfırlanır)
 let S = null;
 const fresh = () => ({
   levels: {}, mag: 0, reload: 0, recent: [], charge: null, shots: null, gfx: null, gfxOn: false,
-  selKey: '', ammoTxt: null, ammoEl: null, dodgeBtn: null, lastTap: { i: -1, t: 0 }, cleanup: []
+  selKey: '', ammoTxt: null, ammoEl: null, dodgeBtn: null, lastTap: { i: -1, t: 0 }, cleanup: [],
+  combo: 0, comboT: -9, bloom: 0, dryAt: 0, hurtEl: null
 });
 
 // ---------------- Yardımcılar ----------------
@@ -61,7 +66,45 @@ function onShotHit(scene, a, b) {
   } else s.destroy();
 }
 
+// Mühimmat bitti: kaçırılamayacak uyarı (oyuncunun üstünde kırmızı yazı + kuru tetik sesi + sayaç sallanır)
+function noAmmo(scene, msg, short) {
+  const now = scene.time.now;
+  scene.player.actionCd = Math.max(scene.player.actionCd, 0.25);
+  if (now - S.dryAt < 600) return;
+  S.dryAt = now;
+  fail(scene, msg);
+  audio.tone({ type: 'square', freq: 2200, to: 1800, dur: 0.03, vol: 0.12 });
+  const p = scene.player;
+  scene.floatText(p.x, p.y - 16, short, '#ff5b5b');
+  if (S.ammoEl) { S.ammoEl.classList.remove('shake'); void S.ammoEl.offsetWidth; S.ammoEl.classList.add('shake'); }
+}
+
 // ---------------- Silah davranışları (ITEMS[id].onUse) ----------------
+// Kılıç: 3 vuruşluk seri; 3. vuruş geniş, iki kat hasarlı ve geri savurur
+function useSword(scene, ctx) {
+  const p = scene.player, now = scene.time.now / 1000;
+  if (now - S.comboT > COMBO_WINDOW) S.combo = 0;
+  S.combo = (S.combo % 3) + 1;
+  S.comboT = now;
+  const dmg = ITEMS.sword.dmg;
+  if (S.combo < 3) {
+    melee(scene, ctx.wx, ctx.wy, dmg, { weapon: 'sword', range: 25, cone: 1.25, cd: 0.26 });
+    return;
+  }
+  const hits = melee(scene, ctx.wx, ctx.wy, dmg * 2, { weapon: 'sword', range: 31, cone: 1.7, cd: 0.5, energy: 1.2 });
+  const a = Phaser.Math.Angle.Between(p.x, p.y, ctx.wx, ctx.wy);
+  const fx = scene.add.image(p.x + Math.cos(a) * 12, p.y + Math.sin(a) * 12, 'slash').setRotation(a).setDepth(p.depth + 2).setTint(0xffd166).setScale(1.5);
+  scene.tweens.add({ targets: fx, alpha: 0, scale: 2.3, duration: 220, onComplete: () => fx.destroy() });
+  audio.tone({ type: 'square', freq: 420, to: 140, dur: 0.12, vol: 0.2 });
+  if (!hits) return;
+  scene.cameras.main.shake(90, 0.005);
+  scene.floatText(p.x, p.y - 16, 'KOMBO!', '#ffd166');
+  for (const z of scene.zombies.getChildren()) {
+    if (z.dead || !z.active || z.def?.kb === 0) continue;
+    if (Phaser.Math.Distance.Between(p.x, p.y, z.x, z.y) < 34) z.knockback(p.x, p.y, 90);
+  }
+}
+
 function useSpear(scene, ctx) {
   melee(scene, ctx.wx, ctx.wy, ITEMS.spear.dmg, { weapon: 'spear', range: 36, cone: 0.42, cd: 0.45, energy: 0.7, fx: 'thrust' });
 }
@@ -72,10 +115,17 @@ function usePistol(scene, ctx) {
   if (S.mag <= 0) { startReload(scene, false); return; }
   S.mag--;
   p.actionCd = 0.28;
-  const a = Phaser.Math.Angle.Between(p.x, p.y - 2, ctx.wx, ctx.wy);
+  // Seri atışta sapma büyür; ilk atış her zaman isabetli
+  const a = Phaser.Math.Angle.Between(p.x, p.y - 2, ctx.wx, ctx.wy) + Phaser.Math.FloatBetween(-S.bloom, S.bloom);
+  S.bloom = Math.min(BLOOM_MAX, S.bloom + 2.5 * DEG);
   const r = rollDamage(scene, 'pistol', ITEMS.pistol.dmg);
   spawnShot(scene, p.x, p.y - 2, a, { tex: 'bullet', speed: 320, range: 230, dmg: r.dmg, crit: r.crit, weapon: 'pistol' });
-  scene.cameras.main.shake(40, 0.002);
+  // Geri tepme + namlu alevi
+  p.body.velocity.x -= Math.cos(a) * 30;
+  p.body.velocity.y -= Math.sin(a) * 30;
+  const fl = scene.add.circle(p.x + Math.cos(a) * 9, p.y - 2 + Math.sin(a) * 9, 3, 0xfff2a0, 1).setDepth(p.depth + 2);
+  scene.tweens.add({ targets: fl, alpha: 0, scale: 1.8, duration: 70, onComplete: () => fl.destroy() });
+  scene.cameras.main.shake(50, 0.0025);
   audio.sfx('shoot');
   if (S.mag <= 0) startReload(scene, true); // boşalınca otomatik doldur
   refreshAmmo(scene);
@@ -85,8 +135,7 @@ function startReload(scene, auto) {
   if (S.reload > 0) return;
   if (S.mag >= MAG_SIZE) { if (!auto) scene.hud.notice('Şarjör zaten dolu'); return; }
   if (scene.inventory.count('ammo') <= 0) {
-    if (auto) scene.hud.notice('Şarjör boşaldı, yedek mermin yok!');
-    else fail(scene, 'Mermin yok! Üret veya satın al.');
+    noAmmo(scene, auto ? 'Şarjör boşaldı, yedek mermin yok! Hurdadan üret ya da Zeynep\'ten al.' : 'Mermin yok! Hurdadan üret ya da Zeynep\'ten al.', 'MERMİ YOK!');
     return;
   }
   S.reload = RELOAD_TIME;
@@ -103,7 +152,7 @@ function finishReload(scene) {
 
 function useShotgun(scene, ctx) {
   const p = scene.player;
-  if (scene.inventory.count('ammo') < 2) return fail(scene, 'Pompalı için en az 2 mermi gerek!');
+  if (scene.inventory.count('ammo') < 2) return noAmmo(scene, 'Pompalı için en az 2 mermi gerek!', 'MERMİ YOK!');
   scene.inventory.remove('ammo', 2);
   p.actionCd = 0.9;
   const base = Phaser.Math.Angle.Between(p.x, p.y - 2, ctx.wx, ctx.wy);
@@ -123,7 +172,7 @@ function useShotgun(scene, ctx) {
 
 function useBow(scene, ctx) {
   if (S.charge) return;
-  if (scene.inventory.count('arrow') <= 0) return fail(scene, 'Okun yok! 1 odun + 1 taştan 5 ok üret.');
+  if (scene.inventory.count('arrow') <= 0) return noAmmo(scene, 'Okun yok! 1 odun + 1 taştan 5 ok üret.', 'OK YOK!');
   const ptr = scene.input.activePointer;
   // Fare/boşluk basılıysa ger, bırakınca at; dokunmatik/mobil butonda otomatik tam gerilme
   if (ptr.isDown && !ptr.wasTouch && ptr.leftButtonDown()) S.charge = { t: 0, src: 'mouse' };
@@ -165,6 +214,11 @@ function trackSelection(scene) {
   if (slot && isWeapon(slot.id) && S.recent[0] !== slot.id) S.recent = [slot.id, S.recent[0]].filter(Boolean);
   // Boş şarjörlü tabancaya geçince sessizce doldurmaya başla (ilk tıklama boşa gitmesin)
   if (slot?.id === 'pistol' && S.mag <= 0 && scene.player.alive) startReload(scene, true);
+  // Masaüstünde silah elindeyken nişangâh imleci
+  if (!isTouch && scene.game.canvas) {
+    const t = slot ? ITEMS[slot.id]?.type : null;
+    scene.game.canvas.style.cursor = t === 'weapon' || t === 'gun' ? 'crosshair' : '';
+  }
   refreshAmmo(scene);
 }
 
@@ -191,6 +245,12 @@ function openWeaponPanel(scene) {
     html += isTouch ? '<span>Slota çift dokun: hızlı geçiş</span></div>' : '<span>Shift kaç · Q geçiş · R doldur</span></div>';
     if (!owned.length) html += '<p class="muted">Henüz silahın yok.</p>';
     body.innerHTML = html;
+    if (isTouch) {
+      const names = ['Kapalı', 'Yumuşak', 'Güçlü'];
+      const row = el('div', 'cb-aim', `<span>🎯 Nişan yardımı</span>${names.map((n, i) => `<button class="${aimAssist.level === i ? 'primary' : 'ghost'}" data-l="${i}">${n}</button>`).join('')}`);
+      row.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => { setAimAssist(Number(b.dataset.l)); audio.sfx('click'); render(); }));
+      body.appendChild(row);
+    }
     owned.forEach((id) => {
       const it = ITEMS[id], lv = lvl(id), next = lv + 1, cost = UPGRADE_COST[next];
       const dmg = Math.round(it.dmg * scene.combat.damageMult(id) * 10) / 10;
@@ -249,6 +309,14 @@ body.modal-open .cb-dodge, body:not(.playing) .cb-dodge { display:none; }
 .cb-stars { color:var(--accent,#ffd166); font-size:11px; letter-spacing:1px; }
 .cb-stars i { font-style:normal; opacity:.3; filter:grayscale(1); }
 .cb-talk { width:100%; margin-top:6px; min-height:44px; }
+.cb-ammo.shake { animation: cbShake .4s ease; color:var(--red,#eb5757); }
+@keyframes cbShake { 0%,100% { transform:none; } 20%,60% { transform:translateX(-4px); } 40%,80% { transform:translateX(4px); } }
+.cb-aim { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:0 0 10px; font-size:12px; }
+.cb-aim span { flex:1 0 100%; opacity:.85; }
+.cb-aim button { flex:1; min-height:40px; padding:4px 6px; }
+.cb-hurt { position:absolute; inset:0; pointer-events:none; opacity:0; z-index:4; }
+.cb-hurt.on { animation: cbHurt .5s ease-out forwards; }
+@keyframes cbHurt { 0% { opacity:1; } 100% { opacity:0; } }
 `;
 
 function buildUI(scene) {
@@ -263,6 +331,11 @@ function buildUI(scene) {
     S.cleanup.push(() => S.ammoEl?.remove());
   }
   const layer = featureLayer();
+  if (layer) {
+    S.hurtEl = el('div', 'cb-hurt');
+    layer.appendChild(S.hurtEl);
+    S.cleanup.push(() => S.hurtEl?.remove());
+  }
   if (layer && isTouch) {
     const b = el('button', 'cb-dodge', '💨');
     b.setAttribute('aria-label', 'Kaçış yuvarlanması');
@@ -301,17 +374,36 @@ function refreshAmmo(scene) {
   S.ammoEl.className = `cb-ammo${txt ? ' show' : ''}${cls ? ' ' + cls : ''}`;
 }
 
-// Oyuncunun üstünde ilerleme çubuğu (yay gerilmesi / şarjör doldurma)
+// Vurulunca darbenin geldiği yönde ekran kenarı kızarır (juice'un genel vinyetine yön bilgisi ekler)
+function onHurt(scene, e) {
+  const box = S.hurtEl, p = scene.player;
+  if (!box || !p) return;
+  const dx = e.x - p.x, dy = e.y - p.y;
+  const a = Math.hypot(dx, dy) > 2 ? Math.round(Math.atan2(dx, -dy) / DEG) : null;
+  const k = Math.min(0.75, 0.3 + e.dmg / 30);
+  box.style.background = a === null
+    ? `radial-gradient(ellipse at center, rgba(200,0,20,0) 55%, rgba(200,0,20,${k}) 100%)`
+    : `linear-gradient(${a}deg, rgba(200,0,20,0) 62%, rgba(220,10,30,${k}) 100%)`;
+  box.classList.remove('on'); void box.offsetWidth; box.classList.add('on');
+}
+
+// Oyuncunun üstünde ilerleme çubuğu (yay gerilmesi / şarjör doldurma) ya da kılıç kombo noktaları
 function drawBar(scene) {
   const p = scene.player;
   let r = -1, col = 0xffd166;
   if (S.charge) { r = Math.min(1, S.charge.t / BOW_CHARGE); col = r >= 1 ? 0x9effa0 : 0xffd166; }
   else if (S.reload > 0 && selectedSlot(scene)?.id === 'pistol') { r = 1 - S.reload / RELOAD_TIME; col = 0x5ab0ff; }
+  const combo = S.combo > 0 && S.combo < 3 && scene.time.now / 1000 - S.comboT < COMBO_WINDOW && selectedSlot(scene)?.id === 'sword';
   const g = S.gfx;
-  if (r < 0) { if (S.gfxOn) { g.clear(); S.gfxOn = false; } return; }
+  if (r < 0 && !combo) { if (S.gfxOn) { g.clear(); S.gfxOn = false; } return; }
   S.gfxOn = true;
   g.clear();
   const x = p.x - 7, y = p.y - 13;
+  if (combo) {
+    // Üç nokta: dolanlar seriyi, son nokta güçlü vuruşu gösterir
+    for (let i = 0; i < 3; i++) g.fillStyle(i < S.combo ? 0xffd166 : 0x000000, i < S.combo ? 1 : 0.5).fillRect(x + 2 + i * 4, y, 2, 2);
+    return;
+  }
   g.fillStyle(0x000000, 0.6).fillRect(x, y, 14, 2);
   g.fillStyle(col, 1).fillRect(x, y, 14 * r, 2);
 }
@@ -321,6 +413,10 @@ ITEMS.spear = { name: 'Mızrak', type: 'weapon', icon: 'i_spear', dmg: 3, desc: 
 ITEMS.bow = { name: 'Yay', type: 'gun', icon: 'i_bow', dmg: 4, desc: 'Basılı tutup ger, bırakınca ok atar. Ok bir hedefi delip geçer.', onUse: useBow };
 ITEMS.arrow = { name: 'Ok', type: 'material', icon: 'i_arrow', sell: 1 };
 ITEMS.shotgun = { name: 'Pompalı Tüfek', type: 'gun', icon: 'i_shotgun', dmg: 2, desc: '5 saçma, yakında yıkıcı. Atış başına 2 mermi.', onUse: useShotgun };
+if (ITEMS.sword) {
+  ITEMS.sword.onUse = useSword;
+  ITEMS.sword.desc = 'Üç vuruşluk seri: 3. vuruş geniş açılı, iki kat hasarlı ve geri savurur.';
+}
 if (ITEMS.pistol) {
   ITEMS.pistol.onUse = usePistol;
   ITEMS.pistol.desc = `Şarjör ${MAG_SIZE} mermi; R ile doldur, boşalınca kendiliğinden dolar.`;
@@ -435,6 +531,9 @@ export default {
 
     scene.inventory.onChange(() => refreshAmmo(scene));
     buildUI(scene);
+    const hurt = (e) => onHurt(scene, e);
+    scene.events.on('playerHurt', hurt);
+    S.cleanup.push(() => scene.events.off('playerHurt', hurt));
     scene.events.once('shutdown', () => { S?.cleanup.forEach((fn) => fn()); });
   },
 
@@ -457,6 +556,8 @@ export default {
         if (!held) releaseCharge(scene, false);
       }
     }
+
+    if (S.bloom > 0) S.bloom = Math.max(0, S.bloom - BLOOM_DECAY * dt);
 
     // Şarjör doldurma
     if (S.reload > 0) {

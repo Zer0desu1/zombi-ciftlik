@@ -1,10 +1,10 @@
 // 'farming' özellik modülü — sözleşme için registry.js'e bak.
 // Yeni ekinler, mevsim, kalite, gübre, fıskiye, korkuluk, karga, solma ve hasat efektleri.
-import { TILE, ITEMS, CROPS, CROP_STAGES, RECIPES, SHOPS, QUESTS } from '../config.js';
+import { TILE, ITEMS, CROPS, CROP_STAGES, RECIPES, SHOPS, QUESTS, HOTBAR_SIZE } from '../config.js';
 import { addCanvas, R, drawRows } from '../textures.js';
 import { iconURL } from '../textures.js';
 import { audio } from '../audio.js';
-import { canPlace, useSelected } from '../systems/PlayerActions.js';
+import { canPlace, useSelected, REACH } from '../systems/PlayerActions.js';
 import { SEASON_NAMES, QUALITY_SUFFIX, FERT_GROWTH } from '../systems/Farm.js';
 import { el, injectCSS } from '../ui/dom.js';
 
@@ -12,8 +12,8 @@ import { el, injectCSS } from '../ui/dom.js';
 const NEW_CROPS = {
   tomato:     { name: 'Domates', item: 'tomato',     hoursPerStage: 6, yield: [1, 2], seedBack: 0, regrow: true, regrowHours: 30, seasons: ['spring', 'summer'], sell: 18, food: [4, 8],  seedCol: '#e04a3a', price: 20 },
   corn:       { name: 'Mısır',   item: 'corn',       hoursPerStage: 8, yield: [1, 2], seedBack: 0, regrow: true, regrowHours: 36, seasons: ['summer', 'autumn'], sell: 22, food: null,    seedCol: '#f2d33a', price: 30 },
-  strawberry: { name: 'Çilek',   item: 'strawberry', hoursPerStage: 5, yield: [1, 3], seedBack: 0, regrow: true, regrowHours: 30, seasons: ['spring', 'summer'], sell: 28, food: [6, 12], seedCol: '#ff5c7a', price: 40 },
-  potato:     { name: 'Patates', item: 'potato',     hoursPerStage: 5, yield: [1, 4], seedBack: 0, seasons: ['spring', 'autumn', 'winter'], sell: 14, food: null, seedCol: '#b98a52', price: 18 }
+  strawberry: { name: 'Çilek',   item: 'strawberry', hoursPerStage: 5, yield: [1, 3], seedBack: 0, regrow: true, regrowHours: 30, seasons: ['spring', 'summer'], sell: 28, food: [6, 12], seedCol: '#ff5c7a', price: 60 },
+  potato:     { name: 'Patates', item: 'potato',     hoursPerStage: 5, yield: [1, 3], seedBack: 0, seasons: ['spring', 'autumn', 'winter'], sell: 14, food: null, seedCol: '#b98a52', price: 18 }
 };
 
 // Mevcut ekinlere mevsim (mevsim sistemi yoksa etkisiz)
@@ -42,7 +42,7 @@ for (const type of Object.keys(CROPS)) {
 
 // Gübre, fıskiye, korkuluk + yeni yemekler
 Object.assign(ITEMS, {
-  fertilizer: { name: 'Gübre',            type: 'farm',  icon: 'i_fertilizer', sell: 3, desc: 'Sürülmüş toprağa uygula: büyüme +%25, kaliteli ürün şansı artar.' },
+  fertilizer: { name: 'Gübre',            type: 'farm',  icon: 'i_fertilizer', sell: 3, desc: `Sürülmüş toprağa uygula: büyüme +%${Math.round((FERT_GROWTH - 1) * 100)}, kaliteli ürün şansı artar. Çoklu hasatta kalıcıdır.` },
   sprinkler:  { name: 'Fıskiye',          type: 'place', icon: 'sprinkler',    desc: 'Her şafakta çevresindeki 3x3 alanı sular. Tıklayarak yerleştir.' },
   sprinkler2: { name: 'Gelişmiş Fıskiye', type: 'place', icon: 'sprinkler2',   desc: 'Her şafakta çevresindeki 5x5 alanı sular. Tıklayarak yerleştir.' },
   scarecrow:  { name: 'Korkuluk',         type: 'place', icon: 'i_scarecrow',  desc: '4 tile çevresindeki ekinleri kargalardan korur. Tıklayarak yerleştir.' },
@@ -70,6 +70,7 @@ for (const id of CROP_ITEMS) {
 
 RECIPES.push(
   { out: 'fertilizer', qty: 3, cost: { wood: 2, stone: 1 } },
+  { out: 'fertilizer', qty: 2, cost: { wheat: 2 } }, // kompost: fazla buğdaydan gübre
   { out: 'sprinkler', qty: 1, cost: { stone: 3, wood: 2, ammo: 1 } },
   { out: 'sprinkler2', qty: 1, cost: { sprinkler: 1, stone: 4, ammo: 2 } },
   { out: 'scarecrow', qty: 1, cost: { wood: 6 } },
@@ -208,6 +209,11 @@ function makeTextures(scene) {
   // Kalite ikonları: temel ikon + köşede yıldız
   const STAR = ['..X..', '.XXX.', 'XXXXX', '.XXX.', '.X.X.'];
   const qcol = ['', '#dfe6ef', '#ffd34d'];
+  // Hasatta havaya çıkan büyük kalite yıldızı
+  for (const [key, col] of [['q_star_s', qcol[1]], ['q_star_g', qcol[2]]]) addCanvas(scene, key, 9, 9, (ctx) => {
+    for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) P(ctx, STAR, { X: '#1b1622' }, 2 + dx, 2 + dy);
+    P(ctx, STAR, { X: col }, 2, 2);
+  });
   for (const id of CROP_ITEMS) {
     const baseKey = ITEMS[id]?.icon;
     if (!baseKey || !scene.textures.exists(baseKey)) continue;
@@ -280,7 +286,12 @@ function placeOnUse(kind, lvl) {
     scene.player.actionCd = 0.3;
     audio.sfx('place');
     if (isScare) { rangeRing(scene, o.x, o.y, SCARE_R, 0xe8c867); scene.hud.toast('Korkuluk kargaları uzak tutacak', 'ok'); }
-    else { rangeRect(scene, o.x, o.y, lvl >= 2 ? 2 : 1, 0x7ab0e6); scene.hud.toast('Fıskiye her şafakta çevresini sular', 'ok'); }
+    else {
+      // Kurulduğu gün de işe yarasın: çevresini hemen sular
+      const n = waterAround(scene, o);
+      rangeRect(scene, o.x, o.y, lvl >= 2 ? 2 : 1, 0x7ab0e6);
+      scene.hud.toast(`Fıskiye kuruldu${n ? `, ${n} tarlayı suladı` : ''}. Her şafakta çevresini sular.`, 'ok');
+    }
   };
 }
 
@@ -371,14 +382,20 @@ function openObjectPanel(scene, o) {
 }
 
 // ---------------- Şafak olayları ----------------
+function waterAround(scene, o) {
+  const r = o.lvl >= 2 ? 2 : 1;
+  let n = 0;
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    if (scene.farm.water(o.tx + dx, o.ty + dy)) n++;
+  }
+  return n;
+}
+
 function runSprinklers(scene) {
   const view = scene.cameras.main.worldView;
   let n = 0;
   for (const o of st.sprinklers) {
-    const r = o.lvl >= 2 ? 2 : 1;
-    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
-      if (scene.farm.water(o.tx + dx, o.ty + dy)) n++;
-    }
+    n += waterAround(scene, o);
     if (view.contains(o.x, o.y)) {
       scene.spawnParticles(o.x, o.y - 4, 0x7ab0e6, 8);
       scene.tweens.add({ targets: o.sprite, scaleY: 0.85, duration: 120, yoyo: true, repeat: 2 });
@@ -442,20 +459,181 @@ function onSeasonChanged(scene) {
 }
 
 // ---------------- Hasat efekti ----------------
+// Ekranın (DOM) bir noktasını dünya koordinatına çevirir; kamera kayarken her karede yeniden hesaplanır
+function screenToWorld(scene, sx, sy) {
+  const cam = scene.cameras.main, r = scene.game.canvas.getBoundingClientRect();
+  const v = cam.worldView;
+  return { x: v.x + ((sx - r.left) / r.width) * v.width, y: v.y + ((sy - r.top) / r.height) * v.height };
+}
+
+// Ürünün uçacağı hotbar slotu (yoksa çanta düğmesi / hotbar)
+function harvestTargetNode(scene, item) {
+  const hb = document.getElementById('hotbar');
+  const n = hb?.children.length || 0;
+  const i = scene.inventory.slots.findIndex((s, k) => k < n && s?.id === item);
+  const node = i >= 0 ? hb.children[i] : (document.querySelector('body.is-touch .mc-inv') || hb);
+  const r = node?.getBoundingClientRect();
+  return r && r.width ? { node, x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+}
+
 function onHarvest(scene, e) {
   if (!e) return;
   const it = ITEMS[e.item];
   if (!it || !scene.textures.exists(it.icon)) return;
-  // Ürün tarladan zıplar ve kaybolur
-  const img = scene.add.image(e.x, e.y, it.icon).setDepth(15000).setScale(0.75);
-  scene.tweens.add({ targets: img, y: e.y - 14, duration: 220, ease: 'Quad.easeOut', yoyo: true, onComplete: () => {
-    scene.tweens.add({ targets: img, alpha: 0, scale: 0.4, duration: 200, onComplete: () => img.destroy() });
-  } });
+  // Ürün tarladan havaya zıplar, sonra envantere (hotbar slotuna) uçar
+  const img = scene.add.image(e.x, e.y, it.icon).setDepth(15000).setScale(0.8);
+  scene.tweens.add({
+    targets: img, y: e.y - 18, scale: 1.1, duration: 240, ease: 'Quad.easeOut',
+    onComplete: () => {
+      const sx = img.x, sy = img.y;
+      const goal = harvestTargetNode(scene, e.item);
+      if (!goal) { scene.tweens.add({ targets: img, alpha: 0, scale: 0.4, duration: 200, onComplete: () => img.destroy() }); return; }
+      scene.tweens.addCounter({
+        from: 0, to: 1, duration: 420, ease: 'Cubic.easeIn',
+        onUpdate: (tw) => {
+          const k = tw.getValue(), w = screenToWorld(scene, goal.x, goal.y);
+          img.setPosition(sx + (w.x - sx) * k, sy + (w.y - sy) * k - Math.sin(k * Math.PI) * 10).setScale(1.1 - 0.5 * k);
+        },
+        onComplete: () => {
+          img.destroy();
+          goal.node.classList.remove('farm-pop');
+          void goal.node.offsetWidth;
+          goal.node.classList.add('farm-pop');
+        }
+      });
+    }
+  });
   if (e.quality > 0) {
-    scene.spawnParticles(e.x, e.y - 6, e.quality === 2 ? 0xffd34d : 0xdfe6ef, e.quality === 2 ? 12 : 8);
-    scene.time.delayedCall(250, () => scene.floatText(e.x, e.y - 18, e.quality === 2 ? '★ Altın kalite!' : '☆ Gümüş kalite', e.quality === 2 ? '#ffd34d' : '#dfe6ef'));
-    if (e.quality === 2) audio.sfx('coin');
+    const gold = e.quality === 2;
+    const star = scene.add.image(e.x, e.y - 14, gold ? 'q_star_g' : 'q_star_s').setDepth(15001).setScale(0.2);
+    scene.tweens.add({ targets: star, scale: 1, y: e.y - 28, duration: 260, ease: 'Back.easeOut' });
+    scene.tweens.add({ targets: star, angle: 360, alpha: 0, delay: 650, duration: 350, onComplete: () => star.destroy() });
+    scene.spawnParticles(e.x, e.y - 6, gold ? 0xffd34d : 0xdfe6ef, gold ? 12 : 8);
+    scene.time.delayedCall(250, () => scene.floatText(e.x, e.y - 36, gold ? '★ Altın kalite!' : '☆ Gümüş kalite', gold ? '#ffd34d' : '#dfe6ef'));
+    if (gold) audio.sfx('coin');
   }
+}
+
+// ---------------- Akıcı tarla işleri ----------------
+const FARM_VERB = { hoe: 'Sür', can: 'Sula', fertilizer: 'Gübrele' };
+const isFarmTool = (id) => !!id && (id in FARM_VERB || ITEMS[id]?.type === 'seed');
+
+// Bu eşya bu tile'da işe yarar mı? (olgun ekin her eşyayla hasat edilir)
+function canAct(scene, id, tx, ty) {
+  const farm = scene.farm, p = farm.get(tx, ty);
+  if (farm.isRipe(tx, ty)) return true;
+  if (id === 'hoe') return farm.inZone(tx, ty) && !p && !farm.blocked.has(farm.key(tx, ty));
+  if (id === 'can') return !!p && !p.watered;
+  if (id === 'fertilizer') return !!p && !p.fert && !p.crop?.dead;
+  const it = ITEMS[id];
+  return it?.type === 'seed' && !!p && !p.crop && farm.inSeason(it.crop);
+}
+
+const tileReach = (pl, tx, ty) => Math.hypot(tx * TILE + 8 - pl.x, ty * TILE + 8 - (pl.y + 4)) <= REACH;
+
+// Fare tile'ı uygunsa o; değilse oyuncunun çevresinde fareye en yakın uygun tile (basılı tutup yürürken komşu kareler)
+function farmTarget(scene, id, wx, wy) {
+  const pl = scene.player;
+  const mtx = Math.floor(wx / TILE), mty = Math.floor(wy / TILE);
+  if (tileReach(pl, mtx, mty) && canAct(scene, id, mtx, mty)) return { tx: mtx, ty: mty, auto: false };
+  const { tx, ty } = tileOf(pl.x, pl.y + 4);
+  let best = null, bestD = Infinity;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const x = tx + dx, y = ty + dy;
+    if (!tileReach(pl, x, y) || !canAct(scene, id, x, y)) continue;
+    const d = Math.hypot(x * TILE + 8 - wx, y * TILE + 8 - wy);
+    if (d < bestD) { bestD = d; best = { tx: x, ty: y, auto: true }; }
+  }
+  return best;
+}
+
+// Masaüstü: tarla aracıyla sol tık basılı tutulunca uygun karelere sırayla uygula; hedef tile'ı vurgula
+function updateFarmFlow(scene, dt) {
+  const ptr = scene.input.activePointer;
+  const slot = scene.inventory.slots[scene.selected];
+  const touch = document.body.classList.contains('is-touch') || ptr.wasTouch;
+  st.hl.clear();
+  st.ghost.setVisible(false);
+  if (touch || !scene.player.alive || !isFarmTool(slot?.id) || scene.hud.isModalOpen()) { st.holdT = 0; return; }
+  const wp = ptr.positionToCamera(scene.cameras.main);
+  const t = farmTarget(scene, slot.id, wp.x, wp.y);
+  if (t) {
+    const x = t.tx * TILE, y = t.ty * TILE;
+    st.hl.lineStyle(1, 0x9effa0, t.auto ? 0.45 : 0.95).strokeRect(x + 0.5, y + 0.5, TILE - 1, TILE - 1);
+    st.hl.fillStyle(0x9effa0, t.auto ? 0.06 : 0.14).fillRect(x, y, TILE, TILE);
+    const key = `crop_${ITEMS[slot.id].crop}_0`;
+    if (ITEMS[slot.id].crop && !scene.farm.isRipe(t.tx, t.ty) && scene.textures.exists(key)) {
+      st.ghost.setTexture(key).setPosition(x + 8, y + TILE).setVisible(true);
+    }
+  }
+  if (ptr.isDown && ptr.leftButtonDown()) {
+    st.holdT += dt;
+    st.holdCd -= dt;
+    // İlk tık GameScene'de işlenir; kısa gecikmeden sonra sürükleyerek/yürüyerek devam et
+    if (t && st.holdT > 0.18 && st.holdCd <= 0 && scene.player.actionCd <= 0) {
+      st.holdCd = 0.12;
+      useSelected(scene, t.tx * TILE + 8, t.ty * TILE + 8);
+    }
+  } else st.holdT = 0;
+}
+
+// Olgun ekinlerin altında nabız gibi atan parıltı + ara sıra pırıltı
+function updateRipeGlow(scene, dt) {
+  st.glowT += dt;
+  const g = st.glow;
+  g.clear();
+  const v = scene.cameras.main.worldView;
+  const ripe = [];
+  for (const p of scene.farm.plots.values()) {
+    if (!p.crop || p.crop.dead || p.crop.stage < CROP_STAGES - 1) continue;
+    const x = p.tx * TILE + 8, y = p.ty * TILE + 8;
+    if (!v.contains(x, y)) continue;
+    ripe.push(p);
+    const a = 0.2 + 0.14 * Math.sin(st.glowT * 4 + p.tx * 0.7 + p.ty);
+    g.fillStyle(0xffe08a, a).fillEllipse(x, y + 5, 15, 7);
+  }
+  st.sparkT -= dt;
+  if (ripe.length && st.sparkT <= 0 && !scene.lowFx) {
+    st.sparkT = 0.35;
+    const p = ripe[Math.floor(Math.random() * ripe.length)];
+    const s = scene.add.rectangle(p.tx * TILE + 3 + Math.random() * 10, p.ty * TILE + 2 + Math.random() * 6, 1, 1, 0xfff4c2).setDepth(p.ty * TILE + 20);
+    scene.tweens.add({ targets: s, y: s.y - 6, alpha: 0, duration: 700, onComplete: () => s.destroy() });
+  }
+}
+
+// Akıllı eylem: seçili eşya yakında iş göremiyorsa hotbar'dan doğru aracı seçip uygular (mobilde ✋, masaüstünde E)
+function jobInteraction(scene) {
+  const pl = scene.player;
+  if (!pl?.alive || scene.waves?.active) return null;
+  const { tx, ty } = tileOf(pl.x, pl.y + 4);
+  const tiles = [];
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const x = tx + dx, y = ty + dy;
+    if ((scene.farm.inZone(x, y) || scene.farm.get(x, y)) && tileReach(pl, x, y)) tiles.push({ tx: x, ty: y });
+  }
+  if (!tiles.length) return null;
+  const sel = scene.inventory.slots[scene.selected]?.id;
+  if (isFarmTool(sel) && tiles.some((t) => canAct(scene, sel, t.tx, t.ty))) return null;
+  const hot = scene.inventory.slots.slice(0, HOTBAR_SIZE);
+  const slotOf = (pred) => hot.findIndex((s) => s && pred(s.id));
+  // Öncelik: susuz ekin → boş toprağa ekim → yeni toprak sür
+  const jobs = [
+    { slot: slotOf((id) => id === 'can'), ok: (t) => { const p = scene.farm.get(t.tx, t.ty); return !!p?.crop && !p.crop.dead && !p.watered; } },
+    { slot: slotOf((id) => ITEMS[id]?.type === 'seed' && scene.farm.inSeason(ITEMS[id].crop)) },
+    { slot: slotOf((id) => id === 'hoe') }
+  ];
+  for (const j of jobs) {
+    if (j.slot < 0) continue;
+    const id = hot[j.slot].id;
+    const t = tiles.find((c) => !scene.farm.isRipe(c.tx, c.ty) && (j.ok ? j.ok(c) : canAct(scene, id, c.tx, c.ty)));
+    if (!t) continue;
+    const dist = Math.hypot(t.tx * TILE + 8 - pl.x, t.ty * TILE + 8 - pl.y) + 10;
+    return {
+      dist, label: `${FARM_VERB[id] || 'Ek'} · ${ITEMS[id].name}`,
+      run: () => { scene.selectSlot(j.slot); useSelected(scene, t.tx * TILE + 8, t.ty * TILE + 8); }
+    };
+  }
+  return null;
 }
 
 // ---------------- Etkileşimler ----------------
@@ -549,6 +727,8 @@ const CSS = `
 .farm-tips { font-size: 12px; line-height: 1.5; opacity: 0.85; background: rgba(255,255,255,0.04); border-radius: 10px; padding: 8px 10px; }
 .farm-btns { display: flex; flex-wrap: wrap; gap: 8px; }
 .farm-btns button { min-height: 44px; flex: 1 1 140px; }
+.farm-pop { animation: farmPop .32s ease-out; }
+@keyframes farmPop { 0% { transform: scale(1); } 40% { transform: scale(1.18); box-shadow: 0 0 10px rgba(255,224,138,.8); } 100% { transform: scale(1); } }
 `;
 
 // ---------------- Modül ----------------
@@ -558,11 +738,16 @@ export default {
   textures(scene) { makeTextures(scene); },
 
   init(scene) {
-    st = { sprinklers: [], scarecrows: [], blockers: scene.physics.add.staticGroup() };
+    st = {
+      sprinklers: [], scarecrows: [], blockers: scene.physics.add.staticGroup(),
+      hl: scene.add.graphics().setDepth(8999), ghost: scene.add.image(0, 0, '__DEFAULT').setOrigin(0.5, 1).setAlpha(0.5).setDepth(8998).setVisible(false),
+      glow: scene.add.graphics().setDepth(2), glowT: 0, sparkT: 0, holdT: 0, holdCd: 0
+    };
     scene.physics.add.collider(scene.player, st.blockers);
     injectCSS('farming', CSS);
     scene.addInteraction(cropInteraction);
     scene.addInteraction(objectInteraction);
+    scene.addInteraction(jobInteraction);
     scene.featureMenu.push({ id: 'farming', icon: '🌱', label: 'Tarla', open: (s) => openFarmBook(s) });
     scene.timeSys.on('dawn', () => onDawn(scene));
     scene.timeSys.on('seasonChanged', () => onSeasonChanged(scene));
@@ -581,7 +766,9 @@ export default {
     }
   },
 
-  update(scene) {
+  update(scene, dt) {
+    updateFarmFlow(scene, dt);
+    updateRipeGlow(scene, dt);
     // Gübre seçiliyken tile imlecini göster
     const slot = scene.inventory.slots[scene.selected];
     if (slot && slot.id === 'fertilizer' && scene.marker && !scene.hud.isModalOpen()) scene.marker.setVisible(true);

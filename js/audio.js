@@ -26,6 +26,9 @@ const SONGS = {
   ]
 };
 const LOOPS_PER_SONG = 4; // bu kadar tekrar sonra aynı moddaki bir sonraki parçaya geç
+const XFADE = 1.6;        // gündüz ↔ gece müzik geçişi (sn): eski parça çalmaya devam ederken kısılır
+const MUTE_KEY = 'zombi-ciftlik-muted';
+const readMuted = () => { try { return localStorage.getItem(MUTE_KEY) === '1'; } catch { return false; } };
 
 // Kısa sürede tekrar çalınırsa kırpılan (spam) efektler
 const THROTTLE = { hit: 35, zdie: 50, turret: 40, groan: 400, coin: 40, pop: 30, step: 60 };
@@ -35,13 +38,12 @@ const VARY = new Set(['hit', 'swing', 'chop', 'mine', 'zdie', 'groan', 'pop', 's
 class AudioEngine {
   constructor() {
     this.ctx = null;
-    this.muted = false;
+    this.muted = readMuted();
     this.mode = null;
-    this.step = 0;
-    this.nextTime = 0;
     this.timer = null;
     this.songIdx = { day: 0, night: 0 };
-    this.song = null;
+    this.track = null;   // çalan parça: {mode, song, step, nextTime, bus}
+    this.fading = [];    // kısılan eski parçalar (crossfade boyunca planlanmaya devam eder)
     this.intensity = 0;      // 0..1 (gece zombi yoğunluğu → katman/tempo)
     this.vol = { music: 1, sfx: 1, amb: 1 };
     this.amb = { day: false, night: false, rain: 0 };
@@ -52,7 +54,7 @@ class AudioEngine {
 
   // Tarayıcılar ses için kullanıcı etkileşimi ister
   init() {
-    if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
+    if (this.ctx) { if (this.ctx.state !== 'running') this.ctx.resume?.().catch(() => {}); return; }
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     try { this.ctx = new AC(); } catch { this.ctx = null; return; }
@@ -83,10 +85,33 @@ class AudioEngine {
     if (!this.timer) this.timer = setInterval(() => this.schedule(), 50);
   }
 
+  // iOS Safari bağlamı yalnızca bir dokunuş olayının içinde açar; eski WebKit ayrıca sessiz bir tampon çalınmasını bekler
+  unlock() {
+    this.init();
+    const c = this.ctx;
+    if (!c || this.unlocked) return;
+    try {
+      const s = c.createBufferSource();
+      s.buffer = c.createBuffer(1, 1, 22050);
+      s.connect(c.destination); s.start(0);
+      this.unlocked = true;
+    } catch { /* bir sonraki dokunuşta yeniden denenir */ }
+  }
+
   toggleMute() {
     this.muted = !this.muted;
+    try { localStorage.setItem(MUTE_KEY, this.muted ? '1' : '0'); } catch { /* depolama kapalı */ }
     if (this.master) this.master.gain.setTargetAtTime(this.muted ? 0 : 0.5, this.ctx.currentTime, 0.05);
     return this.muted;
+  }
+
+  // Stinger çalarken müziği kısa süre kıs (stinger duyulsun, üst üste binmesin)
+  duck(sec = 1.2) {
+    if (!this.musicBus) return;
+    const g = this.musicBus.gain, t = this.ctx.currentTime, full = 0.22 * this.vol.music;
+    g.cancelScheduledValues(t);
+    g.setTargetAtTime(full * 0.3, t, 0.04);
+    g.setTargetAtTime(full, t + sec, 0.5);
   }
 
   // Ses seviyeleri (0..1 çarpanlar)
@@ -144,9 +169,21 @@ class AudioEngine {
     switch (name) {
       case 'click':   this.tone({ freq: 880, dur: 0.05, vol: 0.15 }); break;
       case 'till':    this.noise({ dur: 0.12, vol: 0.35, freq: 600 }); this.tone({ type: 'triangle', freq: 180, to: 90, dur: 0.1, vol: 0.3 }); break;
-      case 'plant':   this.tone({ type: 'triangle', freq: 520, to: 780, dur: 0.12, vol: 0.25 }); break;
-      case 'water':   this.noise({ dur: 0.3, vol: 0.2, freq: 2500 }); this.tone({ type: 'sine', freq: 900, to: 500, dur: 0.2, vol: 0.12 }); break;
-      case 'harvest': [660, 880, 1320].forEach((f, i) => this.tone({ freq: f, dur: 0.08, vol: 0.2, delay: i * 0.06 })); break;
+      case 'plant':   // toprağa gömülme + küçük filiz cıvıltısı
+        this.noise({ dur: 0.07, vol: 0.22, freq: 500 });
+        this.tone({ type: 'triangle', freq: 520, to: 780, dur: 0.1, vol: 0.22, delay: 0.03 });
+        this.tone({ type: 'triangle', freq: 1040, to: 1180, dur: 0.07, vol: 0.12, delay: 0.11 });
+        break;
+      case 'water':   // şırıltı + düşen damlalar
+        this.noise({ dur: 0.3, vol: 0.16, freq: 2500 });
+        [0.04, 0.12, 0.19].forEach((d, i) => { const f = 700 + Math.random() * 500 + i * 120; this.tone({ type: 'sine', freq: f, to: f * 1.9, dur: 0.06, vol: 0.13, delay: d }); });
+        break;
+      case 'harvest': // koparma "pop"u + yükselen ışıltı
+        this.tone({ type: 'sine', freq: 300, to: 900, dur: 0.06, vol: 0.25 });
+        this.noise({ dur: 0.05, vol: 0.18, freq: 1800 });
+        [784, 988, 1319].forEach((f, i) => this.tone({ freq: f, dur: 0.09, vol: 0.15, delay: 0.05 + i * 0.055 }));
+        this.tone({ type: 'triangle', freq: 1568, dur: 0.22, vol: 0.12, delay: 0.22 });
+        break;
       case 'chop':    this.noise({ dur: 0.08, vol: 0.4, freq: 900 }); this.tone({ type: 'square', freq: 140, to: 70, dur: 0.08, vol: 0.25 }); break;
       case 'mine':    this.tone({ type: 'square', freq: 1400, to: 900, dur: 0.06, vol: 0.2 }); this.noise({ dur: 0.06, vol: 0.3, freq: 3000 }); break;
       case 'swing':   this.noise({ dur: 0.1, vol: 0.2, freq: 4000 }); break;
@@ -162,22 +199,37 @@ class AudioEngine {
       case 'zdie':    this.noise({ dur: 0.25, vol: 0.3, freq: 800 }); this.tone({ type: 'sawtooth', freq: 160, to: 50, dur: 0.3, vol: 0.2 }); break;
       case 'groan':   this.tone({ type: 'sawtooth', freq: 90 + Math.random() * 30, to: 60, dur: 0.6, vol: 0.12 }); break;
       case 'explode': this.noise({ dur: 0.6, vol: 0.6, freq: 700 }); this.tone({ type: 'sine', freq: 120, to: 30, dur: 0.5, vol: 0.5 }); break;
-      case 'coin':    this.tone({ freq: 988, dur: 0.06, vol: 0.2 }); this.tone({ freq: 1319, dur: 0.15, vol: 0.2, delay: 0.06 }); break;
+      case 'coin':    this.tone({ freq: 988, dur: 0.06, vol: 0.18 }); this.tone({ freq: 1319, dur: 0.18, vol: 0.18, delay: 0.06 }); this.tone({ type: 'triangle', freq: 2637, dur: 0.1, vol: 0.06, delay: 0.06 }); break;
       case 'pop':     this.tone({ type: 'sine', freq: 600, to: 1300, dur: 0.07, vol: 0.22 }); break;
       case 'craft':   [523, 659, 784, 1047].forEach((f, i) => this.tone({ type: 'triangle', freq: f, dur: 0.1, vol: 0.2, delay: i * 0.05 })); break;
       case 'place':   this.tone({ type: 'square', freq: 200, to: 120, dur: 0.1, vol: 0.25 }); this.noise({ dur: 0.1, vol: 0.2, freq: 700 }); break;
       case 'break':   this.noise({ dur: 0.3, vol: 0.4, freq: 1200 }); this.tone({ type: 'square', freq: 160, to: 40, dur: 0.25, vol: 0.25 }); break;
       case 'eat':     [0, 0.1, 0.2].forEach((d) => this.noise({ dur: 0.06, vol: 0.25, freq: 1800, delay: d })); break;
       case 'quest':   [523, 659, 784, 659, 1047].forEach((f, i) => this.tone({ freq: f, dur: 0.12, vol: 0.2, delay: i * 0.09 })); break;
-      case 'levelup': [523, 659, 784, 1047, 1319].forEach((f, i) => this.tone({ type: 'square', freq: f, dur: 0.14, vol: 0.16, delay: i * 0.07 })); this.tone({ type: 'triangle', freq: 1047, dur: 0.5, vol: 0.2, delay: 0.35 }); break;
+      case 'levelup': [523, 659, 784, 1047, 1319].forEach((f, i) => this.tone({ type: 'square', freq: f, dur: 0.14, vol: 0.16, delay: i * 0.07 })); [1047, 1319, 1568].forEach((f) => this.tone({ type: 'triangle', freq: f, dur: 0.7, vol: 0.12, delay: 0.38, attack: 0.02 }));
+        this.duck(1);
+        break;
       case 'achievement': [784, 988, 1175, 1568].forEach((f, i) => this.tone({ type: 'triangle', freq: f, dur: 0.18, vol: 0.2, delay: i * 0.08 })); break;
       case 'error':   this.tone({ freq: 160, dur: 0.15, vol: 0.2 }); break;
       case 'alarm':   for (let i = 0; i < 4; i++) this.tone({ type: 'sawtooth', freq: 440, to: 880, dur: 0.25, vol: 0.18, delay: i * 0.3 }); break;
       case 'drum':    // dalga başı savaş davulu
+        this.duck(1.4);
         [0, 0.22, 0.44, 0.78].forEach((d, i) => {
           this.tone({ type: 'sine', freq: i === 3 ? 90 : 120, to: 38, dur: 0.35, vol: 0.55, delay: d });
           this.noise({ dur: 0.1, vol: 0.25, freq: 400, delay: d });
         });
+        break;
+      case 'horde':   // sürü uyarısı: alçalan boru + gümbürtü
+        this.duck(1.6);
+        [[220, 0], [208, 0.18], [196, 0.36], [185, 0.54]].forEach(([f, d]) => this.tone({ type: 'sawtooth', freq: f, to: f * 0.97, dur: 0.2, vol: 0.14, delay: d, attack: 0.02 }));
+        this.tone({ type: 'square', freq: 55, to: 41, dur: 1.1, vol: 0.22, delay: 0.5, attack: 0.05 });
+        this.noise({ dur: 1, vol: 0.28, freq: 260, delay: 0.5, attack: 0.15 });
+        break;
+      case 'boss':    // boss: uyumsuz (triton) akor + derin vuruşlar
+        this.duck(2.4);
+        [110, 155.6, 220].forEach((f) => this.tone({ type: 'sawtooth', freq: f, to: f * 0.94, dur: 1.6, vol: 0.1, attack: 0.08 }));
+        [0, 0.45, 0.9].forEach((d) => { this.tone({ type: 'sine', freq: 90, to: 28, dur: 0.6, vol: 0.55, delay: d }); this.noise({ dur: 0.25, vol: 0.3, freq: 300, delay: d }); });
+        this.tone({ type: 'square', freq: 880, to: 440, dur: 0.5, vol: 0.06, delay: 1.2 });
         break;
       case 'heartbeat': this.tone({ type: 'sine', freq: 70, to: 40, dur: 0.12, vol: 0.4 }); this.tone({ type: 'sine', freq: 62, to: 38, dur: 0.14, vol: 0.32, delay: 0.18 }); break;
       case 'thunder': this.noise({ dur: 1.6, vol: 0.5, freq: 300, attack: 0.05 }); this.noise({ dur: 0.25, vol: 0.35, freq: 1800 }); break;
@@ -195,87 +247,108 @@ class AudioEngine {
   setMusic(mode) {
     if (!this.ctx || this.mode === mode) return;
     this.mode = mode;
-    this.step = 0;
-    this.nextTime = this.ctx.currentTime + 0.1;
-    const list = SONGS[mode];
-    if (list) {
-      // Her girişte bir sonraki parçaya geç (çeşitlilik)
-      this.song = list[this.songIdx[mode] % list.length];
-      this.songIdx[mode]++;
-    } else this.song = null;
+    const t = this.ctx.currentTime;
+    // Eski parça XFADE boyunca çalmaya devam ederken kısılır (yalnızca planlanmış 0.2 sn'yi söndürmek kesik duyulur)
+    if (this.track) {
+      const g = this.track.bus.gain;
+      g.cancelScheduledValues(t); g.setValueAtTime(Math.max(0.0001, g.value), t); g.exponentialRampToValueAtTime(0.0001, t + XFADE);
+      this.track.until = t + XFADE;
+      this.fading.push(this.track);
+      this.track = null;
+    }
+    if (!SONGS[mode]) return;
+    const bus = this.ctx.createGain();
+    bus.gain.setValueAtTime(0.0001, t); bus.gain.exponentialRampToValueAtTime(1, t + XFADE);
+    bus.connect(this.musicBus);
+    this.track = { mode, song: this.nextSong(mode), step: 0, nextTime: t + 0.1, bus };
     if (!this.timer) this.timer = setInterval(() => this.schedule(), 50);
+  }
+
+  // Her girişte bir sonraki parçaya geç (çeşitlilik)
+  nextSong(mode) {
+    const list = SONGS[mode];
+    return list[this.songIdx[mode]++ % list.length];
   }
 
   // 0..1: gece katman/tempo artışı
   setIntensity(v) { this.intensity = Math.max(0, Math.min(1, v || 0)); }
 
-  get songName() { return this.song?.name || ''; }
+  get songName() { return this.track?.song.name || ''; }
 
   schedule() {
     if (!this.ctx) return;
     this.scheduleAmbient();
-    const song = this.song;
-    if (!this.mode || !song) return;
-    const night = this.mode === 'night';
     if (!this.curInt) this.curInt = 0;
     this.curInt += (this.intensity - this.curInt) * 0.05; // yumuşak geçiş
+    const now = this.ctx.currentTime;
+    this.fading = this.fading.filter((tr) => {
+      if (now < tr.until) { this.scheduleTrack(tr, Math.min(tr.until, now + 0.2)); return true; }
+      setTimeout(() => tr.bus.disconnect(), 300);
+      return false;
+    });
+    if (this.track) this.scheduleTrack(this.track, now + 0.2);
+  }
+
+  scheduleTrack(tr, horizon) {
+    const night = tr.mode === 'night';
     const I = night ? this.curInt : 0;
-    const stepDur = 60 / (song.bpm * (1 + 0.18 * I)) / 2; // 8'lik notalar
-    const L = song.lead.length;
+    const bus = tr.bus;
     // Geride kaldıysak (sekme arka plandaydı) atla
-    if (this.nextTime < this.ctx.currentTime - 0.3) this.nextTime = this.ctx.currentTime + 0.05;
-    while (this.nextTime < this.ctx.currentTime + 0.2) {
-      const dl = this.nextTime - this.ctx.currentTime;
-      const s = this.step;
+    if (tr.nextTime < this.ctx.currentTime - 0.3) tr.nextTime = this.ctx.currentTime + 0.05;
+    while (tr.nextTime < horizon) {
+      const song = tr.song;
+      const stepDur = 60 / (song.bpm * (1 + 0.18 * I)) / 2; // 8'lik notalar
+      const L = song.lead.length;
+      const dl = tr.nextTime - this.ctx.currentTime;
+      const s = tr.step;
       const n = song.lead[s % L];
-      if (n) this.tone({ type: song.leadType, freq: NOTE(n), dur: stepDur * 0.9, vol: song.leadVol, bus: this.musicBus, delay: dl });
+      if (n) this.tone({ type: song.leadType, freq: NOTE(n), dur: stepDur * 0.9, vol: song.leadVol, bus, delay: dl });
       if (s % 2 === 0) {
         const b = song.bass[(s / 2) % song.bass.length];
-        this.tone({ type: 'triangle', freq: NOTE(b), dur: stepDur * 1.8, vol: 0.35, bus: this.musicBus, delay: dl });
-        if (I > 0.7) this.tone({ type: 'square', freq: NOTE(b + 12), dur: stepDur * 0.5, vol: 0.05, bus: this.musicBus, delay: dl });
+        this.tone({ type: 'triangle', freq: NOTE(b), dur: stepDur * 1.8, vol: 0.35, bus, delay: dl });
+        if (I > 0.7) this.tone({ type: 'square', freq: NOTE(b + 12), dur: stepDur * 0.5, vol: 0.05, bus, delay: dl });
       }
       // Gündüz arpej katmanı
       if (song.arp && s % 2 === 1) {
         const b = song.bass[((s - 1) / 2) % song.bass.length];
         const ar = [12, 16, 19, 24][(s >> 1) % 4];
-        this.tone({ type: 'triangle', freq: NOTE(b + ar), dur: stepDur * 0.6, vol: 0.08, bus: this.musicBus, delay: dl });
+        this.tone({ type: 'triangle', freq: NOTE(b + ar), dur: stepDur * 0.6, vol: 0.08, bus, delay: dl });
       }
-      if (song.hats && s % 4 === 2) this.noiseHat(this.nextTime, 0.15);
+      if (song.hats && s % 4 === 2) this.noiseHat(tr.nextTime, 0.15, bus);
       if (night) {
-        if (I > 0.2 && s % 4 === 0) this.kick(this.nextTime);
-        if (I > 0.45 && s % 8 === 4) this.snare(this.nextTime);
-        if (I > 0.65 && s % 2 === 1) this.noiseHat(this.nextTime, 0.07);
+        // Gece hep alçak bir nabız atar; zombi yoğunluğu arttıkça davul katmanları eklenir
+        if (I > 0.2 ? s % 4 === 0 : s % 8 === 0) this.kick(tr.nextTime, bus, I > 0.2 ? 0.55 : 0.32);
+        if (I > 0.45 && s % 8 === 4) this.snare(tr.nextTime, bus);
+        if (I > 0.65 && s % 2 === 1) this.noiseHat(tr.nextTime, 0.07, bus);
       }
-      this.nextTime += stepDur;
-      this.step++;
-      // Parça değişimi
-      if (this.step >= L * LOOPS_PER_SONG) {
-        this.step = 0;
-        const list = SONGS[this.mode];
-        if (list && list.length > 1) { this.song = list[this.songIdx[this.mode] % list.length]; this.songIdx[this.mode]++; return; }
+      tr.nextTime += stepDur;
+      tr.step++;
+      if (tr.step >= L * LOOPS_PER_SONG) {
+        tr.step = 0;
+        tr.song = this.nextSong(tr.mode);
       }
     }
   }
 
-  noiseHat(time, vol = 0.15) {
+  noiseHat(time, vol = 0.15, bus = this.musicBus) {
     const src = this.ctx.createBufferSource();
     src.buffer = this.noiseBuf;
     const f = this.ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 6000;
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(vol, time); g.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
-    src.connect(f); f.connect(g); g.connect(this.musicBus);
+    src.connect(f); f.connect(g); g.connect(bus);
     src.start(time); src.stop(time + 0.06);
   }
 
-  kick(time) {
+  kick(time, bus = this.musicBus, vol = 0.55) {
     const dl = time - this.ctx.currentTime;
-    this.tone({ type: 'sine', freq: 140, to: 42, dur: 0.14, vol: 0.55, bus: this.musicBus, delay: dl });
+    this.tone({ type: 'sine', freq: 140, to: 42, dur: 0.14, vol, bus, delay: dl });
   }
 
-  snare(time) {
+  snare(time, bus = this.musicBus) {
     const dl = time - this.ctx.currentTime;
-    this.noise({ dur: 0.12, vol: 0.28, freq: 1800, type: 'highpass', bus: this.musicBus, delay: dl });
-    this.tone({ type: 'triangle', freq: 210, to: 120, dur: 0.08, vol: 0.2, bus: this.musicBus, delay: dl });
+    this.noise({ dur: 0.12, vol: 0.28, freq: 1800, type: 'highpass', bus, delay: dl });
+    this.tone({ type: 'triangle', freq: 210, to: 120, dur: 0.08, vol: 0.2, bus, delay: dl });
   }
 
   // ---- Ortam sesleri ----
@@ -356,3 +429,10 @@ class AudioEngine {
 }
 
 export const audio = new AudioEngine();
+
+// Her jestte (yalnızca bağlam çalışmıyorsa) aç: iOS arka plana atınca/aramada bağlamı 'interrupted' yapar
+if (typeof window !== 'undefined') {
+  const wake = () => { if (!audio.ctx || audio.ctx.state !== 'running') audio.unlock(); };
+  ['touchstart', 'touchend', 'pointerdown', 'keydown'].forEach((e) => window.addEventListener(e, wake, { capture: true, passive: true }));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && audio.ctx && audio.ctx.state !== 'running') audio.ctx.resume?.().catch(() => {}); });
+}

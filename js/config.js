@@ -54,7 +54,7 @@ export const ITEMS = {
 // Ekinler: hoursPerStage = sulanmış halde bir aşama için gereken oyun saati
 export const CROPS = {
   wheat:   { item: 'wheat',   hoursPerStage: 4,  yield: [2, 3], seedBack: 1 },
-  carrot:  { item: 'carrot',  hoursPerStage: 6,  yield: [1, 3], seedBack: 0 },
+  carrot:  { item: 'carrot',  hoursPerStage: 5,  yield: [1, 3], seedBack: 0 },
   pumpkin: { item: 'pumpkin', hoursPerStage: 9,  yield: [1, 2], seedBack: 0 }
 };
 export const CROP_STAGES = 4; // 0..3 (3 = olgun)
@@ -73,8 +73,8 @@ export const RECIPES = [
 export const SHOPS = {
   merchant: [
     { id: 'seed_wheat', qty: 5, price: 15 },
-    { id: 'seed_carrot', qty: 5, price: 25 },
-    { id: 'seed_pumpkin', qty: 3, price: 40 },
+    { id: 'seed_carrot', qty: 5, price: 20 },
+    { id: 'seed_pumpkin', qty: 3, price: 30 },
     { id: 'bread', qty: 1, price: 30 }
   ],
   blacksmith: [
@@ -100,4 +100,4 @@ export const START_INVENTORY = [
   ['seed_wheat', 10], ['seed_carrot', 5], ['wood', 4]
 ];
 
-export const PLAYER_STATS = { maxHp: 100, maxEnergy: 100, speed: 70, startCoins: 30 };
+export const PLAYER_STATS = { maxHp: 100, maxEnergy: 100, speed: 70, startCoins: 60 };

@@ -32,10 +32,13 @@ body.is-touch {
 body.is-touch #keys, body.is-touch #hint, body.is-touch #quest-tracker { display: none !important; }
 body.is-touch .slot:hover { background: rgba(255, 255, 255, 0.06); }
 body.is-touch .slot .key { display: none; }
+/* Kaydırılabilir hotbar taşanı kırpar: adet rozeti slotun içinde kalsın */
+body.is-touch .slot .count { bottom: 1px; right: 1px; }
 
 /* --- Kontrol katmanı --- */
 #mobile-ui { display: none; position: absolute; inset: 0; pointer-events: none; }
 body.is-touch.playing:not(.modal-open) #mobile-ui { display: block; }
+body:has(#gameover.show) #mobile-ui { display: none !important; }
 .mc-btn {
   pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none;
   opacity: var(--mc-alpha, 0.85); color: var(--text); border: 1px solid rgba(255, 255, 255, 0.22);
@@ -154,7 +157,11 @@ body.is-touch.portrait #toasts { top: auto; bottom: calc(284px + env(safe-area-i
 body.is-touch.portrait #wx-badge { top: calc(var(--hud-h, 64px) + 6px); left: calc(8px + env(safe-area-inset-left)); }
 body.is-touch.portrait #jc-minimap { top: calc(var(--hud-h, 64px) + 6px); right: calc(8px + env(safe-area-inset-right)); }
 body.is-touch.portrait .toast { font-size: 12px; padding: 7px 12px; max-width: 100%; }
-body.is-touch #banner h2 { font-size: 34px; }
+/* Alt panel (sheet) açıkken bildirimler üstte, panelin üstüne binmeden görünür */
+body.is-touch.portrait.modal-open #toasts { bottom: auto; top: calc(8px + env(safe-area-inset-top)); z-index: 20; }
+body.is-touch.portrait.modal-open .toast:not(:nth-last-child(-n+2)) { display: none; }
+body.is-touch #banner h2 { font-size: 20px; }
+body.is-touch.landscape #banner { top: 30%; }
 body.is-touch #banner p { font-size: 14px; padding: 0 16px; }
 
 /* --- Modallar: portrede bottom-sheet --- */
@@ -206,9 +213,15 @@ body.is-touch.portrait #inv-info { max-width: none; }
 /* --- Ana menü / oyun sonu --- */
 body.is-touch #menu, body.is-touch #gameover { padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom)); overflow: auto; }
 body.is-touch.portrait .menu-card { padding: 24px 20px; }
-body.is-touch.portrait .menu-card h1 { font-size: 34px; }
+body.is-touch.portrait .menu-card h1 { font-size: 21px; }
+body.is-touch.portrait #gameover h1 { font-size: 19px; }
+body.is-touch.portrait .menu-card .kicker { margin-bottom: 12px; }
+body.is-touch.portrait .tag { margin: 12px 0 18px; font-size: 14px; }
 body.is-touch .menu-btns { flex-wrap: wrap; }
 body.is-touch .menu-btns button { min-height: 48px; flex: 1 1 140px; }
 
 /* Kiler rozeti dar ekranda küçük */
 body.is-touch.portrait .hv-badge { padding: 3px 7px; font-size: 11px; }
+
+/* Oyun sonu ekranında dokunmatik kaçış butonu görünmesin */
+body:has(#gameover.show) .cb-dodge { display: none !important; }

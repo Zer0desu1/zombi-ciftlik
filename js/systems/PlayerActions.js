@@ -3,7 +3,7 @@ import { audio } from '../audio.js';
 import { Barricade, Turret } from '../entities/Structures.js';
 import { depleteResource } from './MapBuilder.js';
 
-const REACH = 40;
+export const REACH = 40;
 
 // Fare tıklamasında seçili eşyaya göre ne yapılacağını belirler.
 export function useSelected(scene, wx, wy) {

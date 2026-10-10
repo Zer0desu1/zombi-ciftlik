@@ -5,6 +5,12 @@
   "type": "module",
   "description": "Phaser 3 ile pixel art çiftçilik + zombi savunma oyunu",
   "scripts": {
-    "start": "npx --yes http-server . -p 8080 -c-1 -o"
+    "start": "npx --yes http-server . -p 8080 -c-1 -o",
+    "test": "node --test \"tests/unit/*.test.mjs\"",
+    "test:e2e": "node --test --test-concurrency=1 --test-timeout=60000 \"tests/e2e/*.test.mjs\"",
+    "test:all": "npm test && npm run test:e2e"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.0"
   }
 }

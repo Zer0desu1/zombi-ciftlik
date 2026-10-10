@@ -17,6 +17,9 @@ export const ZOMBIE_TYPES = {
 const BLOAT_TRIGGER = 24, BLOAT_RADIUS = 40, BLOAT_DMG = 25;
 const SPIT_RANGE = 120, SPIT_CD = 2, ACID_DMG = 5;
 const SLAM_RADIUS = 60, SLAM_CD = 3, SLAM_DMG = 12;
+// Isırık telegrafı (sn): canlılara saldırmadan önce kırmızı parlayıp geri çekilir — yuvarlanma/vurma fırsatı
+const BITE_TIME = { normal: 0.32, runner: 0.22, brute: 0.5, spitter: 0.3, bloater: 0.3, armored: 0.34, boss: 0.45 };
+const RAID_FROM = 3; // bu dalgadan itibaren bazı zombiler tarlaya/hayvanlara yönelir
 
 // Prosedürel kısa sesler (audio.js'e dokunmadan)
 function zsfx(name) {
@@ -53,6 +56,32 @@ export function areaDamage(scene, x, y, r, dmg, { structMul = 1, zombieDmg = 0, 
   }
 }
 
+// Yerde büyüyen tehlike alanı: patlama/sarsıntı menzilini önceden gösterir
+function warnCircle(scene, x, y, r, dur) {
+  const c = scene.add.circle(x, y, r, 0xff3030, 0.14).setStrokeStyle(1, 0xff5a4a, 0.85).setDepth(3).setScale(0.3);
+  scene.tweens.add({ targets: c, scale: 1, duration: dur * 1000, ease: 'Quad.easeOut' });
+  scene.tweens.add({ targets: c, alpha: 0.5, duration: 120, yoyo: true, repeat: -1 });
+  scene.time.delayedCall(dur * 1000 + 60, () => c.destroy());
+}
+
+// Kuşatmada çiğnenebilecek ekin: zombiler için hafif hedef nesnesi
+function cropTarget(scene, plot) {
+  const farm = scene.farm;
+  return {
+    x: plot.tx * 16 + 8, y: plot.ty * 16 + 8, radius: 4, isCrop: true,
+    get active() { return farm.get(plot.tx, plot.ty) === plot && !!plot.crop && !plot.crop.dead; },
+    takeDamage() {
+      const c = plot.crop;
+      if (!c || c.dead) return;
+      // Her ısırık bir büyüme evresi geri alır; filizi yerse ekin ölür
+      if (c.stage > 0) { c.stage--; c.growth = 0; } else c.dead = true;
+      farm.refresh(plot);
+      scene.spawnParticles(this.x, this.y, 0x6aa84f, 5);
+      if (c.dead) scene.events.emit('cropTrampled', plot);
+    }
+  };
+}
+
 function ring(scene, x, y, r, color, dur = 350) {
   const c = scene.add.circle(x, y, r, color, 0).setStrokeStyle(2, color, 0.9).setDepth(9400).setScale(0.15);
   scene.tweens.add({ targets: c, scale: 1, alpha: 0, duration: dur, ease: 'Cubic.easeOut', onComplete: () => c.destroy() });
@@ -66,7 +95,9 @@ export function spitAcid(scene, x, y, tx, ty) {
   if (f.acid.length >= 20) return;
   const d = Math.max(1, Phaser.Math.Distance.Between(x, y, tx, ty));
   const img = scene.add.image(x, y - 4, 'z_acid').setDepth(9300);
-  f.acid.push({ img, sx: x, sy: y - 4, tx, ty, t: 0, dur: d / 120 });
+  // İniş noktası işareti: asitten kaçmak için nereye düşeceğini göster
+  const mark = scene.add.circle(tx, ty, 6, 0x8fe04a, 0.18).setStrokeStyle(1, 0xc8ff8a, 0.9).setDepth(3);
+  f.acid.push({ img, mark, sx: x, sy: y - 4, tx, ty, t: 0, dur: d / 120 });
   zsfx('spit');
 }
 
@@ -89,7 +120,8 @@ export function updateZombieFx(scene, dt) {
     const k = Math.min(1, a.t / a.dur);
     // Hafif kavisli uçuş
     a.img.setPosition(a.sx + (a.tx - a.sx) * k, a.sy + (a.ty - a.sy) * k - Math.sin(k * Math.PI) * 10).setRotation(a.t * 8);
-    if (k >= 1) { a.img.destroy(); f.acid.splice(i, 1); acidImpact(scene, a.tx, a.ty); }
+    a.mark?.setScale(0.6 + 0.4 * k);
+    if (k >= 1) { a.img.destroy(); a.mark?.destroy(); f.acid.splice(i, 1); acidImpact(scene, a.tx, a.ty); }
   }
   const p = scene.player;
   for (let i = f.pools.length - 1; i >= 0; i--) {
@@ -105,7 +137,7 @@ export function updateZombieFx(scene, dt) {
 export function clearZombieFx(scene) {
   const f = scene.zfx;
   if (!f) return;
-  f.acid.forEach((a) => a.img.destroy());
+  f.acid.forEach((a) => { a.img.destroy(); a.mark?.destroy(); });
   f.pools.forEach((g) => g.img.destroy());
   f.acid.length = 0; f.pools.length = 0;
 }
@@ -119,7 +151,15 @@ export class Zombie extends Actor {
     this.kind = ZOMBIE_TYPES[kind] ? kind : 'normal';
     this.def = def;
     this.speed = def.speed(wave);
-    this.damage = def.dmg;
+    // Denge: ilk iki gece öğretici kadar yumuşak, 5. geceden sonra hasar her gece %6 artar
+    const tier = wave <= 1 ? 0.6 : wave === 2 ? 0.75 : 1 + Math.max(0, wave - 4) * 0.06;
+    this.damage = Math.max(1, Math.round(def.dmg * tier));
+    this.biteTime = (BITE_TIME[this.kind] || 0.32) * (wave <= 2 ? 1.35 : 1);
+    // Rol: yağmacı tarlaya/hayvanlara, iri zombiler sığınağa yüklenir
+    this.role = this.kind === 'brute' ? 'sapper'
+      : wave >= RAID_FROM && (this.kind === 'normal' || this.kind === 'runner') && Math.random() < 0.22 ? 'raider' : 'hunter';
+    // Kenardan yelpaze gibi yayılarak yaklaşma
+    this.flank = Phaser.Math.FloatBetween(-1, 1);
     this.reward = def.reward;
     this.armor = def.armor || 0;
     this.attackCd = 0;
@@ -204,6 +244,7 @@ export class Zombie extends Actor {
     if (this.stuckTime > 0.4 && this.sidestep <= 0) { this.sidestep = 0.6; this.sideDir = Math.random() < 0.5 ? -1 : 1; }
 
     let a = Phaser.Math.Angle.Between(this.x, this.y, t.x, t.y);
+    if (dist > 90) a += this.flank * 0.55 * Math.min(1, (dist - 90) / 220);
     if (this.sidestep > 0) { this.sidestep -= dt; a += this.sideDir * Math.PI / 2; }
     // speedMul: diğer modüllerin geçici yavaşlatma/hızlandırma çarpanı (ör. tuzak, ışık)
     const spd = this.speed * (this.speedMul ?? 1);
@@ -213,13 +254,26 @@ export class Zombie extends Actor {
   }
 
   pickTarget() {
+    const s = this.scene, role = this.role, p = s.player;
     let best = null, bestD = Infinity;
-    for (const c of this.scene.zombieTargets()) {
+    for (const c of s.zombieTargets()) {
       if (!c || !c.active || c.hidden) continue;
-      // Yapılar daha az çekici; sığınak her zaman en son seçenek
-      const w = c.isShelter ? 1.6 : c.isStructure ? 1.3 : 1;
+      // Yapılar daha az çekici; sığınak normalde en son seçenek (iri zombiler hariç)
+      let w = c.isShelter ? (role === 'sapper' ? 0.9 : 1.6) : c.isStructure ? 1.3 : 1;
+      if (role === 'raider') w *= c === p ? 1.5 : c.ranch ? 0.6 : 1;
       const d = Phaser.Math.Distance.Between(this.x, this.y, c.x, c.y) * w;
       if (d < bestD) { bestD = d; best = c; }
+    }
+    // Yağmacı: oyuncu dibinde değilse en yakın ekini çiğnemeye gider
+    if (role === 'raider' && s.farm?.plots && !(best === p && bestD < 90)) {
+      if (this.cropGoal?.active) return this.cropGoal;
+      let plot = null, pd = bestD * 0.8;
+      for (const pl of s.farm.plots.values()) {
+        if (!pl.crop || pl.crop.dead) continue;
+        const d = Phaser.Math.Distance.Between(this.x, this.y, pl.tx * 16 + 8, pl.ty * 16 + 8);
+        if (d < pd) { pd = d; plot = pl; }
+      }
+      if (plot) return (this.cropGoal = cropTarget(s, plot));
     }
     return best;
   }
@@ -235,6 +289,16 @@ export class Zombie extends Actor {
     this.walk(false);
     if (Math.abs(t.x - this.x) > 1) this.setFlipX(t.x < this.x);
     if (this.attackCd > 0) return;
+    // Canlılara (oyuncu, NPC, hayvan) önce telegraf; yapılara/ekinlere doğrudan
+    if (!t.isStructure && !t.isShelter && !t.isCrop && !t.distanceFrom) {
+      this.biteTarget = t;
+      this.beginWindup('bite', this.biteTime);
+      return;
+    }
+    this.strike(t);
+  }
+
+  strike(t) {
     this.attackCd = this.def.cd;
     this.scene.tweens.add({ targets: this, x: this.x + (t.x - this.x) * 0.15, y: this.y + (t.y - this.y) * 0.15, duration: 80, yoyo: true });
     t.takeDamage(this.damage, this);
@@ -244,13 +308,31 @@ export class Zombie extends Actor {
     this.windupAction = action;
     this.windup = time;
     this.halt();
-    this.setTint(action === 'spit' ? 0xb8ff7a : 0xff6a4a);
-    if (action === 'slam') this.scene.tweens.add({ targets: this, scaleY: this.def.scale * 1.12, duration: time * 1000 * 0.8, yoyo: true });
+    this.setTint(action === 'spit' ? 0xb8ff7a : 0xff4a3a);
+    const s = this.scene;
+    if (action === 'slam') {
+      s.tweens.add({ targets: this, scaleY: this.def.scale * 1.12, duration: time * 1000 * 0.8, yoyo: true });
+      warnCircle(s, this.x, this.y + 6, SLAM_RADIUS, time);
+    } else if (action === 'bite' && this.biteTarget === s.player) {
+      // Oyuncuya yönelik ısırıkta başının üstünde "!" belirir
+      const m = s.add.text(this.x, this.y - 10 * this.scaleY, '!', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ff4a3a', stroke: '#000', strokeThickness: 2 })
+        .setOrigin(0.5, 1).setDepth(10003).setResolution(2);
+      s.tweens.add({ targets: m, y: m.y - 3, duration: time * 1000, onComplete: () => m.destroy() });
+    }
   }
 
   release() {
     this.clearTint();
     const t = this.target;
+    if (this.windupAction === 'bite') {
+      const b = this.biteTarget;
+      this.biteTarget = null;
+      const big = this.kind === 'brute' ? 3 : this.kind === 'boss' ? 6 : 0;
+      // Telegraf sırasında uzaklaştıysa ıskalar (yuvarlanma/geri çekilme işe yarar)
+      if (b && b.active && !b.hidden && distTo(b, this.x, this.y) <= 16 + (b.radius || 6) * 0.8 + big) this.strike(b);
+      else this.attackCd = this.def.cd * 0.5;
+      return;
+    }
     if (this.windupAction === 'spit') {
       if (!t || !t.active) return;
       // Sığınağa gövdenin en yakın noktasına nişan al
@@ -273,6 +355,7 @@ export class Zombie extends Actor {
     if (this.fuse >= 0) return;
     this.fuse = 0.6;
     this.halt();
+    warnCircle(this.scene, this.x, this.y, BLOAT_RADIUS, 0.6);
     zsfx('fuse');
     this.setTint(0xff5a3a);
     this.scene.tweens.add({ targets: this, x: this.x + 1, duration: 40, yoyo: true, repeat: 7 });
@@ -308,6 +391,8 @@ export class Zombie extends Actor {
       }
     }
     this.hp -= n;
+    // Isırık hazırlığında vurulan zombi sendeler (saldırı iptal)
+    if (this.windup > 0 && this.windupAction === 'bite') { this.windup = 0; this.biteTarget = null; this.attackCd = Math.max(this.attackCd, 0.4); }
     this.flash();
     if (source && this.def.kb > 0 && this.fuse < 0) this.knockback(source.x, source.y, this.def.kb);
     this.scene.spawnParticles(this.x, this.y, 0x6b8f3a, 5);

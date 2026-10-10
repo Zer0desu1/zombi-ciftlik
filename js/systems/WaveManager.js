@@ -118,8 +118,13 @@ export class WaveManager {
     const side = Phaser.Utils.Array.GetRandom(sides);
     const pt = this.edgePoint(side);
     const at = this.pending.length ? this.pending[this.pending.length - 1].t : 0;
+    // Sürü tek noktadan değil kenar boyunca yayılarak çıkar (kalabalık büyüdükçe cephe genişler)
+    const along = side < 2, spread = Math.min(160, 40 + n * 6);
     for (let i = 0; i < n; i++) {
-      this.pending.push({ kind: this.queue.shift(), x: pt.x + Phaser.Math.Between(-28, 28), y: pt.y + Phaser.Math.Between(-28, 28), t: at + i * 0.2 });
+      const s = Phaser.Math.FloatBetween(-spread, spread), inward = Phaser.Math.Between(0, 18);
+      const x = along ? pt.x + s : pt.x + (side === 2 ? inward : -inward);
+      const y = along ? pt.y + (side === 0 ? inward : -inward) : pt.y + s;
+      this.pending.push({ kind: this.queue.shift(), x, y, t: at + i * 0.2 });
     }
     this.scene.events.emit('hordeIncoming', { side, count: n, sideName: SIDE_NAMES[side], x: pt.x, y: pt.y });
   }

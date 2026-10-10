@@ -94,6 +94,50 @@ const REACT = {
   disliked: ['Bunu neden verdin ki?', 'Hiç hoşuma gitmedi açıkçası.', 'Eee… bunu geri alsan?']
 };
 
+// 4♥ dostluk ödülü: her gece başında NPC'nin verdiği yardım (dostlar savunmaya katkı sağlar)
+const HELP_HEARTS = 4;
+const NIGHT_HELP = {
+  farmer: { desc: 'her gece azık', run: (s) => giveHelp(s, ITEMS.bread ? { bread: 1 } : { carrot: 3 }) },
+  merchant: { desc: 'her gece mermi', run: (s) => giveHelp(s, { ammo: 8 }) },
+  blacksmith: {
+    desc: 'gece başında sığınak onarımı',
+    run: (s) => {
+      const sh = s.shelter, n = Math.round(sh.maxHp * 0.15);
+      if (sh.hp >= sh.maxHp) return null;
+      sh.repair(n);
+      return `sığınağı ${n} onardı`;
+    }
+  },
+  guard: { desc: 'gece %50 hızlı ateş', run: () => 'seninle omuz omuza, daha hızlı ateş ediyor' },
+  doctor: { desc: 'her gece sargı', run: (s) => giveHelp(s, { bandage: 1 }) },
+  hunter: { desc: 'gece %50 hızlı ok', run: () => 'nöbette daha hızlı ok atıyor' }
+};
+
+function giveHelp(scene, items) {
+  const parts = [];
+  Object.entries(items).forEach(([id, n]) => { if (ITEMS[id]) { scene.giveItem(id, n); parts.push(`${n}× ${itemName(id)}`); } });
+  return parts.length ? `sana ${parts.join(', ')} verdi` : null;
+}
+
+// Savaşan dostlar (Demir, Murat) 4♥'de daha hızlı ateş eder — NPC.js friendRate okur
+function applyFriendPerks(scene) {
+  ['guard', 'hunter'].forEach((key) => {
+    const npc = npcByKey(scene, key);
+    if (npc) npc.friendRate = heartsOf(scene, key) >= HELP_HEARTS ? 1.5 : 1;
+  });
+}
+
+function nightHelp(scene) {
+  const msgs = [];
+  REL_KEYS.forEach((key) => {
+    if (heartsOf(scene, key) < HELP_HEARTS) return;
+    const npc = npcByKey(scene, key);
+    const m = NIGHT_HELP[key]?.run(scene);
+    if (m && npc) msgs.push(`${npc.npcName} ${m}`);
+  });
+  if (msgs.length) scene.hud.toast(`♥ Dost yardımı: ${msgs.join(' · ')}`, 'ok');
+}
+
 const SURV_NAMES = ['Ali', 'Elif', 'Hasan', 'Derya', 'Cem', 'Nur', 'Burak', 'Sevgi', 'Orhan', 'Leyla', 'Kerem', 'Aslı'];
 const MAX_SURVIVORS = 4, HIRE_COST = 100, WAGE = 10;
 
@@ -131,8 +175,9 @@ function heartsHTML(h) {
 
 // Dükkânı olmayan NPC'ler indirim yerine 3♥'de küçük bir altın hediyesi verir
 const TIER3_COINS = 40;
-function nextRewardText(h, hasShop) {
+function nextRewardText(h, hasShop, key) {
   if (h < 3) return hasShop ? '3♥: dükkânda %10 indirim' : `3♥: ${TIER3_COINS}🪙 hediye`;
+  if (h < 4) return `4♥: gece yardımı (${NIGHT_HELP[key]?.desc || ''})`;
   if (h < 6) return hasShop ? '6♥: %20 indirim + özel tarif' : '6♥: özel tarif';
   if (h < 8) return '8♥: özel hediye';
   return 'Tüm ödüller açıldı';
@@ -151,7 +196,9 @@ function addPoints(scene, key, n, showFloat = true) {
     const name = npc?.npcName || key;
     scene.hud.toast(`${name} ile dostluğun arttı: ${after} ♥`, 'ok');
     checkTierRewards(scene, key);
+    scene.events.emit('heartsChanged', { key, hearts: after });
   }
+  if (after !== before) applyFriendPerks(scene);
 }
 
 function checkTierRewards(scene, key) {
@@ -161,6 +208,9 @@ function checkTierRewards(scene, key) {
   if (claim(3)) {
     if (npc?.shop) scene.hud.toast(`${name} artık sana %10 indirim yapıyor!`, 'ok');
     else { scene.player.addCoins(TIER3_COINS); scene.hud.toast(`${name} dostluğunuz için ${TIER3_COINS} 🪙 verdi!`, 'ok'); }
+  }
+  if (claim(HELP_HEARTS)) {
+    scene.hud.toast(`${name} artık gece sana yardım edecek: ${NIGHT_HELP[key].desc}`, 'ok');
   }
   if (claim(6)) {
     const rec = def.recipe();
@@ -398,33 +448,42 @@ function payWages(scene) {
 }
 
 // ---------------- İlan panosu ----------------
+// Her şafakta 3 seçenek: bir teslim, bir öldür/topla, bir hayatta kal. Ödüller dalga ve günle ölçeklenir.
+const boardScale = (scene) => 1 + Math.min(2.5, scene.waves.wave * 0.15 + (today(scene) - 1) * 0.04);
+
+function makeTask(scene, type, i) {
+  const day = today(scene), w = scene.waves.wave, k = boardScale(scene);
+  const t = { id: `b${day}_${i}`, type, npc: pick(REL_KEYS), progress: 0, accepted: false, done: false };
+  const pay = (base) => Math.round(Phaser.Math.Clamp(base, 30, 120) * k);
+  if (type === 'deliver') {
+    const pool = [['wheat', 6, 12], ['carrot', 4, 8], ['pumpkin', 2, 3], ['wood', 10, 18], ['stone', 8, 14], ['bread', 2, 3],
+      ['egg', 3, 5], ['milk', 2, 3], ['strawberry', 3, 6], ['fish_carp', 2, 4], ['mushroom', 3, 6], ['cheese', 1, 2]].filter(([id]) => ITEMS[id]);
+    const [id, a, b] = pick(pool);
+    t.item = id; t.amount = rand(a, b);
+    t.reward = pay(t.amount * (ITEMS[id].sell || 3) * 1.3 + 15);
+  } else if (type === 'kill') {
+    t.amount = rand(8, 14) + w * 2;
+    t.reward = pay(t.amount * 4 + 10);
+  } else if (type === 'gather') {
+    t.item = pick(['wood', 'stone']);
+    t.amount = rand(10, 22);
+    t.reward = pay(t.amount * 3 + 20);
+  } else {
+    // Hayatta kal: ya bu gece hiç bayılma ya da sığınak canı belli bir oranın altına inmesin
+    t.cond = Math.random() < 0.5 ? 'noFaint' : 'shelter';
+    t.pct = t.cond === 'shelter' ? Phaser.Math.Clamp(80 - w * 2, 50, 80) : 0;
+    t.amount = 1;
+    t.reward = pay(t.cond === 'noFaint' ? 55 + w * 6 : 45 + w * 5);
+  }
+  return t;
+}
+
 function genBoard(scene) {
   const day = today(scene);
-  const pool = [['wheat', 6, 12], ['carrot', 4, 8], ['pumpkin', 2, 3], ['wood', 10, 18], ['stone', 8, 14], ['bread', 2, 3],
-    ['egg', 3, 5], ['milk', 2, 3], ['strawberry', 3, 6], ['fish_carp', 2, 4], ['mushroom', 3, 6], ['cheese', 1, 2]].filter(([id]) => ITEMS[id]);
-  const tasks = [];
-  const usedTypes = [];
-  for (let i = 0; i < 3; i++) {
-    let type = pick(['deliver', 'deliver', 'kill', 'gather']);
-    if (usedTypes.includes(type) && type !== 'deliver') type = 'deliver';
-    usedTypes.push(type);
-    const npc = pick(REL_KEYS);
-    const t = { id: `b${day}_${i}`, type, npc, progress: 0, accepted: false, done: false };
-    if (type === 'deliver') {
-      const [id, a, b] = pick(pool);
-      t.item = id; t.amount = rand(a, b);
-      t.reward = Phaser.Math.Clamp(Math.round(t.amount * (ITEMS[id].sell || 3) * 1.3 + 15), 30, 120);
-    } else if (type === 'kill') {
-      t.amount = rand(8, 18);
-      t.reward = Phaser.Math.Clamp(t.amount * 5 + 10, 30, 120);
-    } else {
-      t.item = pick(['wood', 'stone']);
-      t.amount = rand(10, 22);
-      t.reward = Phaser.Math.Clamp(t.amount * 3 + 20, 30, 120);
-    }
-    tasks.push(t);
-  }
-  scene.town.board = { day, tasks };
+  // Kabul edilmiş, bitmemiş teslim/toplama ilanları ertesi güne taşınır (gece görevleri o geceyle biter)
+  const carry = (scene.town.board?.tasks || []).filter((t) => t.accepted && !t.done && (t.type === 'deliver' || t.type === 'gather')).slice(0, 2);
+  const types = Phaser.Utils.Array.Shuffle(['deliver', pick(['kill', 'kill', 'gather']), 'survive']);
+  scene.town.board = { day, tasks: [...carry, ...types.map((type, i) => makeTask(scene, type, i))] };
   syncGather(scene);
   scene.events.emit('questsChanged');
 }
@@ -432,7 +491,11 @@ function genBoard(scene) {
 function taskText(scene, t) {
   const who = npcByKey(scene, t.npc)?.npcName || 'Biri';
   if (t.type === 'deliver') return { title: `${itemName(t.item)} Siparişi`, desc: `${who} ${t.amount} ${itemName(t.item)} istiyor.` };
-  if (t.type === 'kill') return { title: 'Zombi Temizliği', desc: `${who}: Bu gece ${t.amount} zombi öldür.` };
+  if (t.type === 'kill') return { title: 'Zombi Temizliği', desc: `${who}: ${t.amount} zombi öldür.` };
+  if (t.type === 'survive') {
+    const d = t.cond === 'noFaint' ? 'Bu geceyi hiç bayılmadan atlat.' : `Bu gece sığınağın canı %${t.pct} altına düşmesin.`;
+    return { title: 'Gece Nöbeti', desc: `${who}: ${d}${t.failed ? ' (başarısız)' : ''}` };
+  }
   return { title: `${itemName(t.item)} Toplama`, desc: `${who} için ${t.amount} ${itemName(t.item)} topla (kabulden sonra).` };
 }
 
@@ -460,7 +523,7 @@ function onInventoryChange(scene) {
     t.lastCounts[id] = now;
     if (delta > 0) active.forEach((x) => { if (x.item === id) { x.progress = Math.min(x.amount, x.progress + delta); changed = true; } });
   }
-  if (changed) scene.hud.renderQuests();
+  if (changed) { autoComplete(scene); scene.hud.renderQuests(); }
 }
 
 function completeTask(scene, t) {
@@ -471,27 +534,38 @@ function completeTask(scene, t) {
   addPoints(scene, t.npc, BOARD_PTS, false);
   audio.sfx('quest');
   scene.hud.toast(`İlan tamamlandı! +${t.reward} 🪙, ${npcByKey(scene, t.npc)?.npcName || ''} +♥`, 'ok');
+  scene.events.emit('boardTaskDone', t);
   scene.events.emit('questsChanged');
   return true;
+}
+
+// Teslim dışındaki ilanlar hedefe ulaşınca kendiliğinden ödenir (panoya dönmeye gerek yok)
+function autoComplete(scene) {
+  scene.town.board.tasks.forEach((t) => { if (t.type !== 'deliver' && t.accepted && !t.done && t.progress >= t.amount) completeTask(scene, t); });
 }
 
 function openBoard(scene) {
   const body = el('div', 'town-panel');
   const render = () => {
     const b = scene.town.board;
-    body.innerHTML = `<p class="town-sub">Gün ${b.day} ilanları · her şafakta yenilenir. Ödül: altın + kalp.</p>`;
+    body.innerHTML = `<p class="town-sub">Gün ${b.day} ilanları · her şafakta 3 yeni seçenek. Ödüller ilerledikçe artar (x${boardScale(scene).toFixed(2)}). Teslim dışındakiler bitince kendiliğinden ödenir.</p>`;
     b.tasks.forEach((t) => {
       const { title, desc } = taskText(scene, t);
       const prog = taskProgress(scene, t);
       const npc = npcByKey(scene, t.npc);
-      const card = el('div', `town-card${t.done ? ' done' : ''}`,
+      const status = t.failed ? 'Başarısız' : t.accepted ? `${prog}/${t.amount}` : 'Kabul edilmedi';
+      const card = el('div', `town-card${t.done || t.failed ? ' done' : ''}`,
         `${npc ? `<img class="town-por" src="${iconURL(scene, npc.texKey)}" alt="">` : ''}
          <div class="town-info"><b>${title}</b><span>${desc}</span>
-         <span class="town-prog">${t.accepted ? `${prog}/${t.amount}` : 'Kabul edilmedi'} · ${t.reward}🪙 + ♥</span></div>`);
-      const btn = el('button', t.done ? 'ghost' : t.accepted ? 'primary' : 'accent');
+         <span class="town-prog">${status} · ${t.reward}🪙 + ♥</span></div>`);
+      const btn = el('button', t.done || t.failed ? 'ghost' : t.accepted ? 'primary' : 'accent');
       if (t.done) { btn.textContent = '✓ Bitti'; btn.disabled = true; }
+      else if (t.failed) { btn.textContent = '✗'; btn.disabled = true; }
       else if (!t.accepted) {
-        btn.textContent = 'Kabul et';
+        // Gece nöbeti gece ortasında kabul edilemez (şafağa yakın kabul edip ödül almayı engeller)
+        const late = t.type === 'survive' && scene.waves.active;
+        btn.textContent = late ? 'Gündüz kabul' : 'Kabul et';
+        btn.disabled = late;
         btn.onclick = () => {
           t.accepted = true;
           if (t.type === 'gather') syncGather(scene);
@@ -499,11 +573,11 @@ function openBoard(scene) {
           scene.events.emit('questsChanged');
           render();
         };
-      } else {
+      } else if (t.type === 'deliver') {
         btn.textContent = 'Teslim et';
         btn.disabled = prog < t.amount;
         btn.onclick = () => { if (completeTask(scene, t)) render(); else audio.sfx('error'); };
-      }
+      } else { btn.textContent = t.type === 'survive' ? '🌙 Gece' : '⏳ Sürüyor'; btn.disabled = true; }
       card.appendChild(btn);
       body.appendChild(card);
     });
@@ -512,12 +586,22 @@ function openBoard(scene) {
   scene.hud.openPanel('📋 İlan Panosu', body);
 }
 
+// Gece nöbeti ilanlarını şafakta değerlendir (pano yenilenmeden önce çalışır)
+function judgeSurvive(scene) {
+  const t = scene.town;
+  t.board.tasks.forEach((x) => {
+    if (x.type !== 'survive' || !x.accepted || x.done || x.failed) return;
+    const ok = x.cond === 'noFaint' ? !t.faintedTonight : t.minShelter * 100 >= x.pct;
+    if (ok) { x.progress = 1; completeTask(scene, x); } else x.failed = true;
+  });
+}
+
 // ---------------- İlişkiler paneli ----------------
 function openRelations(scene) {
   const body = el('div', 'town-panel');
   const render = () => {
     const day = today(scene);
-    body.innerHTML = '<p class="town-sub">Her gün konuş (+20) ve hediye ver (günde 1). 3♥ indirim (dükkânı yoksa altın) · 6♥ %20 + özel tarif · 8♥ özel hediye.</p>';
+    body.innerHTML = '<p class="town-sub">Her gün konuş (+20) ve hediye ver (günde 1). 3♥ indirim (dükkânı yoksa altın) · 4♥ gece yardımı · 6♥ %20 + özel tarif · 8♥ özel hediye.</p>';
     REL_KEYS.forEach((key) => {
       const npc = npcByKey(scene, key);
       if (!npc) return;
@@ -528,7 +612,7 @@ function openRelations(scene) {
         `<img class="town-por" src="${iconURL(scene, npc.texKey)}" alt="">
          <div class="town-info"><b>${npc.npcName} <small>${npc.role}</small></b>
          <span class="town-h">${heartsHTML(h)}</span>
-         <span class="town-prog">💬${r.talk === day ? '✓' : '—'} 🎁${r.gift === day ? '✓' : '—'} · Sever: ${loved || '?'} · Sevmez: ${disliked || '?'} · ${nextRewardText(h, !!npc.shop)}</span></div>`));
+         <span class="town-prog">💬${r.talk === day ? '✓' : '—'} 🎁${r.gift === day ? '✓' : '—'} · Sever: ${loved || '?'} · Sevmez: ${disliked || '?'} · ${nextRewardText(h, !!npc.shop, key)}</span></div>`));
     });
     const list = survivors(scene);
     body.appendChild(el('h4', 'town-h4', `Hayatta kalanlar (${list.length}/${MAX_SURVIVORS})`));
@@ -668,7 +752,7 @@ export default {
   textures(scene) { makeTextures(scene); },
 
   init(scene) {
-    scene.town = { rel: {}, board: { day: 0, tasks: [] }, everArrived: false, lastCounts: {}, giftMode: false };
+    scene.town = { rel: {}, board: { day: 0, tasks: [] }, everArrived: false, lastCounts: {}, giftMode: false, faintedTonight: false, minShelter: 1 };
     REL_KEYS.forEach((k) => relOf(scene, k));
     syncHunterShop();
     injectCSS('town', CSS);
@@ -703,16 +787,30 @@ export default {
     const onKill = () => {
       let ch = false;
       scene.town.board.tasks.forEach((t) => { if (t.type === 'kill' && t.accepted && !t.done && t.progress < t.amount) { t.progress++; ch = true; } });
-      if (ch) scene.hud.renderQuests();
+      if (ch) { autoComplete(scene); scene.hud.renderQuests(); }
     };
-    const onWaveEnd = (w) => maybeSurvivorArrives(scene, w);
+    const onWaveEnd = (w) => { judgeSurvive(scene); maybeSurvivorArrives(scene, w); };
+    const onWaveStart = () => {
+      scene.town.faintedTonight = false;
+      scene.town.minShelter = 1;
+      nightHelp(scene);
+    };
+    const onDied = () => {
+      if (!scene.waves.active) return;
+      scene.town.faintedTonight = true;
+      scene.town.board.tasks.forEach((t) => { if (t.type === 'survive' && t.cond === 'noFaint' && t.accepted && !t.done) t.failed = true; });
+    };
     scene.events.on('questCompleted', onQuest);
     scene.events.on('zombieKilled', onKill);
     scene.events.on('waveEnd', onWaveEnd);
+    scene.events.on('waveStart', onWaveStart);
+    scene.events.on('playerDied', onDied);
     scene.events.once('shutdown', () => {
       scene.events.off('questCompleted', onQuest);
       scene.events.off('zombieKilled', onKill);
       scene.events.off('waveEnd', onWaveEnd);
+      scene.events.off('waveStart', onWaveStart);
+      scene.events.off('playerDied', onDied);
     });
     scene.inventory.onChange(() => onInventoryChange(scene));
     scene.timeSys.on('dawn', () => {
@@ -734,7 +832,14 @@ export default {
     if (scene.town.board.day !== today(scene) || !scene.town.board.tasks.length) genBoard(scene);
     syncRecipes(scene);
     syncGather(scene);
+    applyFriendPerks(scene);
     if (isNew) scene.time.delayedCall(4200, () => scene.hud.toast('Yeni: Doktor Selin ve Avcı Murat kasabada. ❤️ İlişkiler ve 📋 İlan Panosu menüde.', 'info'));
+  },
+
+  // Gece nöbeti ilanı için sığınağın gece içindeki en düşük can oranı
+  update(scene) {
+    const t = scene.town, sh = scene.shelter;
+    if (scene.waves.active && sh?.maxHp) t.minShelter = Math.min(t.minShelter, sh.hp / sh.maxHp);
   },
 
   save(scene) {

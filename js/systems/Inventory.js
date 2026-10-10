@@ -14,7 +14,16 @@ export class Inventory {
   onChange(fn) { this.listeners.push(fn); }
   emit() { this.listeners.forEach((fn) => fn(this)); }
 
+  // Temel ürün istenince kalite varyantları (X_s gümüş, X_g altın) da sayılır: görev/tarif "buğday" der, gümüş buğday da geçer.
+  // Varyant kimliği istenirse (wheat_g) yalnızca o sayılır.
+  static matches(slotId, id) { return slotId === id || ITEMS[slotId]?.baseItem === id; }
+
   count(id) {
+    return this.slots.reduce((n, s) => n + (s && Inventory.matches(s.id, id) ? s.count : 0), 0);
+  }
+
+  // Yalnızca bu kimlik (satış/bağış gibi birim fiyatı kimliğe bağlı işlemler için)
+  countExact(id) {
     return this.slots.reduce((n, s) => n + (s && s.id === id ? s.count : 0), 0);
   }
 
@@ -46,15 +55,22 @@ export class Inventory {
     return n;
   }
 
+  // Önce temel ürün, sonra gümüş, en son altın harcanır (aynı kalitede sondaki slotlardan başlanır)
   remove(id, n = 1) {
     if (this.count(id) < n) return false;
-    for (let i = this.slots.length - 1; i >= 0 && n > 0; i--) {
+    const order = [];
+    for (let i = this.slots.length - 1; i >= 0; i--) {
       const s = this.slots[i];
-      if (s && s.id === id) {
-        const k = Math.min(n, s.count);
-        s.count -= k; n -= k;
-        if (s.count <= 0) this.slots[i] = null;
-      }
+      if (s && Inventory.matches(s.id, id)) order.push(i);
+    }
+    const q = (i) => (this.slots[i].id === id ? 0 : ITEMS[this.slots[i].id]?.quality || 0);
+    order.sort((a, b) => q(a) - q(b) || b - a);
+    for (const i of order) {
+      if (n <= 0) break;
+      const s = this.slots[i];
+      const k = Math.min(n, s.count);
+      s.count -= k; n -= k;
+      if (s.count <= 0) this.slots[i] = null;
     }
     this.emit();
     return true;

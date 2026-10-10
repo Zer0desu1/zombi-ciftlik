@@ -3,7 +3,7 @@
 // Hava: scene.weather ('clear' | 'rain' | 'fog' | 'storm'), scene.weatherInfo; olaylar scene.events:
 //   'weatherChanged' (type, info), 'seasonChanged' (season, index), 'foraged' (itemId), 'fishCaught' (itemId)
 import { ITEMS, RECIPES, SHOPS, TILE, MAP_W, MAP_H, FARM_ZONE } from '../config.js';
-import { addCanvas, R, makeCanvas } from '../textures.js';
+import { addCanvas, R, makeCanvas, PAL, shade, dith, litFill, outline, dropShadow } from '../textures.js';
 import { injectCSS, el, featureLayer } from '../ui/dom.js';
 import { audio } from '../audio.js';
 import { SEASONS, SEASON_DAYS } from '../systems/TimeSystem.js';
@@ -59,63 +59,117 @@ SHOPS.merchant.push({ id: 'fishing_rod', qty: 1, price: 80 });
 
 // ---------------- Dokular ----------------
 function makeWorldTextures(scene) {
-  // Göl (8x5 tile, yuvarlak köşe, kıyı kumu, nilüfer ve sazlar)
+  // Göl (8x5 tile, yuvarlak köşe): kum kıyı → ıslak kum → köpüklü sığlık → derinleşen su (kareli geçişler)
   const LW = LAKE_ZONE.w * TILE, LH = LAKE_ZONE.h * TILE;
+  const WA = PAL.water, DI = PAL.dirt, LF = PAL.leaf;
   addCanvas(scene, 'lake', LW, LH, (ctx) => {
-    const rad = 18;
-    const inset = (y, r) => (y < r ? r - Math.sqrt(r * r - (r - y - 0.5) ** 2) : y >= LH - r ? r - Math.sqrt(r * r - (y - (LH - r) + 0.5) ** 2) : 0);
-    for (let y = 0; y < LH; y++) {
-      const a = Math.round(inset(y, rad));
-      R(ctx, a, y, LW - a * 2, 1, '#c9b07a');
+    const hx = LW / 2, hy = LH / 2;
+    // Yuvarlak dikdörtgenin içine olan uzaklık (kenarda 0, merkeze doğru artar). Kıyı 18px köşe
+    // yarıçapıyla, derinlik eğrileri ise daha büyük yarıçapla hesaplanır ki iç halkalar oval dursun.
+    const sdf = (x, y, rad) => {
+      const qx = Math.abs(x + 0.5 - hx) - (hx - rad), qy = Math.abs(y + 0.5 - hy) - (hy - rad);
+      return -(Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - rad);
+    };
+    const depth = (x, y) => sdf(x, y, 18);
+    for (let y = 0; y < LH; y++) for (let x = 0; x < LW; x++) {
+      const d = depth(x, y);
+      if (d < 0) continue;
+      let col;
+      if (d < 1) col = DI[4];
+      else if (d < 3.4) col = dith(x, y) < -0.3 ? DI[6] : DI[5];
+      else if (d < 4.6) col = DI[3];
+      else {
+        const wob = Math.sin(x * 0.21 + y * 0.07) * 1.6 + Math.cos(y * 0.33 - x * 0.05) * 1.2; // kıvrımlı derinlik eğrileri
+        const t = Math.min(d - 4.6, sdf(x, y, hy - 2) - 3 + wob) + dith(x, y) * 2.4;
+        col = t < 1 ? WA[5] : t < 5 ? WA[4] : t < 11 ? WA[3] : t < 19 ? WA[2] : WA[1];
+      }
+      R(ctx, x, y, 1, 1, col);
     }
-    for (let y = 3; y < LH - 3; y++) {
-      const a = Math.round(inset(y - 3, rad - 3) * 1) + 3;
-      R(ctx, a, y, LW - a * 2, 1, '#3f7fbf');
-      const b = Math.round(inset(y - 3, rad - 3)) + 12;
-      if (y > 12 && y < LH - 12) R(ctx, b, y, LW - b * 2, 1, '#336fae');
-    }
-    R(ctx, 4, 3, LW - 8, 1, '#9fd0f0');
-    [[24, 20], [70, 30], [44, 52], [96, 46], [30, 62], [84, 16]].forEach(([x, y]) => { R(ctx, x, y, 7, 1, '#8cc4ee'); R(ctx, x + 2, y + 1, 4, 1, '#6aa6dc'); });
-    [[18, 40], [104, 26], [92, 62]].forEach(([x, y]) => { R(ctx, x, y, 5, 4, '#4f9f3e'); R(ctx, x + 1, y + 1, 2, 1, '#6fbf5a'); R(ctx, x + 3, y, 1, 2, '#3f7fbf'); });
-    R(ctx, 105, 27, 2, 2, '#f5a3c7');
-    [[2, 30], [3, 46], [LW - 4, 36], [60, 1], [62, LH - 3], [6, 60]].forEach(([x, y]) => { R(ctx, x, y - 4, 1, 5, '#6b8f3a'); R(ctx, x + 1, y - 6, 1, 7, '#57802f'); R(ctx, x + 1, y - 7, 1, 2, '#8a5a3a'); });
+    // Üst kıyının suya düşen gölgesi ve dalgacıklar
+    for (let x = 0; x < LW; x++) for (let y = 0; y < LH / 2; y++) { const d = depth(x, y); if (d >= 4.6 && d < 6.6 && y < 10) R(ctx, x, y, 1, 1, 'rgba(20,54,94,0.35)'); }
+    [[24, 20], [70, 30], [44, 52], [96, 46], [30, 62], [84, 16], [58, 40]].forEach(([x, y]) => { R(ctx, x, y, 6, 1, WA[5]); R(ctx, x + 2, y + 1, 4, 1, WA[4]); R(ctx, x - 1, y + 1, 1, 1, WA[4]); });
+    // Nilüferler (çentikli yaprak) ve çiçek
+    [[18, 40], [104, 26], [92, 62], [36, 30]].forEach(([x, y], i) => {
+      R(ctx, x, y + 1, 6, 3, LF[3]); R(ctx, x + 1, y, 4, 5, LF[3]); R(ctx, x + 1, y + 1, 3, 1, LF[5]); R(ctx, x + 1, y + 4, 4, 1, LF[2]);
+      R(ctx, x + 3, y + 2, 1, 2, WA[2]); R(ctx, x + 1, y + 5, 4, 1, 'rgba(20,54,94,0.4)');
+      if (i % 2 === 0) { R(ctx, x + 1, y + 1, 2, 2, '#f6a3c7'); R(ctx, x + 1, y + 1, 1, 1, '#ffffff'); R(ctx, x + 2, y + 2, 1, 1, '#fee761'); }
+    });
+    // Sazlar (kumda kök salar)
+    [[3, 30], [4, 46], [LW - 5, 36], [60, 2], [62, LH - 3], [7, 60], [LW - 6, 54], [100, LH - 3]].forEach(([x, y]) => {
+      R(ctx, x, y - 4, 1, 5, LF[2]); R(ctx, x + 1, y - 6, 1, 7, LF[4]); R(ctx, x + 2, y - 3, 1, 4, LF[2]);
+      R(ctx, x + 1, y - 8, 1, 3, PAL.wood[2]); R(ctx, x + 1, y - 8, 1, 1, PAL.wood[4]);
+    });
+    // Kumda çakıllar
+    [[10, 8], [LW - 14, 9], [16, LH - 5], [LW - 22, LH - 4], [54, 1]].forEach(([x, y]) => { R(ctx, x, y, 2, 1, PAL.stone[4]); R(ctx, x, y + 1, 2, 1, DI[3]); });
   });
-  // Terk edilmiş ev: çökmüş çatı, tahtalı pencere
+  // Terk edilmiş ev: çökmüş çatı, tahtalı pencere, sarmaşık
   addCanvas(scene, 'ruins', 48, 44, (ctx) => {
-    R(ctx, 4, 18, 40, 24, '#9a8a68'); for (let y = 20; y < 42; y += 4) R(ctx, 4, y, 40, 1, '#837456');
-    for (let i = 0; i < 16; i++) { const w = 4 + i * 2.8; R(ctx, 22 - i * 1.4, 2 + i, w * (i > 8 ? 0.55 : 1), 1, i % 3 ? '#5a5568' : '#4a4658'); }
-    R(ctx, 30, 10, 14, 8, '#2a2630'); R(ctx, 32, 12, 2, 6, '#6b4a2f'); R(ctx, 38, 9, 2, 9, '#6b4a2f');
-    R(ctx, 20, 30, 8, 12, '#2a1f1a'); R(ctx, 21, 31, 3, 11, '#4a2f1f');
-    R(ctx, 8, 24, 8, 7, '#2a2630'); R(ctx, 7, 25, 10, 2, '#8a5a3a'); R(ctx, 7, 29, 10, 1, '#6b4429');
-    R(ctx, 32, 24, 8, 7, '#556070'); R(ctx, 33, 25, 3, 2, '#9fb0c0'); R(ctx, 36, 27, 1, 3, '#2a2630');
-    R(ctx, 4, 34, 3, 8, '#5d7a3a'); R(ctx, 40, 32, 4, 10, '#5d7a3a'); R(ctx, 5, 32, 2, 2, '#6f9a45'); R(ctx, 41, 30, 2, 3, '#6f9a45');
-    R(ctx, 12, 40, 6, 2, '#6b4429'); R(ctx, 30, 41, 7, 1, '#6b4429');
+    const ST = PAL.stone, WD = PAL.wood;
+    R(ctx, 4, 18, 40, 24, '#9a8a68'); for (let y = 21; y < 42; y += 4) R(ctx, 4, y, 40, 1, '#7d6f52');
+    R(ctx, 4, 18, 1, 24, '#b0a07a'); R(ctx, 41, 18, 3, 24, '#7d6f52'); R(ctx, 4, 18, 40, 2, 'rgba(24,20,37,0.35)');
+    [[10, 22], [26, 34], [36, 20], [14, 37]].forEach(([x, y]) => { R(ctx, x, y, 3, 1, '#6a5c42'); R(ctx, x + 1, y + 1, 1, 1, '#6a5c42'); }); // çatlaklar
+    for (let i = 0; i < 16; i++) {
+      const w = (4 + i * 2.8) * (i > 8 ? 0.55 : 1), x = 22 - i * 1.4;
+      R(ctx, x, 2 + i, w, 1, i % 3 === 2 ? ST[1] : ST[2]); R(ctx, x, 2 + i, 2, 1, ST[3]);
+    }
+    R(ctx, 30, 10, 14, 8, '#1f1a24'); R(ctx, 32, 12, 2, 6, WD[2]); R(ctx, 38, 9, 2, 9, WD[2]); R(ctx, 38, 9, 1, 9, WD[3]); // açık çatı kirişleri
+    R(ctx, 19, 29, 10, 13, '#2a1f1a'); R(ctx, 20, 30, 3, 12, WD[2]); R(ctx, 20, 30, 1, 12, WD[3]);
+    R(ctx, 8, 24, 8, 7, '#1f1a24'); R(ctx, 7, 25, 10, 2, WD[3]); R(ctx, 7, 25, 10, 1, WD[4]); R(ctx, 7, 28, 10, 2, WD[2]); R(ctx, 7, 28, 10, 1, WD[3]);
+    R(ctx, 32, 24, 8, 7, ST[2]); R(ctx, 33, 25, 3, 2, ST[5]); R(ctx, 36, 27, 1, 3, '#1f1a24'); R(ctx, 37, 26, 1, 1, '#1f1a24');
+    // Sarmaşık ve otlar
+    [[4, 32, 3, 10], [40, 30, 4, 12], [16, 18, 2, 6]].forEach(([x, y, w, h]) => { R(ctx, x, y, w, h, LF[2]); R(ctx, x, y, 1, h, LF[3]); R(ctx, x + 1, y - 2, w - 1, 2, LF[4]); });
+    R(ctx, 12, 40, 6, 2, WD[2]); R(ctx, 30, 41, 7, 1, WD[2]);
+    outline(ctx, 0, 0, 48, 44);
   });
   const chest = (key, open) => addCanvas(scene, key, 16, 16, (ctx) => {
-    R(ctx, 2, 7, 12, 8, '#7a4a28'); R(ctx, 2, 7, 12, 1, '#a8693a'); R(ctx, 2, 14, 12, 1, '#4f2f18');
-    R(ctx, 2, 10, 12, 1, '#c9a443');
-    if (open) { R(ctx, 2, 2, 12, 4, '#8a5530'); R(ctx, 2, 2, 12, 1, '#a8693a'); R(ctx, 3, 6, 10, 1, '#2a1a10'); }
-    else { R(ctx, 2, 4, 12, 4, '#8a5530'); R(ctx, 2, 4, 12, 1, '#b57a45'); R(ctx, 7, 7, 2, 3, '#e8c867'); R(ctx, 3, 6, 1, 1, '#ffe8a3'); }
+    R(ctx, 2, 7, 12, 8, '#7a4a28'); R(ctx, 2, 7, 12, 1, '#a8693a'); R(ctx, 2, 14, 12, 1, '#4f2f18'); R(ctx, 13, 7, 1, 8, '#5e3a20');
+    R(ctx, 2, 10, 12, 1, '#c9a443'); R(ctx, 2, 7, 1, 8, '#c9a443'); R(ctx, 13, 7, 1, 8, '#a8862f');
+    if (open) { R(ctx, 2, 2, 12, 4, '#8a5530'); R(ctx, 2, 2, 12, 1, '#a8693a'); R(ctx, 3, 6, 10, 1, '#2a1a10'); R(ctx, 4, 7, 3, 1, '#fee761'); }
+    else { R(ctx, 2, 4, 12, 4, '#8a5530'); R(ctx, 2, 4, 12, 1, '#b57a45'); R(ctx, 7, 7, 2, 3, '#e8c867'); R(ctx, 7, 7, 1, 1, '#fff3c0'); R(ctx, 3, 5, 1, 1, '#ffe8a3'); }
+    outline(ctx, 0, 0, 16, 16);
+    dropShadow(ctx, 8, 15, 6, 0, 0.3);
   });
   chest('chest', false); chest('chest_open', true);
-  addCanvas(scene, 'debris', 16, 12, (ctx) => { R(ctx, 1, 6, 12, 2, '#8a5a3a'); R(ctx, 4, 3, 2, 8, '#6b4429'); R(ctx, 9, 8, 6, 2, '#a87048'); R(ctx, 2, 10, 4, 1, '#c8c8d0'); });
-  addCanvas(scene, 'rubble', 16, 12, (ctx) => { R(ctx, 2, 6, 5, 4, '#7d808a'); R(ctx, 8, 7, 6, 3, '#6f717b'); R(ctx, 5, 4, 4, 3, '#a2a6b0'); R(ctx, 10, 5, 2, 2, '#8d8f99'); });
-  // Çiçek ve çalı süsleri
-  const fl = [['#f2e86d', '#e8792b'], ['#e86d9a', '#f5f5f5'], ['#9ab8ff', '#f5f5f5']];
+  addCanvas(scene, 'debris', 16, 12, (ctx) => {
+    R(ctx, 1, 6, 12, 2, '#8a5a3a'); R(ctx, 1, 6, 12, 1, '#a87048'); R(ctx, 4, 3, 2, 8, '#6b4429'); R(ctx, 4, 3, 1, 8, '#8a5a3a');
+    R(ctx, 9, 8, 6, 2, '#a87048'); R(ctx, 9, 8, 6, 1, '#c9905e'); R(ctx, 2, 10, 4, 1, '#c8c8d0');
+    outline(ctx, 0, 0, 16, 12);
+  });
+  addCanvas(scene, 'rubble', 16, 12, (ctx) => {
+    const ST = PAL.stone;
+    R(ctx, 2, 6, 5, 4, ST[3]); R(ctx, 2, 6, 5, 1, ST[4]); R(ctx, 8, 7, 6, 3, ST[2]); R(ctx, 8, 7, 6, 1, ST[4]);
+    R(ctx, 5, 4, 4, 3, ST[4]); R(ctx, 5, 4, 3, 1, ST[5]); R(ctx, 10, 5, 2, 2, ST[3]);
+    outline(ctx, 0, 0, 16, 12);
+  });
+  // Çiçek ve çalı süsleri: dört taç yapraklı çiçekler, yaprak ve gövdeyle
+  const fl = [[PAL.flower[0], PAL.flower[1]], [PAL.flower[3], '#ffffff'], [PAL.flower[6], '#ffffff']];
   fl.forEach(([a, b], i) => addCanvas(scene, `flower_${i}`, 16, 16, (ctx) => {
-    [[3, 8], [8, 5], [11, 10], [6, 11]].forEach(([x, y], k) => { R(ctx, x, y + 1, 1, 3, '#3f7a34'); R(ctx, x - 1, y, 3, 1, k % 2 ? b : a); R(ctx, x, y - 1, 1, 3, k % 2 ? b : a); R(ctx, x, y, 1, 1, '#ffd166'); });
+    [[3, 8], [8, 5], [11, 10], [6, 11]].forEach(([x, y], k) => {
+      const c = k % 2 ? b : a;
+      R(ctx, x, y + 1, 1, 4, LF[2]); R(ctx, x + 1, y + 3, 1, 1, LF[4]); R(ctx, x - 1, y + 2, 1, 1, LF[3]);
+      R(ctx, x - 1, y, 3, 1, c); R(ctx, x, y - 1, 1, 3, c); R(ctx, x - 1, y - 1, 1, 1, shade(c, 1.25)); R(ctx, x + 1, y + 1, 1, 1, shade(c, 0.75));
+      R(ctx, x, y, 1, 1, c === PAL.flower[0] ? PAL.flower[1] : PAL.flower[0]);
+    });
   }));
-  addCanvas(scene, 'flower_3', 16, 16, (ctx) => { R(ctx, 3, 8, 10, 6, '#3f7a34'); R(ctx, 5, 6, 6, 3, '#4f8f41'); R(ctx, 4, 9, 3, 2, '#5ea84e'); R(ctx, 9, 7, 2, 2, '#5ea84e'); });
+  addCanvas(scene, 'flower_3', 16, 16, (ctx) => {
+    const m = (x, y) => [[8, 11, 4.4], [5, 12, 2.8], [11, 12, 2.8], [7, 9, 2.6]].some(([cx, cy, r]) => (x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 <= r * r) && y < 15;
+    litFill(ctx, 16, 15, m, 5, 8, 8, [LF[1], LF[2], LF[3], LF[4], LF[5]], -0.1);
+    outline(ctx, 0, 0, 16, 16, '#132a22');
+    dropShadow(ctx, 8, 15, 5, 0, 0.28);
+  });
   // Yabani ürünler (dünyada)
   addCanvas(scene, 'f_mushroom', 16, 16, (ctx) => {
-    R(ctx, 4, 10, 2, 4, '#efe6d2'); R(ctx, 2, 7, 6, 3, '#d94f4f'); R(ctx, 3, 6, 4, 1, '#d94f4f'); R(ctx, 3, 8, 1, 1, '#fff'); R(ctx, 6, 7, 1, 1, '#fff');
-    R(ctx, 10, 11, 2, 3, '#efe6d2'); R(ctx, 8, 9, 6, 2, '#c98b3a'); R(ctx, 9, 8, 4, 1, '#c98b3a'); R(ctx, 10, 9, 1, 1, '#f2d29b');
-    R(ctx, 1, 14, 14, 1, 'rgba(0,0,0,0.2)');
+    R(ctx, 4, 10, 2, 4, '#efe6d2'); R(ctx, 5, 10, 1, 4, '#cfc4ae'); R(ctx, 2, 7, 6, 3, '#d94f4f'); R(ctx, 3, 6, 4, 1, '#d94f4f'); R(ctx, 3, 6, 2, 1, '#f07a6a'); R(ctx, 3, 8, 1, 1, '#fff'); R(ctx, 6, 7, 1, 1, '#fff'); R(ctx, 2, 9, 6, 1, '#a8323b');
+    R(ctx, 10, 11, 2, 3, '#efe6d2'); R(ctx, 8, 9, 6, 2, '#c98b3a'); R(ctx, 9, 8, 4, 1, '#c98b3a'); R(ctx, 9, 8, 2, 1, '#e0ab5e'); R(ctx, 10, 9, 1, 1, '#f2d29b');
+    outline(ctx, 0, 0, 16, 16);
+    dropShadow(ctx, 8, 14, 6, 0, 0.25);
   });
   addCanvas(scene, 'f_berry', 16, 16, (ctx) => {
-    R(ctx, 2, 6, 12, 8, '#2f6f3a'); R(ctx, 4, 4, 8, 3, '#2f6f3a'); R(ctx, 3, 6, 4, 3, '#3f8f4a'); R(ctx, 9, 5, 3, 2, '#3f8f4a');
-    [[4, 9], [7, 7], [10, 10], [11, 7], [6, 12], [8, 10]].forEach(([x, y]) => { R(ctx, x, y, 2, 2, '#3a1f5a'); R(ctx, x, y, 1, 1, '#7b4fa0'); });
-    R(ctx, 2, 14, 12, 1, 'rgba(0,0,0,0.2)');
+    const m = (x, y) => [[8, 9.5, 5.2], [5, 10.5, 3.6], [11, 10.5, 3.6], [8, 6.5, 3.6]].some(([cx, cy, r]) => (x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 <= r * r) && y < 14;
+    litFill(ctx, 16, 14, m, 5, 5, 10, [LF[0], LF[1], LF[2], LF[3], LF[4]], -0.2);
+    [[4, 9], [7, 7], [10, 10], [11, 7], [6, 11], [8, 10]].forEach(([x, y]) => { R(ctx, x, y, 2, 2, '#3a1f5a'); R(ctx, x, y, 1, 1, '#a868d0'); });
+    outline(ctx, 0, 0, 16, 16, '#132a22');
+    dropShadow(ctx, 8, 14, 6, 0, 0.28);
   });
   // Hava efektleri
   addCanvas(scene, 'fx_rain', 1, 6, (ctx) => { R(ctx, 0, 0, 1, 2, 'rgba(200,225,255,0.35)'); R(ctx, 0, 2, 1, 4, 'rgba(210,232,255,0.85)'); });
@@ -527,6 +581,7 @@ function applySeason(scene) {
   const st = scene._world, fx = SEASON_FX[scene.timeSys.season] || SEASON_FX.spring;
   st.seasonRect.setFillStyle(fx.color, fx.alpha);
   scene.resources.getChildren().forEach((r) => { if (r.kind === 'tree') { if (fx.tree === 0xffffff) r.clearTint(); else r.setTint(fx.tree); } });
+  scene.decorBushes?.forEach((b) => { if (fx.tree === 0xffffff) b.clearTint(); else b.setTint(fx.tree); });
   renderBadge(scene);
 }
 

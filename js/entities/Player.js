@@ -31,6 +31,11 @@ export class Player extends Actor {
     this.actionCd = Math.max(0, this.actionCd - dt);
     this.rollCd = Math.max(0, this.rollCd - dt);
     if (!this.alive) return;
+    // Erken basılan yuvarlanma kısa süre tamponda bekler, bekleme bitince kendiliğinden çıkar
+    if (this.dodgeBuf > 0) {
+      this.dodgeBuf -= dt;
+      if (this.rollT <= 0 && this.rollCd <= 0 && !blocked) { this.dodgeBuf = 0; this.dodge(); }
+    }
     if (blocked) { this.rollT = 0; this.halt(); return; }
     let vx = 0, vy = 0;
     if (keys.left.isDown || keys.a.isDown) vx -= 1;
@@ -69,8 +74,11 @@ export class Player extends Actor {
 
   // Kaçış yuvarlanması: hareket yönüne (yoksa bakılan yöne) kısa atılma + dokunulmazlık
   dodge() {
-    if (!this.alive || this.rollT > 0) return false;
-    if (this.rollCd > 0) return false;
+    if (!this.alive) return false;
+    if (this.rollT > 0 || this.rollCd > 0) {
+      if (this.rollCd < 0.25) this.dodgeBuf = 0.25;
+      return false;
+    }
     if (!this.useEnergy(DODGE.energy)) return false;
     const d = this.moveInput.lengthSq() > 0 ? this.moveInput.clone().normalize() : this.facing.clone().normalize();
     if (d.lengthSq() === 0) d.set(this.flipX ? -1 : 1, 0);
@@ -86,6 +94,15 @@ export class Player extends Actor {
     this.scene.tweens.add({
       targets: this, angle: 360 * dir, duration: DODGE.time * 1000, ease: 'Sine.easeOut',
       onComplete: () => { if (this.alive) this.setAngle(0); }
+    });
+    // Hayalet izi: yuvarlanmanın gerçekleştiği ve dokunulmazlığın sürdüğü belli olsun
+    this.scene.time.addEvent({
+      delay: 45, repeat: 3, callback: () => {
+        if (!this.active) return;
+        const g = this.scene.add.image(this.x, this.y, this.texture.key, this.frame.name)
+          .setFlipX(this.flipX).setAngle(this.angle).setDepth(this.depth - 1).setTint(0x9ecbff).setAlpha(0.45);
+        this.scene.tweens.add({ targets: g, alpha: 0, duration: 220, onComplete: () => g.destroy() });
+      }
     });
     audio.noise({ dur: 0.12, vol: 0.18, freq: 1200 });
     this.scene.events.emit('playerDodge', { x: this.x, y: this.y, dx: d.x, dy: d.y });
@@ -114,8 +131,11 @@ export class Player extends Actor {
 
   takeDamage(n, source) {
     if (!this.alive || this.invuln > 0) return;
-    this.hp -= n * (this.dmgTakenMul ?? 1); // yemek güçlendirmesiyle azalabilir
+    const dmg = n * (this.dmgTakenMul ?? 1); // yemek güçlendirmesiyle azalabilir
+    this.hp -= dmg;
     this.invuln = 0.5;
+    // Yönlü kenar kızarması için (combat dinler)
+    this.scene.events.emit('playerHurt', { dmg, x: source?.x ?? this.x, y: source?.y ?? this.y });
     this.flash(0xff4444);
     if (source) this.knockback(source.x, source.y, 140);
     this.scene.cameras.main.shake(100, 0.004);

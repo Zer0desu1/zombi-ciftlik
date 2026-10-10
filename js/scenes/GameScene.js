@@ -398,8 +398,9 @@ export class GameScene extends Phaser.Scene {
     const ox = Math.floor(v.x) - 4, oy = Math.floor(v.y) - 4;
     this.dark.setVisible(true).setPosition(ox, oy);
     this.dark.clear();
-    if (a < 0.12) { this.dark.fill(0xff7b39, tint * 0.4); return; }
-    this.dark.fill(0x070b22, a);
+    // Lacivert + turuncu her iki dalda aynı sırayla: 0.12 eşiğinde renk sıçraması olmaz
+    if (a < 0.12) { this.dark.fill(0x070b22, a); this.dark.fill(0xff7b39, tint * 0.4); return; }
+    this.dark.fill(0x070b22, a); if (tint > 0.02) this.dark.fill(0xff7b39, tint * 0.4);
     const light = (x, y, r) => {
       if (x + r < ox || y + r < oy || x - r > ox + this.dark.width || y - r > oy + this.dark.height) return;
       this.lightStamp.setScale((r * 2) / 128);

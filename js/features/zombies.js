@@ -16,6 +16,7 @@ RECIPES.push({ out: 'turret', qty: 1, cost: { rare_core: 1, scrap: 4 } });
 // Hangi dalgadan itibaren görülür (rehber için)
 const FROM_WAVE = { normal: 1, runner: 2, brute: 3, bloater: 3, spitter: 4, armored: 6, boss: 5 };
 const LOOT_MAX = 60, MAGNET = 24, LOOT_LIFE = 90;
+const OFF_MAX = 5, OFF_FEW = 5; // ekran dışı işaretçi sayısı / "az kaldı" eşiği
 
 const isBloodNight = (w) => w % 7 === 0 || (w >= 3 && Math.random() < 0.1);
 
@@ -111,6 +112,15 @@ const CSS = `
 @keyframes zbIn { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }
 @keyframes zbPulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
 .zb-arrow.n.show, .zb-arrow.s.show { animation: zbPulse 1s ease-in-out infinite; }
+.zb-off { position: absolute; left: 0; top: 0; width: 34px; height: 34px; margin: -17px 0 0 -17px; display: none; pointer-events: none;
+  align-items: center; justify-content: center; }
+.zb-off.show { display: flex; }
+.zb-off i { position: absolute; inset: 0; font-style: normal; display: flex; align-items: center; justify-content: center; }
+.zb-off i::before { content: ''; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 13px solid #ff4a3a;
+  transform: translateY(-19px); filter: drop-shadow(0 0 4px rgba(255,40,40,.9)) drop-shadow(0 1px 1px #000); }
+.zb-off b { font-size: 10px; font-weight: 700; color: #ffd0d0; text-shadow: 0 1px 2px #000, 0 0 3px #000; white-space: nowrap; }
+.zb-off.boss i::before { border-bottom-color: #ff9a3a; }
+body.modal-open .zb-off { display: none; }
 `;
 
 function hudBottom() {
@@ -137,8 +147,45 @@ function buildUI(scene) {
   const boss = el('div', 'zb-boss zb-ui', '<div class="zb-bname">👑 Mezar Bekçisi</div><div class="zb-bbar"><i></i></div>');
   const arrows = ['n', 's', 'w', 'e'].map((c, i) =>
     el('div', `zb-arrow ${c} zb-ui`, `${['▲', '▼', '◀', '▶'][i]}<small>${SIDE_NAMES[i]}</small>`));
-  [card, boss, ...arrows].forEach((n) => layer.appendChild(n));
-  return { card, boss, bossFill: boss.querySelector('i'), arrows };
+  const off = Array.from({ length: OFF_MAX }, () => el('div', 'zb-off zb-ui', '<i></i><b></b>'));
+  [card, boss, ...arrows, ...off].forEach((n) => layer.appendChild(n));
+  return { card, boss, bossFill: boss.querySelector('i'), arrows, off: off.map((n) => ({ n, arrow: n.querySelector('i'), lbl: n.querySelector('b'), on: false, key: '' })) };
+}
+
+// ---------- Ekran dışı zombi işaretçileri ----------
+// Az zombi kaldığında (ya da patron ekran dışındaysa) ekran kenarında yön oku + mesafe: "son zombiyi bulamıyorum" derdine çare
+function updateOffscreen(scene) {
+  const st = scene.zst, ui = st.ui, w = scene.waves, p = scene.player;
+  const zs = w.active && p.alive ? scene.zombies.getChildren().filter((z) => z.active && !z.dead) : [];
+  const few = w.toSpawn <= 0 && zs.length <= OFF_FEW;
+  const cam = scene.cameras.main, wv = cam.worldView;
+  const rect = scene.game.canvas.getBoundingClientRect();
+  const list = [];
+  for (const z of zs) {
+    if (!few && !z.isBoss) continue;
+    if (z.x > wv.x && z.x < wv.right && z.y > wv.y && z.y < wv.bottom) continue;
+    list.push({ z, d: Phaser.Math.Distance.Between(p.x, p.y, z.x, z.y) });
+  }
+  list.sort((a, b) => a.d - b.d);
+  if (few && zs.length && list.length && !st.offHinted) {
+    st.offHinted = true;
+    scene.hud.toast(`Son ${zs.length} zombi! Kırmızı oklar yerlerini gösteriyor.`, 'info');
+  }
+  const m = 36, cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+  ui.off.forEach((o, i) => {
+    const it = list[i];
+    if (!it) { if (o.on) { o.on = false; o.n.classList.remove('show'); } return; }
+    const sx = rect.left + ((it.z.x - wv.x) / wv.width) * rect.width;
+    const sy = rect.top + ((it.z.y - wv.y) / wv.height) * rect.height;
+    const dx = sx - cx, dy = sy - cy;
+    // Ekran merkezinden hedefe giden ışının kenar kutusuyla kesişimi
+    const k = Math.min((rect.width / 2 - m) / Math.max(1e-3, Math.abs(dx)), (rect.height / 2 - m) / Math.max(1e-3, Math.abs(dy)));
+    o.n.style.transform = `translate(${Math.round(cx + dx * k)}px, ${Math.round(cy + dy * k)}px)`;
+    o.arrow.style.transform = `rotate(${Math.round(Math.atan2(dx, -dy) * 180 / Math.PI)}deg)`;
+    const key = `${Math.round(it.d / 16)}m${it.z.isBoss ? 'b' : ''}`;
+    if (key !== o.key) { o.key = key; o.lbl.textContent = `${Math.round(it.d / 16)}m`; o.n.classList.toggle('boss', !!it.z.isBoss); }
+    if (!o.on) { o.on = true; o.n.classList.add('show'); }
+  });
 }
 
 function placeTop(ui) {
@@ -189,6 +236,7 @@ function openCodex(scene) {
   else head += '<div style="opacity:.8;margin-top:3px">Keşif raporu saat 19:00\'da gelir.</div>';
   head += `<div style="margin-top:4px;opacity:.85">🩸 ${next?.blood ? 'Bu gece Kanlı Ay! Zombiler 1.5×, ganimet 2×.' : `Kanlı Ay'a en geç ${toBlood === 7 && !w.active ? 7 : toBlood} gece (bazen habersiz gelir).`}</div>`;
   head += `<div style="margin-top:4px;opacity:.75">🎒 Zombiler para, hurda, mermi ve nadiren 💜 Nadir Çekirdek düşürür. Yaklaşınca kendiliğinden toplanır.</div>`;
+  head += `<div style="margin-top:4px;opacity:.75">⚠ Kırmızı parlayan zombi ısırmak üzere: yuvarlan ya da önce sen vur. 3. geceden itibaren bazıları tarlana ve hayvanlarına, iri zombiler sığınağa yüklenir.</div>`;
   wrap.appendChild(el('div', `zb-head${next?.blood ? ' blood' : ''}`, head));
   for (const k of KIND_ORDER) {
     const d = ZOMBIE_TYPES[k];
@@ -338,6 +386,7 @@ export default {
       });
       showPreview(scene, plan);
       st.hideArrowsAt = scene.time.now + 15000;
+      st.offHinted = false; st.trampleWarned = false;
       if (plan.blood) {
         st.bloodNights++;
         scene.time.delayedCall(3300, () => {
@@ -373,6 +422,12 @@ export default {
       scene.cameras.main.shake(400, 0.006);
     };
     ev.on('bossSpawned', onBoss);
+    // Yağmacılar ekin çiğneyince bir kez uyar (gece başına)
+    ev.on('cropTrampled', () => {
+      if (st.trampleWarned) return;
+      st.trampleWarned = true;
+      scene.hud.toast('🌱 Zombiler tarlanı çiğniyor! Ekinlerini koru.', 'warn');
+    });
     ev.once('shutdown', () => {
       ev.off('bossSpawned', onBoss);
       document.querySelectorAll('.zb-ui').forEach((n) => n.remove());
@@ -392,6 +447,7 @@ export default {
     updateZombieFx(scene, dt);
     updateLoot(scene, dt);
     updateBloodOverlay(scene, dt);
+    updateOffscreen(scene);
 
     // Önizleme kontrolü (yarım saniyede bir)
     st.checkT -= dt;

@@ -1,7 +1,8 @@
 // 'juice' özellik modülü — his, ses ve görsel cila. Sözleşme için registry.js'e bak.
 // Hasar sayıları, hit-stop, vuruş kıvılcımı, ölüm lekesi, ayak tozu, hasat uçuşu,
 // ortam sesleri + müzik yoğunluğu, dalga vinyeti, mini harita (N), ağaç sallanması,
-// gece ışık parıltısı/ateş böcekleri, su parıltısı ve otomatik düşük efekt modu (scene.lowFx).
+// gece ışık parıltısı/ateş böcekleri/sis, kelebek/yaprak, yağmur sıçraması, ölümde parçalanma,
+// havuzlu parçacıklar (en fazla 200, mobilde 100), su parıltısı ve otomatik düşük efekt modu (scene.lowFx).
 import { TILE, MAP_W, MAP_H, ITEMS } from '../config.js';
 import { audio } from '../audio.js';
 import { Zombie } from '../entities/Zombie.js';
@@ -80,6 +81,17 @@ function makeTextures(scene) {
   }
   addCanvas(scene, 'fx_firefly', 3, 3, (ctx) => { R(ctx, 1, 0, 1, 3, 'rgba(230,255,140,0.6)'); R(ctx, 0, 1, 3, 1, 'rgba(230,255,140,0.6)'); R(ctx, 1, 1, 1, 1, '#f6ffb0'); });
   addCanvas(scene, 'fx_glint', 5, 5, (ctx) => { R(ctx, 2, 0, 1, 5, 'rgba(255,255,255,0.8)'); R(ctx, 0, 2, 5, 1, 'rgba(255,255,255,0.8)'); R(ctx, 2, 2, 1, 1, '#fff'); });
+  // Ortam: kelebek (kanat çırpışı scaleX ile), yaprak, yağmur sıçraması, gece sisi
+  [['fx_bfly0', '#ffd166'], ['fx_bfly1', '#f4f1ff'], ['fx_bfly2', '#ff9ec7']].forEach(([key, col]) => addCanvas(scene, key, 5, 3, (ctx) => {
+    R(ctx, 0, 0, 2, 2, col); R(ctx, 3, 0, 2, 2, col); R(ctx, 2, 1, 1, 2, '#3a2a1a'); R(ctx, 1, 2, 1, 1, col); R(ctx, 3, 2, 1, 1, col);
+  }));
+  addCanvas(scene, 'fx_leaf', 3, 2, (ctx) => { R(ctx, 0, 0, 2, 1, '#fff'); R(ctx, 1, 1, 2, 1, '#fff'); });
+  addCanvas(scene, 'fx_drop', 7, 3, (ctx) => { R(ctx, 1, 0, 5, 1, 'rgba(210,232,255,0.8)'); R(ctx, 0, 1, 1, 1, 'rgba(210,232,255,0.6)'); R(ctx, 6, 1, 1, 1, 'rgba(210,232,255,0.6)'); R(ctx, 1, 2, 5, 1, 'rgba(210,232,255,0.4)'); });
+  addCanvas(scene, 'fx_mist', 48, 16, (ctx) => {
+    const g = ctx.createRadialGradient(24, 24, 1, 24, 24, 24); // ölçeklenmiş (48x48 → 48x16) uzayda
+    g.addColorStop(0, 'rgba(200,215,240,0.9)'); g.addColorStop(1, 'rgba(200,215,240,0)');
+    ctx.save(); ctx.scale(1, 16 / 48); ctx.fillStyle = g; ctx.fillRect(0, 0, 48, 48); ctx.restore();
+  });
 }
 
 // Ağaç sallanması: mevcut 'tree' dokusundan tepe satırları 1px kaydırılmış iki varyant (piksel-dostu)
@@ -144,6 +156,144 @@ function weatherRain(scene) {
   return 0;
 }
 
+// ---------------- Parçacık havuzu ----------------
+// Tüm geçici parçacıklar (scene.spawnParticles dahil) buradan geçer: her parçacık için yeni nesne + tween
+// yaratmak kalabalık gecelerde mobilde GC takılması yapıyordu. Nesneler yok edilmez, gizlenip yeniden kullanılır.
+const partCap = () => (isTouch() || lowFx() ? 100 : 200);
+
+// o: {color | tex, frame, crop:[x,y,w,h], flip, tint, vx, vy, g (yerçekimi), drag, spin, grow, life, fade, alpha, scale, depth}
+function part(scene, x, y, o) {
+  if (!J.parts || J.parts.length >= partCap()) return;
+  const img = !!o.tex;
+  const obj = img ? (J.imgFree.pop() || scene.add.image(0, 0, o.tex)) : (J.rectFree.pop() || scene.add.rectangle(0, 0, 2, 2, 0xffffff));
+  if (img) {
+    obj.setTexture(o.tex, o.frame).setFlipX(!!o.flip);
+    if (o.crop) obj.setCrop(...o.crop); else obj.setCrop();
+    if (o.tint != null) obj.setTint(o.tint); else obj.clearTint();
+  } else obj.setFillStyle(o.color ?? 0xffffff);
+  obj.setPosition(x, y).setVisible(true).setAlpha(o.alpha ?? 1).setScale(o.scale ?? 1).setAngle(0).setDepth(o.depth ?? 9500);
+  J.parts.push({ obj, img, vx: o.vx || 0, vy: o.vy || 0, g: o.g || 0, drag: o.drag || 0, spin: o.spin || 0, grow: o.grow || 0,
+    life: o.life, max: o.life, fade: o.fade ?? 0.4, a0: obj.alpha });
+}
+
+function updateParts(dt) {
+  if (!J.parts || performance.now() < J.stopUntil) return; // hit-stop sırasında parçacıklar da donar
+  for (let i = J.parts.length - 1; i >= 0; i--) {
+    const p = J.parts[i], o = p.obj;
+    p.life -= dt;
+    if (p.life <= 0 || !o.active) {
+      o.setVisible(false);
+      if (o.active) (p.img ? J.imgFree : J.rectFree).push(o);
+      J.parts[i] = J.parts[J.parts.length - 1]; J.parts.pop();
+      continue;
+    }
+    if (p.drag) { const k = Math.exp(-p.drag * dt); p.vx *= k; p.vy *= k; }
+    p.vy += p.g * dt;
+    o.x += p.vx * dt; o.y += p.vy * dt;
+    if (p.spin) o.angle += p.spin * dt;
+    if (p.grow) o.setScale(o.scaleX + p.grow * dt);
+    const r = p.life / p.max;
+    o.alpha = r < p.fade ? (p.a0 * r) / p.fade : p.a0;
+  }
+}
+
+// Vuruş yönünde (kaynaktan zombiye) koni şeklinde sıvı + kıvılcım
+function hitSpray(scene, z, source, crit) {
+  const src = source && source !== z && Number.isFinite(source.x) ? source : scene.player;
+  const a = Math.atan2(z.y - src.y, z.x - src.x);
+  const n = Math.ceil((crit ? 8 : 4) * (lowFx() ? 0.5 : 1));
+  for (let i = 0; i < n; i++) {
+    const aa = a + Phaser.Math.FloatBetween(-0.55, 0.55), sp = Phaser.Math.FloatBetween(70, crit ? 170 : 120);
+    part(scene, z.x, z.y - 4, {
+      color: i % 3 === 0 ? 0xffffff : 0x6b8f3a, vx: Math.cos(aa) * sp, vy: Math.sin(aa) * sp - 30,
+      g: 260, drag: 3, life: Phaser.Math.FloatBetween(0.25, 0.45), depth: z.depth + 1
+    });
+  }
+}
+
+// Ölüm: sprite dört parçaya ayrılıp savrulur (her parça kendi çeyreğinin yönünde)
+function shatter(scene, info) {
+  const fr = scene.textures.getFrame(info.key, 0);
+  if (!fr) return;
+  const w = fr.width, h = fr.height, hw = w >> 1, hh = h >> 1;
+  const sc = Math.abs(info.sx) || 1;
+  [[0, 0], [hw, 0], [0, hh], [hw, hh]].forEach(([qx, qy]) => {
+    const dx = (qx ? 1 : -1) * (info.flip ? -1 : 1);
+    part(scene, info.x, info.y, {
+      tex: info.key, frame: 0, crop: [qx, qy, qx ? w - hw : hw, qy ? h - hh : hh], flip: info.flip, tint: 0xb8d49a, scale: sc,
+      vx: dx * Phaser.Math.Between(25, 60) * sc, vy: (qy ? -20 : -70) * Phaser.Math.FloatBetween(0.7, 1.2),
+      g: 320, drag: 1.5, spin: dx * Phaser.Math.Between(160, 400), life: 0.55, fade: 0.5, depth: info.y
+    });
+  });
+}
+
+// ---------------- Ortam: kelebek, yaprak, yağmur sıçraması, gece sisi ----------------
+const LEAF_TINT = { spring: 0x8fd16a, summer: 0x5fa845, autumn: 0xe0813a };
+
+function buildAmbient(scene) {
+  J.bflies = Array.from({ length: 5 }, (_, i) => scene.add.image(0, 0, `fx_bfly${i % 3}`).setDepth(14000).setVisible(false));
+  J.mists = Array.from({ length: 5 }, () => scene.add.image(0, 0, 'fx_mist').setDepth(20002).setVisible(false));
+  J.leafT = 0; J.dropT = 0;
+}
+
+function updateAmbient(scene, dt) {
+  const ts = scene.timeSys, v = scene.cameras.main.worldView;
+  const rain = weatherRain(scene), winter = ts.season === 'winter', dark = ts.darkness;
+  const out = (o, pad) => o.x < v.x - pad || o.x > v.right + pad || o.y < v.y - pad || o.y > v.bottom + pad;
+
+  // Kelebekler: açık havada gündüz
+  const nB = dark < 0.15 && !rain && !winter && !lowFx() ? (isTouch() ? 3 : 5) : 0;
+  J.bflies.forEach((b, i) => {
+    if (i >= nB) { if (b.visible) b.setVisible(false); return; }
+    if (!b.visible || out(b, 60)) {
+      b.hx = v.x + Math.random() * v.width; b.hy = v.y + Math.random() * v.height; b.ph = Math.random() * 10;
+      b.setPosition(b.hx, b.hy).setVisible(true).setAlpha(0);
+    }
+    b.ph += dt;
+    // Gezinme merkezi yavaşça kayar; kelebek etrafında sekizler çizer
+    b.hx += Math.sin(b.ph * 0.3 + i) * 8 * dt; b.hy += Math.cos(b.ph * 0.23 + i * 2) * 5 * dt;
+    const nx = b.hx + Math.sin(b.ph * 1.3 + i) * 14, ny = b.hy + Math.sin(b.ph * 2.6 + i * 3) * 5;
+    b.setFlipX(nx < b.x).setPosition(nx, ny).setAlpha(Math.min(1, b.alpha + dt * 2));
+    b.scaleX = 0.25 + 0.75 * Math.abs(Math.sin(b.ph * 14 + i)); // kanat çırpışı
+  });
+
+  // Yapraklar ağaçlardan düşer (sonbaharda sık)
+  if (!winter && dark < 0.5 && scene.resources) {
+    J.leafT += dt * (ts.season === 'autumn' ? 2.5 : 0.5) * (lowFx() ? 0.5 : 1) * (1 + rain);
+    const trees = scene.resources.getChildren();
+    while (J.leafT >= 1 && trees.length) {
+      J.leafT--;
+      const tr = trees[(Math.random() * trees.length) | 0];
+      if (tr.kind !== 'tree' || tr.depleted || !tr.visible || out(tr, 0)) continue;
+      part(scene, tr.x + Phaser.Math.Between(-6, 6), tr.y - Phaser.Math.Between(8, 16), {
+        tex: 'fx_leaf', tint: LEAF_TINT[ts.season] ?? LEAF_TINT.summer, vx: Phaser.Math.FloatBetween(4, 14) * (1 + rain), vy: Phaser.Math.FloatBetween(9, 16),
+        spin: Phaser.Math.Between(-160, 160), life: Phaser.Math.FloatBetween(2.2, 3.4), fade: 0.3, depth: 14000
+      });
+    }
+  }
+
+  // Yağmur damlası sıçraması (kışın yağış kar olduğu için yok)
+  if (rain && !winter) {
+    J.dropT += dt * rain * (lowFx() || isTouch() ? 10 : 26);
+    while (J.dropT >= 1) {
+      J.dropT--;
+      part(scene, v.x + Math.random() * v.width, v.y + Math.random() * v.height, { tex: 'fx_drop', alpha: 0.75, scale: 0.4, grow: 3, life: 0.22, fade: 1, depth: -4 });
+    }
+  } else J.dropT = 0;
+
+  // Gece yerden yükselen ince sis (sisli havada world.js'in tam sis katmanı zaten var)
+  const nM = dark > 0.35 && scene.weather !== 'fog' && !lowFx() ? (isTouch() ? 3 : 5) : 0;
+  J.mists.forEach((m, i) => {
+    if (i >= nM) { if (m.visible) m.setVisible(false); return; }
+    if (!m.visible || out(m, 80)) {
+      m.setPosition(v.x + Math.random() * v.width, v.y + Math.random() * v.height).setVisible(true).setScale(1.5 + Math.random() * 1.5, 1 + Math.random());
+      m.sp = 3 + Math.random() * 5; m.ph = Math.random() * 6;
+    }
+    m.x += m.sp * dt; m.ph += dt;
+    m.setAlpha((0.06 + 0.04 * Math.sin(m.ph * 0.5)) * Math.min(1, (dark - 0.35) * 4));
+  });
+}
+
 // ---------------- Hasar sayıları (havuzlu) ----------------
 function buildNumPool(scene) {
   J.nums = [];
@@ -159,7 +309,7 @@ function showNum(x, y, str, color, big) {
   if (!J.nums) return;
   let n = J.nums.find((t) => t.life <= 0);
   if (!n) n = J.nums.reduce((a, b) => (a.life < b.life ? a : b)); // en eskiyi yeniden kullan
-  n.setText(str).setColor(color).setFontSize(big ? '11px' : '8px');
+  n.setText(str).setColor(color).setFontSize(big ? '13px' : '8px').setDepth(big ? 15501 : 15500);
   n.x0 = x + Phaser.Math.Between(-4, 4); n.y0 = y; n.big = big;
   n.drift = Phaser.Math.FloatBetween(-6, 6);
   n.life = NUM_LIFE;
@@ -188,12 +338,14 @@ function onZombieHit(z, dmg, source, opts) {
   const crit = !!(opts === true || opts?.crit || source?.crit || J.critTarget === z);
   J.critTarget = null;
   if (dmg > 0) J.queue.push({ target: z, x: z.x, y: z.y - 10 * (z.scaleY || 1), dmg, crit, kind: 'z' });
-  // Vuruş kıvılcımı
+  // Vuruş kıvılcımı + vuruş yönünde saçılma
   spark(scene, z.x + Phaser.Math.Between(-2, 2), z.y - 2, crit ? 0xffd166 : 0xffffff);
-  // Yakın dövüş → hit-stop
+  if (dmg > 0 && inView(scene, z.x, z.y)) hitSpray(scene, z, source, crit);
+  // Yakın dövüş → hit-stop; uzaktan kritik vuruş da kısa bir duraksama hak eder
   const p = scene.player;
   const melee = source && (source === p || source.isPlayer || source.melee);
-  if (melee && dmg > 0) hitStop(scene, isBoss(z) ? 90 : 50);
+  if (melee && dmg > 0) hitStop(scene, isBoss(z) ? 90 : crit ? 70 : 50);
+  else if (crit && dmg > 0) hitStop(scene, 35);
 }
 
 function onPlayerHit(p, dmg) {
@@ -216,16 +368,10 @@ function onZombieDeath(scene, info) {
     .setAlpha(0.85).setScale(info.boss ? 2 : info.sx).setFlipX(Math.random() < 0.5);
   s.born = scene.time.now;
   scene.tweens.add({ targets: s, alpha: 0, delay: 9000, duration: 3000, onComplete: () => s.setVisible(false) });
-  // Devrilen ceset hayaleti
-  if (!lowFx() && scene.textures.exists(info.key)) {
-    const g = scene.add.image(info.x, info.y, info.key, 0).setFlipX(info.flip).setScale(info.sx, info.sy).setDepth(info.y).setTintFill(0xffffff);
-    scene.tweens.add({ targets: g, angle: info.flip ? -90 : 90, y: info.y + 4, duration: 220, ease: 'Quad.easeIn' });
-    scene.time.delayedCall(70, () => { if (g.active) g.clearTint().setTint(0x8aa070); });
-    scene.tweens.add({ targets: g, alpha: 0, delay: 350, duration: 700, onComplete: () => g.destroy() });
-  }
+  if (!lowFx() && scene.textures.exists(info.key)) shatter(scene, info);
   scene.spawnParticles(info.x, info.y, 0x2f4a20, 4); // çekirdek zaten 12 parçacık saçıyor; koyu ton ekle
-  if (info.boss) scene.cameras.main.shake(350, 0.01);
-  else if (info.sx > 1.2) scene.cameras.main.shake(90, 0.003);
+  // Boss sarsıntısını Zombie.die zaten yapıyor; burada yalnızca iri zombiye hafif bir tık
+  if (!info.boss && info.sx > 1.2) scene.cameras.main.shake(90, 0.003);
 }
 
 function spark(scene, x, y, tint) {
@@ -646,9 +792,18 @@ export default {
     buildGlows(scene);
     J.swayOk = makeSwayTextures(scene);
 
-    // Parçacık sayısını düşük efekt modunda yarıya indir
-    const origP = scene.spawnParticles.bind(scene);
-    scene.spawnParticles = (x, y, color, n = 6) => origP(x, y, color, scene.lowFx ? Math.max(1, Math.ceil(n / 2)) : n);
+    // Çekirdek spawnParticles'ı havuza yönlendir (aynı saçılma; düşük efekt modunda yarı sayı)
+    J.parts = []; J.rectFree = []; J.imgFree = [];
+    scene.spawnParticles = (x, y, color, n = 6) => {
+      const k = scene.lowFx ? Math.max(1, Math.ceil(n / 2)) : n;
+      for (let i = 0; i < k; i++) {
+        part(scene, x, y, { color, vx: Phaser.Math.FloatBetween(-40, 40), vy: Phaser.Math.FloatBetween(-55, 12), drag: 5, life: Phaser.Math.FloatBetween(0.25, 0.5) });
+      }
+    };
+    buildAmbient(scene);
+    // Sahne 'update' olayı: parçacıklar modal/oyun sonu ekranında da sönsün (özellik update'i orada çağrılmaz)
+    const tick = (_t, d) => updateParts(Math.min(d, 50) / 1000);
+    scene.events.on('update', tick);
     // Sarsıntı ayarı (kapalıysa tüm sarsıntılar yok sayılır)
     const cam = scene.cameras.main;
     const origShake = cam.shake.bind(cam);
@@ -681,9 +836,9 @@ export default {
     // Olaylar
     const on = [];
     const listen = (name, fn) => { scene.events.on(name, fn); on.push([name, fn]); };
+    // Dalga/boss sarsıntısını zombies.js zaten yapıyor; burada üst üste eklenmez
     listen('waveStart', () => {
       vignette('wave');
-      scene.cameras.main.shake(250, 0.006);
       audio.sfx('drum');
       if (navigator.vibrate && isTouch()) { try { navigator.vibrate([40, 60, 40]); } catch { /* yok say */ } }
     });
@@ -714,8 +869,11 @@ export default {
     listen('fishCaught', () => audio.sfx('splash'));
     listen('bossSpawned', () => {
       vignette('wave');
-      scene.cameras.main.shake(400, 0.008);
-      audio.sfx('drum');
+      audio.sfx('boss');
+    });
+    listen('hordeIncoming', () => {
+      vignette('wave');
+      audio.sfx('horde');
     });
     listen('weatherChanged', () => updateSoundscape(scene));
     listen('seasonChanged', () => {
@@ -731,6 +889,7 @@ export default {
       on.forEach(([n, fn]) => scene.events.off(n, fn));
       scene.timeSys.off('dawn', dawn);
       scene.input.keyboard?.off('keydown', onKey);
+      scene.events.off('update', tick);
       J.queue = [];
       if (J.scene === scene) J.scene = null;
     });
@@ -746,6 +905,7 @@ export default {
   update(scene, dt) {
     processQueue(scene);
     updateNums(dt);
+    updateAmbient(scene, dt);
     updateMotion(scene, dt);
     updatePerf(scene, dt);
 

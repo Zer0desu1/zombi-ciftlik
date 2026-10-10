@@ -8,20 +8,44 @@ import { vibrate } from './mobileSettings.js';
 const REACH = 40;      // PlayerActions ile aynı erişim
 const JOY_R = 56;      // joystick taban yarıçapı (112px çap)
 const DEAD = 0.15;     // ölü bölge
-const REPEAT_MS = 160; // basılı tutunca tekrar aralığı
+// Basılı tutunca yoklama aralığı: asıl hız actionCd ile sınırlanır, kısa aralık bekleme biter bitmez vurdurur
+const REPEAT_MS = 50;
 const MELEE_RANGE = 140, GUN_RANGE = 200;
+
+// Nişan yardımı: 0 kapalı, 1 yumuşak, 2 güçlü (cihaza özel; combat panelinden değişir)
+const AIM_KEY = 'zombi-ciftlik-nisan';
+const AIM_CONE = [0, 20, 34]; // sürükleyerek nişanda yakalama açısı (derece)
+export const aimAssist = { level: 1 };
+try {
+  const v = Number(localStorage.getItem(AIM_KEY));
+  if (localStorage.getItem(AIM_KEY) !== null && [0, 1, 2].includes(v)) aimAssist.level = v;
+} catch { /* depolama kapalı olabilir */ }
+export function setAimAssist(level) {
+  aimAssist.level = Phaser.Math.Clamp(Math.round(level), 0, 2);
+  try { localStorage.setItem(AIM_KEY, String(aimAssist.level)); } catch { /* yoksay */ }
+}
 
 const VERBS = { hoe: 'Sür', can: 'Sula', axe: 'Kes', pickaxe: 'Kaz' };
 const TYPE_VERBS = { seed: 'Ek', weapon: 'Vur', gun: 'Ateş', food: 'Ye', place: 'Kur', tool: 'Kullan' };
 
 // ---------- Otomatik hedefleme ----------
-function nearestZombie(scene, range) {
+// En uygun zombi: yakınlık + baktığı yöne yakınlık; oyuncuya ısırık hazırlayan öne alınır.
+// dir verilirse (sürükleyerek nişan) yalnız o yönün koni içindekiler sayılır.
+function nearestZombie(scene, range, dir = null) {
   const p = scene.player;
-  let best = null, bestD = range;
+  const f = dir || p.facing || { x: 1, y: 0 };
+  const fa = Math.atan2(f.y, f.x);
+  const cone = dir ? AIM_CONE[aimAssist.level] * Math.PI / 180 : Math.PI;
+  let best = null, bestS = Infinity;
   for (const z of scene.zombies.getChildren()) {
     if (z.dead || !z.active) continue;
     const d = Phaser.Math.Distance.Between(p.x, p.y, z.x, z.y);
-    if (d < bestD) { bestD = d; best = z; }
+    if (d > range) continue;
+    const diff = Math.abs(Phaser.Math.Angle.Wrap(Math.atan2(z.y - p.y, z.x - p.x) - fa));
+    if (diff > cone) continue;
+    let s = d * (1 + diff * (dir ? 1.2 : 0.35));
+    if (z.biteTarget === p) s *= 0.6;
+    if (s < bestS) { bestS = s; best = z; }
   }
   return best;
 }
@@ -71,12 +95,18 @@ export function autoTarget(scene, aim) {
   const type = item?.type || null;
   const verb = (id && VERBS[id]) || TYPE_VERBS[type] || (item ? 'Kullan' : 'Vur');
 
-  // Sürükleyerek elle nişan (Brawl Stars tarzı)
-  if (aim) return { x: p.x + aim.x * 48, y: p.y + aim.y * 48, label: verb, kind: 'aim' };
+  const combat = !item || type === 'weapon' || type === 'gun';
+  const range = type === 'gun' ? GUN_RANGE : MELEE_RANGE;
+  // Sürükleyerek elle nişan (Brawl Stars tarzı); yardım açıksa koni içindeki zombiye yumuşakça kilitlenir
+  if (aim) {
+    const z = combat && aimAssist.level > 0 ? nearestZombie(scene, range, aim) : null;
+    if (z) return { x: z.x, y: z.y, label: verb, kind: 'zombie', z };
+    return { x: p.x + aim.x * 48, y: p.y + aim.y * 48, label: verb, kind: 'aim' };
+  }
 
-  if (!item || type === 'weapon' || type === 'gun') {
-    const z = nearestZombie(scene, type === 'gun' ? GUN_RANGE : MELEE_RANGE);
-    if (z) return { x: z.x, y: z.y, label: verb, kind: 'zombie' };
+  if (combat && aimAssist.level > 0) {
+    const z = nearestZombie(scene, range);
+    if (z) return { x: z.x, y: z.y, label: verb, kind: 'zombie', z };
   }
   if (type === 'weapon' || type === 'gun') { const f = front(p, 20); return { ...f, label: verb, kind: 'aim' }; }
   if (type === 'food') return { x: p.x, y: p.y, label: verb, kind: 'self' };

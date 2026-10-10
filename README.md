@@ -103,3 +103,11 @@ js/
 ```
 
 Oyun localStorage'a (`zombi-ciftlik-save-v1`) şu durumlarda otomatik kaydediliyor: her şafakta, gündüz her 60 saniyede bir ve K tuşuna basınca.
+
+## Testler
+```
+npm install          # playwright-core (yalnızca e2e için)
+npm test             # birim testleri (node --test)
+npm run test:e2e     # tarayıcı testleri (Chrome gerekir; CHROME_PATH ile değiştirilebilir, Phaser CDN'den yüklendiği için internet gerekir)
+npm run test:all
+```

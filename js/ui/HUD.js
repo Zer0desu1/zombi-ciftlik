@@ -25,6 +25,15 @@ export class HUD {
     document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => this.closeAll()));
     scene.inventory.onChange(() => this.refreshInventory());
     scene.events.on('questsChanged', () => this.renderQuests());
+    this.bars = ['hp', 'en', 'shelter'].map((k) => {
+      const fill = this.e[k];
+      return { fill, wrap: fill.parentNode, trail: fill.parentNode.querySelector('.trail'), v: -1 };
+    });
+    this.bannerQueue = [];
+    this.bannerUntil = 0;
+    // Sahne yeniden başlarken (restart) eski ipucu öğesi yeniden kullanılır
+    this.tip = document.getElementById('item-tip') || document.body.appendChild(Object.assign(el('div'), { id: 'item-tip' }));
+    this.tip.classList.remove('show');
     this.buildHotbar();
     this.renderQuests();
   }
@@ -40,14 +49,34 @@ export class HUD {
     this.e.day.textContent = `Gün ${t.day}`;
     this.e.phase.textContent = t.isNight ? '🌙' : (t.minutes >= 17 * 60 ? '🌇' : '☀️');
     document.body.classList.toggle('night', t.isNight);
-    this.e.hp.style.width = `${(Math.max(0, p.hp) / p.maxHp) * 100}%`;
+    const [hp, en, sh] = this.bars;
+    this.setBar(hp, (Math.max(0, p.hp) / p.maxHp) * 100, 30);
     this.e.hpTxt.textContent = Math.ceil(Math.max(0, p.hp));
-    this.e.en.style.width = `${(p.energy / p.maxEnergy) * 100}%`;
+    this.setBar(en, (p.energy / p.maxEnergy) * 100, 0);
     this.e.enTxt.textContent = Math.ceil(p.energy);
-    this.e.coins.textContent = p.coins;
+    if (String(p.coins) !== this.e.coins.textContent) {
+      const c = this.e.coins;
+      c.textContent = p.coins;
+      c.classList.remove('bump'); void c.offsetWidth; c.classList.add('bump');
+    }
     this.e.wave.textContent = s.waves.active ? `Dalga ${s.waves.wave}` : `Sonraki: ${s.waves.wave + 1}`;
     this.e.zombies.textContent = s.waves.active ? s.waves.remaining : '—';
-    this.e.shelter.style.width = `${(s.shelter.hp / s.shelter.maxHp) * 100}%`;
+    this.setBar(sh, (s.shelter.hp / s.shelter.maxHp) * 100, 30);
+  }
+
+  // Dolgu hemen, iz (trail) gecikmeli iner; artışta iz anında yetişir. low: bu yüzdenin altında nabız
+  setBar(b, pct, low) {
+    pct = Math.max(0, Math.min(100, pct || 0));
+    if (Math.abs(pct - b.v) < 0.05) return;
+    const drop = b.v >= 0 && pct < b.v;
+    b.fill.style.width = `${pct}%`;
+    if (b.trail) {
+      b.trail.style.transition = drop ? '' : 'none';
+      b.trail.style.width = `${pct}%`;
+    }
+    if (drop && b.v - pct >= 3) { b.wrap.classList.remove('hit'); void b.wrap.offsetWidth; b.wrap.classList.add('hit'); }
+    b.wrap.classList.toggle('low', pct < low && pct > 0);
+    b.v = pct;
   }
 
   // ---------- Hotbar ----------
@@ -57,6 +86,8 @@ export class HUD {
       const slot = el('div', 'slot');
       slot.dataset.i = i;
       slot.addEventListener('click', () => { this.scene.selectSlot(i); audio.sfx('click'); });
+      slot.addEventListener('mouseenter', () => this.showTip(slot, this.scene.inventory.slots[i]?.id, this.scene.inventory.slots[i]?.count));
+      slot.addEventListener('mouseleave', () => this.hideTip());
       this.e.hotbar.appendChild(slot);
     }
     this.renderHotbar();
@@ -92,6 +123,29 @@ export class HUD {
     try { hb.scrollTo({ left, behavior: 'smooth' }); } catch { hb.scrollLeft = left; }
   }
 
+  // Eşya ipucu: hedef öğenin üstünde (sığmazsa altında) yüzer; dokunmatikte CSS ile gizli
+  showTip(anchor, id, count) {
+    const d = id && ITEMS[id];
+    if (!d) { this.hideTip(); return; }
+    const stats = [];
+    if (count > 1) stats.push(`×${count}`);
+    if (d.heal) stats.push(`+${d.heal} ❤`);
+    if (d.energy) stats.push(`+${d.energy} ⚡`);
+    if (d.sell) stats.push(`${d.sell} 🪙`);
+    const t = this.tip;
+    t.innerHTML = `<b></b><div class="tt-desc"></div>${stats.length ? `<div class="tt-stats">${stats.map((x) => `<span>${x}</span>`).join('')}</div>` : ''}`;
+    t.querySelector('b').textContent = d.name;
+    t.querySelector('.tt-desc').textContent = d.desc || '';
+    const r = anchor.getBoundingClientRect(), w = t.offsetWidth, h = t.offsetHeight;
+    const left = Math.min(window.innerWidth - w - 8, Math.max(8, r.left + r.width / 2 - w / 2));
+    const top = r.top - h - 10 >= 8 ? r.top - h - 10 : r.bottom + 10;
+    t.style.left = `${left}px`;
+    t.style.top = `${top}px`;
+    t.classList.add('show');
+  }
+
+  hideTip() { this.tip.classList.remove('show'); }
+
   hint(text) {
     text = text || '';
     if (this.lastHint === text) return;
@@ -102,12 +156,32 @@ export class HUD {
 
   toast(msg, type = 'info') {
     const touch = document.body.classList.contains('is-touch');
-    const t = el('div', `toast ${type}`, touch ? touchText(msg) : msg);
+    const html = touch ? touchText(msg) : String(msg);
+    // Aynı mesaj hâlâ ekrandaysa yenisini yığmak yerine sayacını artır ve süresini uzat
+    const same = [...this.e.toasts.children].find((n) => n.dataset.msg === html && !n.classList.contains('out'));
+    if (same) {
+      same.dataset.n = Number(same.dataset.n || 1) + 1;
+      let badge = same.querySelector(':scope > .n');
+      if (!badge) { badge = el('span', 'n'); same.appendChild(badge); }
+      badge.textContent = `×${same.dataset.n}`;
+      same.classList.remove('again'); void same.offsetWidth; same.classList.add('again');
+      this.e.toasts.appendChild(same);
+      this.armToast(same);
+      return;
+    }
+    const t = el('div', `toast ${type}`);
+    t.innerHTML = `<span>${html}</span>`;
+    t.dataset.msg = html;
     this.e.toasts.appendChild(t);
-    setTimeout(() => t.classList.add('out'), 2600);
-    setTimeout(() => t.remove(), 3000);
+    this.armToast(t);
     // Dar ekranda en fazla 3 bildirim üst üste
     while (this.e.toasts.children.length > (touch ? 3 : 5)) this.e.toasts.firstChild.remove();
+  }
+
+  armToast(t) {
+    clearTimeout(t._out); clearTimeout(t._rm);
+    t._out = setTimeout(() => t.classList.add('out'), 2600);
+    t._rm = setTimeout(() => t.remove(), 3000);
   }
 
   // Aynı uyarıyı kısa sürede tekrar tekrar göstermemek için
@@ -118,11 +192,27 @@ export class HUD {
     this.toast(msg, 'warn');
   }
 
+  // Banner'lar sıraya girer (aynı anda gelen şafak + sürü temizlendi + mevsim üst üste binmesin);
+  // kuyruk uzadıkça her biri kısalır
   banner(title, sub) {
+    if (this.bannerQueue.some((q) => q[0] === title) || (this.bannerCur === title && performance.now() < this.bannerUntil)) return;
+    this.bannerQueue.push([title, sub || '']);
+    if (!this.bannerTimer) this.nextBanner();
+  }
+
+  nextBanner() {
+    const item = this.bannerQueue.shift();
+    if (!item) { this.bannerTimer = null; return; }
+    const ms = this.bannerQueue.length ? 2200 : 3200;
     const b = $('#banner');
-    b.querySelector('h2').textContent = title;
-    b.querySelector('p').textContent = sub || '';
+    b.querySelector('h2').textContent = item[0];
+    b.querySelector('p').textContent = item[1];
+    b.style.setProperty('--banner-ms', `${ms}ms`);
     b.classList.remove('show'); void b.offsetWidth; b.classList.add('show');
+    this.bannerCur = item[0];
+    this.bannerUntil = performance.now() + ms;
+    // Kuyrukta bekleyen varsa solma bitmeden sıradakine geç
+    this.bannerTimer = setTimeout(() => this.nextBanner(), this.bannerQueue.length ? ms - 300 : ms);
   }
 
   renderQuests() {
@@ -145,6 +235,7 @@ export class HUD {
 
   closeAll(silent) {
     ['inv', 'dialog', 'shop', 'feature'].forEach((k) => this.e[k].classList.remove('show'));
+    this.hideTip();
     if (this.onPanelClose) { const fn = this.onPanelClose; this.onPanelClose = null; fn(); }
     this.e.backdrop.classList.remove('show');
     document.body.classList.remove('modal-open');
@@ -182,6 +273,7 @@ export class HUD {
 
   renderInvGrid() {
     const inv = this.scene.inventory;
+    this.hideTip(); // eski düğümler siliniyor; mouseleave gelmeyecek
     this.e.invGrid.innerHTML = '';
     inv.slots.forEach((s, i) => {
       const node = el('div', `slot${i < HOTBAR_SIZE ? ' hot' : ''}${this.pickedSlot === i ? ' picked' : ''}`, this.slotHTML(s, i));
@@ -191,7 +283,8 @@ export class HUD {
         const a = this.pickedSlot; this.pickedSlot = null;
         if (a !== i) inv.swap(a, i); else this.renderInvGrid();
       });
-      node.addEventListener('mouseenter', () => this.showInfo(s));
+      node.addEventListener('mouseenter', () => { this.showInfo(s); this.showTip(node, s?.id, s?.count); });
+      node.addEventListener('mouseleave', () => this.hideTip());
       this.e.invGrid.appendChild(node);
     });
   }
@@ -214,8 +307,11 @@ export class HUD {
       const ok = inv.has(r.cost);
       const cost = Object.entries(r.cost).map(([id, n]) =>
         `<span class="cost ${inv.count(id) >= n ? '' : 'miss'}"><img src="${this.icon(id)}" alt="">${inv.count(id)}/${n}</span>`).join('');
-      const row = el('div', `recipe ${ok ? '' : 'locked'}`,
+      const row = el('div', `recipe ${ok ? 'ready' : 'locked'}`,
         `<img class="out" src="${this.icon(r.out)}" alt=""><div class="rinfo"><b>${ITEMS[r.out].name}${r.qty > 1 ? ` ×${r.qty}` : ''}</b><div>${cost}</div></div><button ${ok ? '' : 'disabled'}>Üret</button>`);
+      const out = row.querySelector('img.out');
+      out.addEventListener('mouseenter', () => this.showTip(out, r.out, r.qty));
+      out.addEventListener('mouseleave', () => this.hideTip());
       row.querySelector('button').addEventListener('click', () => {
         if (inv.craft(r)) { audio.sfx('craft'); this.toast(`${ITEMS[r.out].name} üretildi`, 'ok'); } else audio.sfx('error');
       });
@@ -315,11 +411,11 @@ export class HUD {
       inv.slots.forEach((s) => {
         if (!s || seen.has(s.id) || !ITEMS[s.id].sell) return;
         seen.add(s.id);
-        const d = ITEMS[s.id], n = inv.count(s.id);
+        const d = ITEMS[s.id], n = inv.countExact(s.id);
         const row = el('div', 'shop-row', `<img src="${this.icon(s.id)}" alt=""><div class="rinfo"><b>${d.name}</b><span class="muted">Elinde: ${n} · birimi ${d.sell}🪙</span></div><button>1 sat</button><button class="primary">Hepsi (${n * d.sell}🪙)</button>`);
         const [one, all] = row.querySelectorAll('button');
-        one.addEventListener('click', () => { if (inv.remove(s.id, 1)) p.addCoins(d.sell); });
-        all.addEventListener('click', () => { const k = inv.count(s.id); if (inv.remove(s.id, k)) p.addCoins(k * d.sell); });
+        one.addEventListener('click', () => { if (inv.countExact(s.id) > 0 && inv.remove(s.id, 1)) p.addCoins(d.sell); });
+        all.addEventListener('click', () => { const k = inv.countExact(s.id); if (k > 0 && inv.remove(s.id, k)) p.addCoins(k * d.sell); });
         list.appendChild(row);
       });
       if (!seen.size) list.innerHTML = '<p class="muted center">Satacak bir şeyin yok.</p>';
@@ -334,20 +430,24 @@ export class HUD {
     cont.style.display = hasSave ? '' : 'none';
     cont.onclick = () => { m.classList.remove('show'); onContinue(); };
     const r = records || {};
+    const rec = (v, label) => `<div class="rec"><b>${v}</b><span>${label}</span></div>`;
     $('#menu-records').innerHTML = r.runs
-      ? `🏆 En iyi puan <b>${r.bestScore}</b> · En uzun <b>${r.bestDay}. gün</b> · En yüksek <b>${r.bestWave}. dalga</b>${r.wins ? ` · Zafer <b>${r.wins}</b>` : ''}`
+      ? rec(r.bestScore, '🏆 Rekor') + rec(r.bestDay, 'En uzun gün') + rec(r.bestWave, 'En iyi dalga')
+        + (r.wins ? rec(r.wins, 'Zafer') : '') + (r.bestEndless ? rec(r.bestEndless, 'Sonsuz') : '')
       : '';
-    // Yeni oyun → zorluk seçimi
+    // Yeni oyun → zorluk seçimi (kartlar: tehlike çubukları + ödül çarpanı)
     const pick = $('#diff-pick');
     pick.innerHTML = '';
-    Object.values(DIFFICULTIES).forEach((d) => {
-      const b = el('button', d.id === 'normal' ? 'primary' : '', `<span class="d-ic">${d.icon}</span><b>${d.name}</b><small>${d.desc}</small>`);
+    Object.values(DIFFICULTIES).forEach((d, i) => {
+      const pips = [0, 1, 2].map((k) => `<i class="${k <= i ? 'on' : ''}"></i>`).join('');
+      const b = el('button', `d-${d.id}${d.id === 'normal' ? ' primary' : ''}`,
+        `<span class="d-ic">${d.icon}</span><b>${d.name}</b><span class="d-pips" aria-hidden="true">${pips}</span><small>${d.desc}</small><span class="d-rw">Puan ×${d.reward}</span>`);
       b.addEventListener('click', () => { audio.init(); m.classList.remove('show'); onNew(d.id); });
       pick.appendChild(b);
     });
     $('#btn-new').onclick = () => {
-      if (hasSave && !confirm('Mevcut kayıt silinecek. Emin misin?')) return;
-      pick.classList.toggle('show');
+      if (hasSave && !pick.classList.contains('show') && !confirm('Mevcut kayıt silinecek. Emin misin?')) return;
+      $('#btn-new').classList.toggle('open', pick.classList.toggle('show'));
     };
   }
 
@@ -359,10 +459,26 @@ export class HUD {
       ? `Kurtarma ekibi ${stats.day}. günde geldi. ${stats.wave} dalga atlatıldı, ${stats.kills} zombi öldürüldü.`
       : `${stats.day}. günde, ${stats.wave}. dalgada kasaba düştü. Öldürülen zombi: ${stats.kills}`;
     const r = stats.records || {};
-    g.querySelector('.go-score').innerHTML = `<div class="score">${stats.score ?? 0}</div><div class="muted">${stats.newBest ? '🎉 Yeni rekor!' : `Rekor: ${r.bestScore ?? 0}`} · ${DIFFICULTIES[stats.difficulty]?.name || ''}</div>`;
+    const chips = g.querySelector('.go-chips');
+    if (chips) chips.innerHTML = [[stats.day, '📅 Gün'], [stats.wave, '🌊 Dalga'], [stats.kills, '🧟 Öldürme']]
+      .map(([v, l]) => `<div><b>${v ?? 0}</b><span>${l}</span></div>`).join('');
+    g.querySelector('.go-score').innerHTML = `<div class="score">0</div>${stats.newBest ? '<div class="best">🎉 Yeni rekor!</div>' : ''}<div class="muted">${stats.newBest ? '' : `Rekor: ${r.bestScore ?? 0} · `}${DIFFICULTIES[stats.difficulty]?.name || ''}</div>`;
+    countUp(g.querySelector('.go-score .score'), stats.score ?? 0);
+    this.bannerQueue.length = 0;
     g.classList.add('show');
     g.querySelector('button').onclick = () => { g.classList.remove('show'); onRestart(); };
   }
+}
+
+// Oyun sonu puanı sıfırdan sayarak gelir (kart giriş animasyonunun ardından)
+function countUp(node, target) {
+  const t0 = performance.now() + 450, dur = 1100;
+  const step = (now) => {
+    const k = Math.min(1, Math.max(0, (now - t0) / dur));
+    node.textContent = Math.round(target * (1 - Math.pow(1 - k, 3)));
+    if (k < 1 && node.isConnected) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
 // Dokunmatikte klavye ipuçlarını buton karşılıklarına çevir ("E tuşuyla" → "✋ ile")

@@ -56,7 +56,13 @@ const ACH = [
   ['level_5', 'Usta', '⭐', 'Bir beceride 5. seviyeye ulaş.', (s, P) => Math.max(...Object.values(P.lv)), 5, 50],
   ['level_10', 'Efsane', '🌟', 'Bir beceride 10. seviyeye ulaş.', (s, P) => Math.max(...Object.values(P.lv)), 10, 200],
   ['tool_max', 'Demirci Dostu', '🔨', 'Bir aleti son seviyeye yükselt.', (s, P) => Math.max(P.tools.hoe, P.tools.can), 2, 40],
-  ['bag_max', 'Büyük Çanta', '🎒', 'Çantanı 40 slota genişlet.', (s, P) => P.bag, 2, 40]
+  ['bag_max', 'Büyük Çanta', '🎒', 'Çantanı 40 slota genişlet.', (s, P) => P.bag, 2, 40],
+  ['tower_1', 'Sinyal Umudu', '📡', 'Radyo Kulesi\'nin ilk aşamasını kur.', (s) => s.towerStage, 1, 20],
+  ['rescued', 'Kurtarıldık!', '🚁', 'Son geceyi atlat ve kurtarma ekibini karşıla.', (s) => s.rescues, 1, 300],
+  ['endless_5', 'Bitmeyen Gece', '♾️', 'Sonsuz modda 5 gece daha dayan.', (s) => s.endlessNights, 5, 250],
+  ['friend_4', 'Komşuluk', '🤝', 'Bir kasabalıyla 4 kalbe ulaş (gece yardımı açılır).', (s) => s.bestHearts, 4, 40],
+  ['friend_8', 'Can Dostu', '💖', 'Bir kasabalıyla 8 kalbe ulaş.', (s) => s.bestHearts, 8, 120],
+  ['board_10', 'İlan Ustası', '📋', '10 ilan panosu görevi tamamla.', (s) => s.boardDone, 10, 80]
 ];
 
 // Alet ve çanta yükseltmeleri
@@ -76,7 +82,7 @@ const STAT_DEFAULTS = {
   kills: 0, brutes: 0, bosses: 0, nightKills: 0, bestNightKills: 0,
   harvests: 0, grown: 0, tilled: 0, watered: 0, wood: 0, stone: 0, forage: 0,
   coinsEarned: 0, coinsSpent: 0, nights: 0, bestWave: 0, deaths: 0, streak: 0, bestStreak: 0,
-  diedTonight: false, playTime: 0
+  diedTonight: false, playTime: 0, towerStage: 0, rescues: 0, endlessNights: 0, bestHearts: 0, boardDone: 0
 };
 
 // Genel ITEMS değişiklikleri (isim/açıklama/satış/onUse) yeni oyunda geri alınabilsin diye ilk hâl
@@ -449,7 +455,8 @@ function renderStats(scene, body) {
     ['🛡️ Bayılmadan seri (şimdi)', s.streak], ['🏅 En uzun seri', s.bestStreak], ['💫 Bayılma', s.deaths],
     ['🌾 Hasat', s.harvests], ['🌱 Büyüyen ekin aşaması', s.grown], ['⛏️ Sürülen / sulanan', `${s.tilled} / ${s.watered}`],
     ['🪵 Odun', s.wood], ['🪨 Taş', s.stone], ['🍄 Toplanan', s.forage],
-    ['🪙 Kazanılan altın', s.coinsEarned], ['💸 Harcanan altın', s.coinsSpent], ['⏱️ Oynama süresi', `${Math.floor(mins / 60)} sa ${mins % 60} dk`]
+    ['🪙 Kazanılan altın', s.coinsEarned], ['💸 Harcanan altın', s.coinsSpent], ['📋 Biten ilan', s.boardDone],
+    ['♾️ Sonsuz modda gece', s.endlessNights], ['⏱️ Oynama süresi', `${Math.floor(mins / 60)} sa ${mins % 60} dk`]
   ];
   body.appendChild(el('div', 'pg-stats', rows.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('')));
 }
@@ -561,10 +568,20 @@ export default {
     const onFish = () => { st.forage++; addXP(scene, 'gather', XP.gather); };
     scene.events.on('foraged', onForage);
     scene.events.on('fishCaught', onFish);
+    // Ana hedef, sonsuz mod ve kasaba olayları (director/town modülleri yayar)
+    const bump = (k, v) => { st[k] = Math.max(st[k], v); checkAch(scene); };
+    const onTower = (n) => bump('towerStage', n);
+    const onRescued = () => { st.rescues++; checkAch(scene); };
+    const onEndless = (n) => bump('endlessNights', n);
+    const onHearts = (e) => bump('bestHearts', e?.hearts || 0);
+    const onBoard = () => { st.boardDone++; checkAch(scene); };
+    const hooks = { towerBuilt: onTower, rescued: onRescued, endlessNight: onEndless, heartsChanged: onHearts, boardTaskDone: onBoard };
+    Object.entries(hooks).forEach(([e, fn]) => scene.events.on(e, fn));
     scene.events.once('shutdown', () => {
       scene.input.keyboard?.off('keydown', onKey);
       scene.events.off('foraged', onForage);
       scene.events.off('fishCaught', onFish);
+      Object.entries(hooks).forEach(([e, fn]) => scene.events.off(e, fn));
       P.panel = null;
     });
 
