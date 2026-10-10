@@ -146,13 +146,26 @@ function makeCrops(scene) {
 // ---------- Yapılar / dünya objeleri ----------
 function makeProps(scene) {
   addCanvas(scene, 'tree', 16, 24, (ctx) => {
-    R(ctx, 6, 15, 4, 9, '#6b4a2f'); R(ctx, 6, 15, 1, 9, '#4f341f');
-    R(ctx, 2, 4, 12, 11, '#2f6f3a'); R(ctx, 4, 1, 8, 15, '#2f6f3a'); R(ctx, 1, 6, 14, 6, '#2f6f3a');
-    R(ctx, 4, 3, 5, 4, '#3f8f4a'); R(ctx, 3, 7, 4, 3, '#3f8f4a'); R(ctx, 9, 8, 3, 3, '#285c30');
+    // Gövde: koyu kenar + ışık şeridi, kökler
+    R(ctx, 6, 15, 4, 9, '#6b4a2f'); R(ctx, 6, 15, 1, 9, '#4f341f'); R(ctx, 8, 16, 1, 7, '#7d5838');
+    R(ctx, 5, 22, 1, 2, '#4f341f'); R(ctx, 10, 22, 1, 2, '#4f341f');
+    // Taç: koyu dış hat → ana yeşil → güneş alan sol üst
+    R(ctx, 2, 4, 12, 11, '#245a2e'); R(ctx, 4, 1, 8, 15, '#245a2e'); R(ctx, 1, 6, 14, 6, '#245a2e');
+    R(ctx, 3, 5, 10, 9, '#2f6f3a'); R(ctx, 5, 2, 6, 13, '#2f6f3a'); R(ctx, 2, 7, 12, 4, '#2f6f3a');
+    R(ctx, 4, 3, 5, 4, '#3f8f4a'); R(ctx, 3, 7, 4, 3, '#3f8f4a'); R(ctx, 6, 2, 3, 1, '#57a85c'); R(ctx, 4, 4, 2, 2, '#57a85c');
+    R(ctx, 9, 9, 4, 4, '#285c30'); R(ctx, 5, 12, 6, 2, '#285c30');
+    // Yaprak dokusu
+    [[7, 6], [10, 5], [5, 9], [8, 11], [11, 7], [3, 10]].forEach(([x, y]) => R(ctx, x, y, 1, 1, '#4a9a52'));
+    [[9, 12], [12, 10], [6, 13]].forEach(([x, y]) => R(ctx, x, y, 1, 1, '#1d4a25'));
   });
-  addCanvas(scene, 'stump', 16, 16, (ctx) => { R(ctx, 5, 9, 6, 5, '#6b4a2f'); R(ctx, 5, 9, 6, 2, '#c9a06b'); });
+  addCanvas(scene, 'stump', 16, 16, (ctx) => {
+    R(ctx, 5, 9, 6, 5, '#6b4a2f'); R(ctx, 5, 9, 1, 5, '#4f341f'); R(ctx, 4, 13, 1, 1, '#4f341f'); R(ctx, 11, 13, 1, 1, '#4f341f');
+    R(ctx, 5, 9, 6, 2, '#c9a06b'); R(ctx, 7, 9, 2, 1, '#a87d4c'); R(ctx, 6, 10, 4, 1, '#b8915e');
+  });
   addCanvas(scene, 'rock', 16, 16, (ctx) => {
     R(ctx, 3, 7, 10, 7, '#7d808a'); R(ctx, 5, 5, 6, 3, '#7d808a'); R(ctx, 4, 6, 4, 3, '#a2a6b0'); R(ctx, 3, 13, 10, 1, '#5a5d66');
+    R(ctx, 5, 5, 3, 1, '#c3c7cf'); R(ctx, 10, 9, 2, 3, '#6a6d77'); R(ctx, 12, 8, 1, 5, '#5a5d66'); R(ctx, 7, 10, 1, 1, '#5a5d66');
+    R(ctx, 6, 12, 2, 1, '#6a6d77'); R(ctx, 4, 9, 1, 1, '#b2b6bf');
   });
   addCanvas(scene, 'shelter', 64, 56, (ctx) => {
     R(ctx, 4, 22, 56, 32, '#8a5a3a');
@@ -192,7 +205,7 @@ function makeProps(scene) {
     R(ctx, 3, 10, 10, 5, '#5a5d66'); R(ctx, 4, 6, 8, 5, '#7d808a'); R(ctx, 5, 7, 6, 3, '#9aa3ad');
     R(ctx, 10, 7, 6, 2, '#2c2c34'); R(ctx, 7, 7, 2, 2, '#ff5a5a');
   });
-  addCanvas(scene, 'bullet', 4, 4, (ctx) => { R(ctx, 1, 0, 2, 4, '#ffd166'); R(ctx, 0, 1, 4, 2, '#ffd166'); R(ctx, 1, 1, 2, 2, '#fff'); });
+  addCanvas(scene, 'bullet', 4, 4, (ctx) => { R(ctx, 1, 0, 2, 4, 'rgba(255,209,102,0.7)'); R(ctx, 0, 1, 4, 2, 'rgba(255,209,102,0.7)'); R(ctx, 1, 1, 2, 2, '#fff'); });
   addCanvas(scene, 'px', 2, 2, (ctx) => R(ctx, 0, 0, 2, 2, '#ffffff'));
   addCanvas(scene, 'shadow', 12, 4, (ctx) => { R(ctx, 2, 0, 8, 4, 'rgba(0,0,0,0.25)'); R(ctx, 0, 1, 12, 2, 'rgba(0,0,0,0.25)'); });
   addCanvas(scene, 'cursor', 16, 16, (ctx) => {

@@ -4,6 +4,10 @@ import { T } from './Farm.js';
 
 const inRect = (x, y, r) => x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
 
+// Keşif alanları (tile koordinatları): sol altta göl, doğuda terk edilmiş ev
+export const LAKE_ZONE = { x: 3, y: 35, w: 8, h: 5 };
+export const RUINS_ZONE = { x: 55, y: 27, w: 6, h: 5 };
+
 // Dünyayı (zemin, binalar, kaynaklar) kurar. Aynı tohumla her seferinde aynı harita oluşur.
 export function buildWorld(scene) {
   const rng = new Phaser.Math.RandomDataGenerator(['zombi-ciftlik']);
@@ -70,7 +74,9 @@ export function buildWorld(scene) {
   const reserved = [
     { x: fz.x - 3, y: fz.y - 3, w: fz.w + 6, h: fz.h + 6 },
     { x: 24, y: 9, w: 34, h: 27 },
-    { x: 10, y: 25, w: 18, h: 8 }
+    { x: 10, y: 25, w: 18, h: 8 },
+    { x: LAKE_ZONE.x - 1, y: LAKE_ZONE.y - 1, w: LAKE_ZONE.w + 2, h: LAKE_ZONE.h + 2 },
+    { x: RUINS_ZONE.x - 1, y: RUINS_ZONE.y - 1, w: RUINS_ZONE.w + 2, h: RUINS_ZONE.h + 2 }
   ];
   const used = new Set();
   const place = (kind, count) => {
@@ -93,6 +99,49 @@ export function buildWorld(scene) {
   };
   place('tree', 60);
   place('rock', 32);
+
+  // --- Göl (sol alt) ---
+  const lz = LAKE_ZONE, lw = lz.w * TILE, lh = lz.h * TILE, lx = lz.x * TILE, ly = lz.y * TILE;
+  if (scene.textures.exists('lake')) scene.lakeImage = scene.add.image(lx, ly, 'lake').setOrigin(0, 0).setDepth(-9.8);
+  // Yuvarlak köşeli su gövdesi: iki görünmez blok (oyuncu kıyıda durabilir)
+  const waterBlock = (x, y, w, h) => {
+    const b = obstacles.create(x + w / 2, y + h / 2, 'px').setVisible(false);
+    b.body.setSize(w, h);
+    b.isWater = true;
+    return b;
+  };
+  waterBlock(lx + 4, ly + 14, lw - 8, lh - 28);
+  waterBlock(lx + 14, ly + 5, lw - 28, lh - 10);
+  scene.lakeRect = new Phaser.Geom.Rectangle(lx + 3, ly + 3, lw - 6, lh - 6);
+
+  // --- Terk edilmiş ev (doğu) ---
+  const rz = RUINS_ZONE;
+  const rx = (rz.x + 2) * TILE + 8, ry = rz.y * TILE + 26;
+  if (scene.textures.exists('ruins')) {
+    addBlock(rx, ry, 'ruins', 40, 18, 4, 24, 20);
+    const chest = obstacles.create((rz.x + 4) * TILE + 12, (rz.y + 3) * TILE + 10, 'chest');
+    chest.body.setSize(12, 6).setOffset(2, 9);
+    chest.setDepth(chest.y + 6);
+    scene.ruinChest = chest;
+    // Etrafta dağınık tahta ve taş parçaları (yalnızca dekor)
+    [[rz.x, rz.y + 4, 'debris'], [rz.x + 5, rz.y + 1, 'debris'], [rz.x + 1, rz.y + 4, 'rubble'], [rz.x + 5, rz.y + 4, 'rubble']]
+      .forEach(([tx, ty, key]) => scene.add.image(tx * TILE + 8, ty * TILE + 10, key).setDepth(ty * TILE));
+  }
+
+  // --- Çiçek / çalı süslemeleri (çarpışmasız) ---
+  if (scene.textures.exists('flower_0')) {
+    let n = 46, tries = 0;
+    while (n > 0 && tries++ < 2000) {
+      const tx = rng.between(1, MAP_W - 2), ty = rng.between(2, MAP_H - 2);
+      if (data[ty][tx] === T.PATH || data[ty][tx] === T.FARM || data[ty][tx] === T.STONE || used.has(`${tx},${ty}`)) continue;
+      if (inRect(tx, ty, { x: fz.x - 1, y: fz.y - 1, w: fz.w + 2, h: fz.h + 2 }) || inRect(tx, ty, reserved[3]) || inRect(tx, ty, reserved[4])) continue;
+      if (inRect(tx, ty, { x: 26, y: 12, w: 26, h: 20 })) continue; // kasaba binaları
+      used.add(`${tx},${ty}`);
+      const key = `flower_${rng.between(0, 3)}`;
+      scene.add.image(tx * TILE + rng.between(4, 12), ty * TILE + rng.between(6, 12), key).setDepth(ty * TILE - 2);
+      n--;
+    }
+  }
 
   return {
     map, layer, obstacles, resources, shelter,

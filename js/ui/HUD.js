@@ -74,11 +74,22 @@ export class HUD {
       node.innerHTML = this.slotHTML(inv.slots[i], i);
       node.classList.toggle('active', i === this.scene.selected);
     });
+    this.centerSelected();
     const cur = inv.slots[this.scene.selected];
     this.e.itemName.textContent = cur ? ITEMS[cur.id].name : '';
     this.e.itemName.classList.remove('show');
     void this.e.itemName.offsetWidth;
     if (cur) this.e.itemName.classList.add('show');
+  }
+
+  // Dar ekranda (kaydırılabilir hotbar) seçili slotu ortala
+  centerSelected() {
+    const hb = this.e.hotbar;
+    if (hb.scrollWidth <= hb.clientWidth + 2) return;
+    const node = hb.children[this.scene.selected];
+    if (!node) return;
+    const left = node.offsetLeft - (hb.clientWidth - node.offsetWidth) / 2;
+    try { hb.scrollTo({ left, behavior: 'smooth' }); } catch { hb.scrollLeft = left; }
   }
 
   hint(text) {
@@ -125,6 +136,7 @@ export class HUD {
     this.modal = name;
     this.e.backdrop.classList.add('show');
     this.e[name === 'inventory' ? 'inv' : name].classList.add('show');
+    document.body.classList.add('modal-open');
     this.modalName = name;
     this.scene.onModal(true);
   }
@@ -133,6 +145,7 @@ export class HUD {
     ['inv', 'dialog', 'shop', 'feature'].forEach((k) => this.e[k].classList.remove('show'));
     if (this.onPanelClose) { const fn = this.onPanelClose; this.onPanelClose = null; fn(); }
     this.e.backdrop.classList.remove('show');
+    document.body.classList.remove('modal-open');
     const was = this.modal;
     this.modal = null;
     this.pickedSlot = null;
@@ -182,7 +195,11 @@ export class HUD {
   }
 
   showInfo(s) {
-    if (!s) { this.e.invInfo.innerHTML = '<span class="muted">Bir eşyanın üzerine gel. Yer değiştirmek için iki slota sırayla tıkla.</span>'; return; }
+    if (!s) {
+      const touch = document.body.classList.contains('is-touch');
+      this.e.invInfo.innerHTML = `<span class="muted">${touch ? 'Bir eşyaya dokun.' : 'Bir eşyanın üzerine gel.'} Yer değiştirmek için iki slota sırayla ${touch ? 'dokun' : 'tıkla'}.</span>`;
+      return;
+    }
     const d = ITEMS[s.id];
     const extra = d.heal ? ` · +${d.heal} can, +${d.energy} enerji` : '';
     this.e.invInfo.innerHTML = `<b>${d.name}</b> <span class="muted">×${s.count}${extra}${d.sell ? ` · ${d.sell}🪙` : ''}</span><br><span class="muted">${d.desc || ''}</span>`;

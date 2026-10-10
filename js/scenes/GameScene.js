@@ -267,7 +267,7 @@ export class GameScene extends Phaser.Scene {
         this.floatText(z.x, z.y - 8, `+${z.reward}🪙`, '#ffd166');
       }
     });
-    this.events.on('structureDestroyed', (s) => this.hud.toast(`${s.kind === 'turret' ? 'Taret' : 'Barikat'} yıkıldı!`, 'warn'));
+    this.events.on('structureDestroyed', (s) => this.hud.toast(`${s.label || (s.kind === 'turret' ? 'Taret' : 'Barikat')} yıkıldı!`, 'warn'));
     this.events.on('playerDied', () => {
       const lost = Math.floor(this.player.coins * 0.2);
       this.player.addCoins(-lost);

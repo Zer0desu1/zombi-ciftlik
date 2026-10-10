@@ -1,7 +1,9 @@
-import { ITEMS, INV_SIZE, RECIPES } from '../config.js';
+import { ITEMS, INV_SIZE, RECIPES, HOTBAR_SIZE } from '../config.js';
 
 const UNSTACKABLE = new Set(['tool', 'weapon', 'gun']);
 const MAX_STACK = 99;
+// Sıralamada tür önceliği (listede olmayanlar sona)
+const TYPE_ORDER = ['tool', 'weapon', 'gun', 'seed', 'crop', 'food', 'material', 'place'];
 
 export class Inventory {
   constructor(size = INV_SIZE) {
@@ -78,12 +80,43 @@ export class Inventory {
     return true;
   }
 
+  // Çanta genişletme: yalnızca büyütür (içerik asla silinmez)
+  resize(size) {
+    if (size <= this.slots.length) return false;
+    while (this.slots.length < size) this.slots.push(null);
+    this.emit();
+    return true;
+  }
+
+  // Çantayı (varsayılan: hotbar dışı) türe ve ada göre sıralar, yarım yığınları birleştirir
+  sort(from = HOTBAR_SIZE) {
+    const part = this.slots.slice(from).filter(Boolean);
+    const merged = [];
+    for (const s of part) {
+      const stackable = !UNSTACKABLE.has(ITEMS[s.id]?.type);
+      let n = s.count;
+      if (stackable) {
+        for (const m of merged) {
+          if (n <= 0) break;
+          if (m.id === s.id && m.count < MAX_STACK) { const k = Math.min(n, MAX_STACK - m.count); m.count += k; n -= k; }
+        }
+      }
+      while (n > 0) { const k = stackable ? Math.min(n, MAX_STACK) : 1; merged.push({ id: s.id, count: k }); n -= k; }
+    }
+    const rank = (id) => { const i = TYPE_ORDER.indexOf(ITEMS[id]?.type); return i < 0 ? TYPE_ORDER.length : i; };
+    merged.sort((a, b) => rank(a.id) - rank(b.id) || (ITEMS[a.id]?.name || a.id).localeCompare(ITEMS[b.id]?.name || b.id, 'tr') || b.count - a.count);
+    for (let i = from; i < this.slots.length; i++) this.slots[i] = merged[i - from] || null;
+    this.emit();
+  }
+
   static recipes() { return RECIPES; }
 
   serialize() { return this.slots.map((s) => (s ? { ...s } : null)); }
 
   load(data) {
-    this.slots = new Array(this.slots.length).fill(null);
+    // Genişletilmiş çanta kaydı: kayıttaki boyut daha büyükse büyüt
+    const size = Math.max(this.slots.length, Array.isArray(data) ? data.length : 0);
+    this.slots = new Array(size).fill(null);
     (data || []).forEach((s, i) => { if (s && ITEMS[s.id] && i < this.slots.length) this.slots[i] = { id: s.id, count: s.count }; });
     this.emit();
   }

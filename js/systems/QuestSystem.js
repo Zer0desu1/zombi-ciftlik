@@ -5,9 +5,15 @@ export class QuestSystem {
   constructor(scene) {
     this.scene = scene;
     this.state = {};
+    this.providers = []; // ek görev kaynakları (ör. ilan panosu): fn() → [{title, desc, progress, amount}]
   }
 
+  // Özellik modülleri takipçide görünecek ek görevler ekleyebilir
+  addProvider(fn) { this.providers.push(fn); }
+
   def(id) { return QUESTS.find((q) => q.id === id); }
+
+  isDone(id) { return this.state[id]?.status === 'done'; }
 
   // NPC'nin şu anki aktif görevi veya alınabilecek bir sonraki görevi
   forNpc(npcKey) {
@@ -20,7 +26,11 @@ export class QuestSystem {
   }
 
   activeList() {
-    return QUESTS.filter((q) => this.state[q.id]?.status === 'active').map((q) => ({ ...q, progress: this.progress(q) }));
+    const list = QUESTS.filter((q) => this.state[q.id]?.status === 'active').map((q) => ({ ...q, progress: this.progress(q) }));
+    for (const fn of this.providers) {
+      try { list.push(...(fn() || [])); } catch (e) { console.warn('Görev sağlayıcı hatası', e); }
+    }
+    return list;
   }
 
   accept(id) {
@@ -48,6 +58,7 @@ export class QuestSystem {
     this.state[id].status = 'done';
     if (q.reward.coins) this.scene.player.addCoins(q.reward.coins);
     Object.entries(q.reward.items || {}).forEach(([item, n]) => this.scene.giveItem(item, n));
+    this.scene.events.emit('questCompleted', q);
     this.scene.events.emit('questsChanged');
     return true;
   }
@@ -69,5 +80,5 @@ export class QuestSystem {
   }
 
   serialize() { return JSON.parse(JSON.stringify(this.state)); }
-  load(d) { this.state = d || {}; }
+  load(d) { this.state = d && typeof d === 'object' ? d : {}; }
 }

@@ -1,13 +1,25 @@
-import { TILE, FARM_ZONE, CROPS, CROP_STAGES } from '../config.js';
+import { TILE, FARM_ZONE, CROPS, CROP_STAGES, ITEMS } from '../config.js';
 
 export const T = { GRASS: 0, GRASS2: 1, GRASS3: 2, PATH: 3, SOIL: 4, WET: 5, FARM: 6, STONE: 7 };
+
+// Mevsim kimlikleri (world özelliği timeSys.season / seasonIndex açığa çıkarırsa kullanılır)
+export const SEASON_IDS = ['spring', 'summer', 'autumn', 'winter'];
+export const SEASON_NAMES = { spring: 'İlkbahar', summer: 'Yaz', autumn: 'Sonbahar', winter: 'Kış' };
+
+// Kalite: 0 normal, 1 gümüş, 2 altın → ayrı eşya kimlikleri (wheat, wheat_s, wheat_g)
+export const QUALITY_SUFFIX = ['', '_s', '_g'];
+export const FERT_GROWTH = 1.25;     // gübreli büyüme çarpanı
+const WITHER_DAYS = 2;               // bu kadar gün sulanmayan ekin solar
+const DEATH_DAYS = 3;                // bu kadar günde ölür
 
 // Tarla tile'larını, ekinleri ve büyüme mantığını yönetir.
 export class Farm {
   constructor(scene, layer) {
     this.scene = scene;
     this.layer = layer;
-    this.plots = new Map(); // "tx,ty" → { tx, ty, watered, crop: { type, stage, growth } | null, sprite }
+    // "tx,ty" → { tx, ty, watered, fert, dryDays, crop: { type, stage, growth, harvests?, dead? } | null, sprite, fx }
+    this.plots = new Map();
+    this.blocked = new Set(); // fıskiye/korkuluk gibi nesnelerin kapladığı tile'lar (sürülemez)
   }
 
   key(tx, ty) { return `${tx},${ty}`; }
@@ -18,9 +30,32 @@ export class Farm {
     return tx >= z.x && ty >= z.y && tx < z.x + z.w && ty < z.y + z.h;
   }
 
+  // Şu anki mevsim kimliği ('spring'...) ya da mevsim sistemi yoksa null
+  season() {
+    const t = this.scene.timeSys;
+    let s = t?.season;
+    if (s && typeof s === 'object') s = s.id || s.key || s.name;
+    if (s == null && typeof t?.seasonIndex === 'number') s = SEASON_IDS[((t.seasonIndex % 4) + 4) % 4];
+    if (typeof s === 'number') s = SEASON_IDS[((s % 4) + 4) % 4];
+    if (typeof s !== 'string') return null;
+    const l = s.toLowerCase();
+    if (SEASON_IDS.includes(l)) return l;
+    if (l === 'fall') return 'autumn';
+    if (l.includes('lkbahar')) return 'spring';
+    if (l.includes('sonbahar')) return 'autumn';
+    if (l.startsWith('yaz')) return 'summer';
+    if (l.startsWith('k')) return 'winter';
+    return null;
+  }
+
+  inSeason(type, season = this.season()) {
+    const def = CROPS[type];
+    return !season || !def?.seasons || def.seasons.includes(season);
+  }
+
   till(tx, ty) {
-    if (!this.inZone(tx, ty) || this.get(tx, ty)) return false;
-    const plot = { tx, ty, watered: false, crop: null, sprite: null };
+    if (!this.inZone(tx, ty) || this.get(tx, ty) || this.blocked.has(this.key(tx, ty))) return false;
+    const plot = { tx, ty, watered: false, fert: 0, dryDays: 0, crop: null, sprite: null, fx: null };
     this.plots.set(this.key(tx, ty), plot);
     this.refresh(plot);
     return true;
@@ -29,7 +64,13 @@ export class Farm {
   plant(tx, ty, type) {
     const p = this.get(tx, ty);
     if (!p || p.crop || !CROPS[type]) return false;
+    if (!this.inSeason(type)) {
+      const names = (CROPS[type].seasons || []).map((s) => SEASON_NAMES[s]).join(', ');
+      this.scene.hud?.notice(`Mevsimi değil! (${names})`);
+      return false;
+    }
     p.crop = { type, stage: 0, growth: 0 };
+    p.dryDays = 0;
     this.refresh(p);
     return true;
   }
@@ -42,32 +83,82 @@ export class Farm {
     return true;
   }
 
+  fertilize(tx, ty) {
+    const p = this.get(tx, ty);
+    if (!p || p.fert || p.crop?.dead) return false;
+    p.fert = 1;
+    this.refresh(p);
+    return true;
+  }
+
+  // Olgun ya da kurumuş (temizlenebilir) ekin
   isRipe(tx, ty) {
     const p = this.get(tx, ty);
-    return !!(p && p.crop && p.crop.stage >= CROP_STAGES - 1);
+    return !!(p && p.crop && (p.crop.dead || p.crop.stage >= CROP_STAGES - 1));
+  }
+
+  isWithered(p) { return !!(p.crop && !p.crop.dead && !p.watered && p.dryDays >= WITHER_DAYS); }
+
+  rollQuality(fert) {
+    const r = Math.random();
+    const gold = fert ? 0.15 : 0.05, silver = fert ? 0.35 : 0.2;
+    if (r < gold) return 2;
+    if (r < gold + silver) return 1;
+    return 0;
   }
 
   harvest(tx, ty) {
     const p = this.get(tx, ty);
     if (!this.isRipe(tx, ty)) return null;
+    // Kurumuş ekin: sadece temizlenir
+    if (p.crop.dead) { this.clearDead(p); return null; }
     const def = CROPS[p.crop.type];
     const qty = Phaser.Math.Between(def.yield[0], def.yield[1]);
-    const result = { item: def.item, qty, seed: def.seedBack ? `seed_${p.crop.type}` : null, seedQty: def.seedBack };
-    p.crop = null;
+    const quality = this.rollQuality(p.fert);
+    const qid = def.item + QUALITY_SUFFIX[quality];
+    const item = ITEMS[qid] ? qid : def.item;
+    const result = { item, qty, quality: ITEMS[qid] ? quality : 0, seed: def.seedBack ? `seed_${p.crop.type}` : null, seedQty: def.seedBack };
+    const type = p.crop.type;
+    if (def.regrow) {
+      // Çoklu hasat: bir önceki aşamaya döner, tekrar büyür
+      p.crop.stage = Math.max(1, CROP_STAGES - 2);
+      p.crop.growth = 0;
+      p.crop.harvests = (p.crop.harvests || 0) + 1;
+    } else {
+      p.crop = null;
+      p.fert = 0;
+    }
     this.refresh(p);
+    this.scene.events.emit('cropHarvested', { tx, ty, x: tx * TILE + 8, y: ty * TILE + 8, type, item, qty, quality: result.quality });
     return result;
+  }
+
+  clearDead(p) {
+    if (!p?.crop?.dead) return false;
+    p.crop = null;
+    p.fert = 0;
+    p.dryDays = 0;
+    this.refresh(p);
+    this.scene.spawnParticles?.(p.tx * TILE + 8, p.ty * TILE + 10, 0x9a8a5a, 6);
+    return true;
   }
 
   // Sulanmış ekinleri büyüt (oyun dakikası)
   advance(minutes) {
+    const season = this.season();
     for (const p of this.plots.values()) {
-      if (!p.crop || !p.watered || p.crop.stage >= CROP_STAGES - 1) continue;
-      p.crop.growth += minutes;
-      const need = CROPS[p.crop.type].hoursPerStage * 60;
+      const c = p.crop;
+      if (!c || c.dead || !p.watered || c.stage >= CROP_STAGES - 1) continue;
+      if (!this.inSeason(c.type, season)) continue; // mevsim dışı: büyüme durur
+      c.growth += minutes * (p.fert ? FERT_GROWTH : 1);
+      const def = CROPS[c.type];
+      // Çoklu hasatta yeniden büyüme kendi süresini kullanabilir
+      const hours = c.harvests && def.regrowHours ? def.regrowHours : def.hoursPerStage;
+      const need = hours * 60;
       let grew = false;
-      while (p.crop.growth >= need && p.crop.stage < CROP_STAGES - 1) {
-        p.crop.growth -= need;
-        p.crop.stage++;
+      while (c.growth >= need && c.stage < CROP_STAGES - 1) {
+        c.growth -= need;
+        c.stage++;
         grew = true;
       }
       if (grew) {
@@ -77,35 +168,60 @@ export class Farm {
     }
   }
 
-  // Şafakta toprak kurur; boş ve sulanmamış toprak bazen çimlenir
+  // Şafakta: kuraklık sayacı, solma/ölüm, toprak kurur; boş ve sulanmamış toprak bazen çimlenir
   onDawn() {
+    let died = 0;
     for (const p of [...this.plots.values()]) {
-      if (!p.crop && !p.watered && Math.random() < 0.15) {
-        this.plots.delete(this.key(p.tx, p.ty));
-        this.layer.putTileAt(T.FARM, p.tx, p.ty);
+      if (!p.crop && !p.watered && !p.fert && Math.random() < 0.15) {
+        this.removePlot(p);
         continue;
+      }
+      const c = p.crop;
+      if (c && !c.dead) {
+        const ripe = c.stage >= CROP_STAGES - 1;
+        if (p.watered || ripe) p.dryDays = 0;
+        else {
+          p.dryDays = (p.dryDays || 0) + 1;
+          if (p.dryDays >= DEATH_DAYS) { c.dead = true; died++; }
+        }
       }
       p.watered = false;
       this.refresh(p);
     }
+    if (died) this.scene.events.emit('cropsDied', died);
+    return died;
   }
 
-  // Çiftçi NPC için: sulanmamış ekinler
+  removePlot(p) {
+    p.sprite?.destroy();
+    p.fx?.destroy();
+    this.plots.delete(this.key(p.tx, p.ty));
+    this.layer.putTileAt(T.FARM, p.tx, p.ty);
+  }
+
+  // Çiftçi NPC için: sulanmamış (canlı) ekinler
   unwatered() {
-    return [...this.plots.values()].filter((p) => p.crop && !p.watered);
+    return [...this.plots.values()].filter((p) => p.crop && !p.crop.dead && !p.watered);
   }
 
   ripe() {
-    return [...this.plots.values()].filter((p) => p.crop && p.crop.stage >= CROP_STAGES - 1);
+    return [...this.plots.values()].filter((p) => p.crop && !p.crop.dead && p.crop.stage >= CROP_STAGES - 1);
   }
 
   refresh(p) {
     this.layer.putTileAt(p.watered ? T.WET : T.SOIL, p.tx, p.ty);
+    const x = p.tx * TILE + TILE / 2, y = p.ty * TILE + TILE;
+    // Gübre izi (toprağın üstünde küçük noktalar)
+    if (p.fert && !p.fx && this.scene.textures.exists('fert_dots')) {
+      p.fx = this.scene.add.image(x, y - 8, 'fert_dots').setDepth(1);
+    } else if (!p.fert && p.fx) { p.fx.destroy(); p.fx = null; }
     if (p.crop) {
-      const key = `crop_${p.crop.type}_${p.crop.stage}`;
-      const x = p.tx * TILE + TILE / 2, y = p.ty * TILE + TILE;
-      if (!p.sprite) p.sprite = this.scene.add.image(x, y, key).setOrigin(0.5, 1);
-      p.sprite.setTexture(key).setDepth(y - 4);
+      const key = p.crop.dead ? 'crop_dead' : `crop_${p.crop.type}_${p.crop.stage}`;
+      const tex = this.scene.textures.exists(key) ? key : `crop_wheat_${Math.min(p.crop.stage || 0, CROP_STAGES - 1)}`;
+      if (!p.sprite) p.sprite = this.scene.add.image(x, y, tex).setOrigin(0.5, 1);
+      p.sprite.setTexture(tex).setDepth(y - 4);
+      if (this.isWithered(p)) p.sprite.setTint(0xa09a78);
+      else p.sprite.clearTint();
     } else if (p.sprite) {
       p.sprite.destroy();
       p.sprite = null;
@@ -113,14 +229,24 @@ export class Farm {
   }
 
   serialize() {
-    return [...this.plots.values()].map((p) => ({ tx: p.tx, ty: p.ty, watered: p.watered, crop: p.crop ? { ...p.crop } : null }));
+    return [...this.plots.values()].map((p) => ({
+      tx: p.tx, ty: p.ty, watered: p.watered, fert: p.fert || 0, dryDays: p.dryDays || 0,
+      crop: p.crop ? { ...p.crop } : null
+    }));
   }
 
   load(list) {
-    for (const p of this.plots.values()) p.sprite?.destroy();
+    for (const p of this.plots.values()) { p.sprite?.destroy(); p.fx?.destroy(); }
     this.plots.clear();
     (list || []).forEach((d) => {
-      const p = { tx: d.tx, ty: d.ty, watered: d.watered, crop: d.crop, sprite: null };
+      if (!d || typeof d.tx !== 'number') return;
+      // Eski kayıtlar: fert/dryDays yok → 0; bilinmeyen ekin türü → yok say
+      let crop = d.crop && CROPS[d.crop.type] ? { ...d.crop } : null;
+      if (crop) {
+        crop.stage = Math.min(Math.max(0, crop.stage | 0), CROP_STAGES - 1);
+        crop.growth = crop.growth || 0;
+      }
+      const p = { tx: d.tx, ty: d.ty, watered: !!d.watered, fert: d.fert || 0, dryDays: d.dryDays || 0, crop, sprite: null, fx: null };
       this.plots.set(this.key(p.tx, p.ty), p);
       this.refresh(p);
     });

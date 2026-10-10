@@ -1,6 +1,15 @@
 import { DAY_START, NIGHT_START, GAME_MIN_PER_SEC } from '../config.js';
 
-// Gün/gece döngüsü. Phaser EventEmitter üzerinden 'dusk', 'dawn', 'hour' olayları yayar.
+// Mevsimler: her biri SEASON_DAYS gün sürer, sırayla döner
+export const SEASON_DAYS = 7;
+export const SEASONS = [
+  { id: 'spring', name: 'İlkbahar', icon: '🌸' },
+  { id: 'summer', name: 'Yaz',      icon: '☀️' },
+  { id: 'autumn', name: 'Sonbahar', icon: '🍂' },
+  { id: 'winter', name: 'Kış',      icon: '❄️' }
+];
+
+// Gün/gece döngüsü. Phaser EventEmitter üzerinden 'dusk', 'dawn', 'hour', 'seasonChanged' olayları yayar.
 export class TimeSystem extends Phaser.Events.EventEmitter {
   constructor() {
     super();
@@ -8,6 +17,7 @@ export class TimeSystem extends Phaser.Events.EventEmitter {
     this.day = 1;
     this.speed = GAME_MIN_PER_SEC;
     this.wasNight = this.isNight;
+    this.weatherDim = 0; // hava durumu kararması (world özelliği yazar)
   }
 
   get isNight() { return this.minutes >= NIGHT_START || this.minutes < DAY_START; }
@@ -20,6 +30,13 @@ export class TimeSystem extends Phaser.Events.EventEmitter {
     return `${h}:${m}`;
   }
 
+  // ---- Mevsim ----
+  get seasonIndex() { return Math.floor((Math.max(1, this.day) - 1) / SEASON_DAYS) % SEASONS.length; }
+  get season() { return SEASONS[this.seasonIndex].id; }            // 'spring' | 'summer' | 'autumn' | 'winter'
+  get seasonInfo() { return SEASONS[this.seasonIndex]; }
+  get seasonDay() { return ((Math.max(1, this.day) - 1) % SEASON_DAYS) + 1; } // 1..7
+  get year() { return Math.floor((Math.max(1, this.day) - 1) / (SEASON_DAYS * SEASONS.length)) + 1; }
+
   // dt saniye cinsinden; geçen oyun dakikasını döndürür
   update(dt) {
     const prevHour = this.hour;
@@ -29,13 +46,18 @@ export class TimeSystem extends Phaser.Events.EventEmitter {
     if (this.hour !== prevHour) this.emit('hour', this.hour);
     const night = this.isNight;
     if (night && !this.wasNight) this.emit('dusk', this.day);
-    if (!night && this.wasNight) { this.day++; this.emit('dawn', this.day); }
+    if (!night && this.wasNight) {
+      const prevSeason = this.seasonIndex;
+      this.day++;
+      this.emit('dawn', this.day);
+      if (this.seasonIndex !== prevSeason) this.emit('seasonChanged', this.season, this.seasonIndex);
+    }
     this.wasNight = night;
     return delta;
   }
 
-  // 0 (aydınlık) .. 0.8 (zifiri karanlık)
-  get darkness() {
+  // Saf gün/gece karanlığı: 0 (aydınlık) .. 0.8 (zifiri karanlık)
+  get baseDarkness() {
     const m = this.minutes, MAX = 0.8;
     const ramp = (a, b, from, to) => from + (to - from) * Math.min(1, Math.max(0, (m - a) / (b - a)));
     if (m >= 18.5 * 60 && m < 20.5 * 60) return ramp(18.5 * 60, 20.5 * 60, 0, MAX);
@@ -43,6 +65,9 @@ export class TimeSystem extends Phaser.Events.EventEmitter {
     if (m >= 4.5 * 60 && m < 6.5 * 60) return ramp(4.5 * 60, 6.5 * 60, MAX, 0);
     return 0;
   }
+
+  // Hava durumu (bulut/fırtına) kararmasını da hesaba katar
+  get darkness() { return Math.max(this.baseDarkness, this.weatherDim || 0); }
 
   // Akşamüstü turuncu ton için 0..1
   get duskTint() {
@@ -54,7 +79,8 @@ export class TimeSystem extends Phaser.Events.EventEmitter {
   serialize() { return { minutes: this.minutes, day: this.day }; }
   load(d) {
     if (!d) return;
-    this.minutes = d.minutes; this.day = d.day;
+    if (Number.isFinite(d.minutes)) this.minutes = d.minutes;
+    if (Number.isFinite(d.day)) this.day = Math.max(1, d.day);
     this.wasNight = this.isNight;
   }
 }

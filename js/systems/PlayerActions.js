@@ -28,8 +28,8 @@ export function useSelected(scene, wx, wy) {
       if (slot.id === 'axe' || slot.id === 'pickaxe') return gather(scene, slot.id === 'axe' ? 'tree' : 'rock', wx, wy);
       return;
     case 'seed': return plant(scene, tx, ty, item.crop, slot.id, inReach);
-    case 'weapon': return melee(scene, wx, wy, item.dmg);
-    case 'gun': return shoot(scene, wx, wy, item.dmg);
+    case 'weapon': return melee(scene, wx, wy, item.dmg, { weapon: slot.id });
+    case 'gun': return shoot(scene, wx, wy, item.dmg, slot.id);
     case 'food': return eat(scene, slot.id, item);
     case 'place': return placeStructure(scene, slot.id, cx, cy);
     default: return melee(scene, wx, wy, 1);
@@ -38,7 +38,7 @@ export function useSelected(scene, wx, wy) {
 
 function face(p, wx) { if (Math.abs(wx - p.x) > 2) p.setFlipX(wx < p.x); }
 
-function fail(scene, msg) {
+export function fail(scene, msg) {
   audio.sfx('error');
   if (msg) scene.hud.notice(msg);
 }
@@ -113,28 +113,61 @@ function gather(scene, kind, wx, wy) {
   }
 }
 
-function melee(scene, wx, wy, dmg) {
+// ---------- Savaş yardımcıları (combat özelliği de kullanır) ----------
+// Hasar = taban × silah seviyesi çarpanı; kritik şansı scene.combat üzerinden (yoksa %10)
+export function rollDamage(scene, weapon, base) {
+  const c = scene.combat;
+  const mult = c ? c.damageMult(weapon) : 1;
+  const crit = Math.random() < (c ? c.critChance() : 0.1);
+  const dmg = Math.round(base * mult * (crit ? 2 : 1) * 10) / 10;
+  return { dmg, crit };
+}
+
+// Hedefe hasar ver + juice/ilerleme için 'combatHit' olayı (crit bilgisiyle)
+export function hitTarget(scene, z, dmg, crit, source, weapon) {
+  if (!z || z.dead || !z.active) return;
+  scene.events.emit('combatHit', { target: z, x: z.x, y: z.y, dmg, crit, weapon, melee: !source?.isShot });
+  z.lastHitCrit = crit;
+  z.takeDamage(dmg, source || scene.player);
+}
+
+// Yakın dövüş: range menzil, cone yarım açı (radyan)
+export function melee(scene, wx, wy, dmg, opts = {}) {
   const p = scene.player;
-  p.actionCd = 0.35;
-  p.energy = Math.max(0, p.energy - 0.5);
+  const { weapon = 'hand', range = 24, cone = 1.3, cd = 0.35, energy = 0.5, fx = 'slash' } = opts;
+  p.actionCd = cd;
+  p.energy = Math.max(0, p.energy - energy);
   const a = Phaser.Math.Angle.Between(p.x, p.y, wx, wy);
-  const sx = p.x + Math.cos(a) * 10, sy = p.y + Math.sin(a) * 10;
-  const slash = scene.add.image(sx, sy, 'slash').setRotation(a).setDepth(p.depth + 1).setAlpha(0.9);
-  scene.tweens.add({ targets: slash, alpha: 0, scale: 1.4, duration: 160, onComplete: () => slash.destroy() });
+  if (fx === 'thrust') {
+    const sx = p.x + Math.cos(a) * 6, sy = p.y + Math.sin(a) * 6;
+    const tip = scene.add.image(sx, sy, scene.textures.exists('fx_thrust') ? 'fx_thrust' : 'slash').setRotation(a).setDepth(p.depth + 1);
+    scene.tweens.add({ targets: tip, x: p.x + Math.cos(a) * (range - 6), y: p.y + Math.sin(a) * (range - 6), alpha: 0.2, duration: 150, ease: 'Quad.easeOut', onComplete: () => tip.destroy() });
+  } else {
+    const sx = p.x + Math.cos(a) * 10, sy = p.y + Math.sin(a) * 10;
+    const slash = scene.add.image(sx, sy, 'slash').setRotation(a).setDepth(p.depth + 1).setAlpha(0.9);
+    scene.tweens.add({ targets: slash, alpha: 0, scale: 1.4, duration: 160, onComplete: () => slash.destroy() });
+  }
   audio.sfx('swing');
-  scene.zombies.getChildren().forEach((z) => {
+  let hits = 0;
+  scene.zombies.getChildren().slice().forEach((z) => {
     if (z.dead) return;
     const d = Phaser.Math.Distance.Between(p.x, p.y, z.x, z.y);
     const diff = Math.abs(Phaser.Math.Angle.Wrap(Phaser.Math.Angle.Between(p.x, p.y, z.x, z.y) - a));
-    if (d < 24 && diff < 1.3) z.takeDamage(dmg, p);
+    if (d < range && diff < cone) {
+      const r = rollDamage(scene, weapon, dmg);
+      hitTarget(scene, z, r.dmg, r.crit, p, weapon);
+      hits++;
+    }
   });
+  return hits;
 }
 
-function shoot(scene, wx, wy, dmg) {
+function shoot(scene, wx, wy, dmg, weapon = 'pistol') {
   const p = scene.player;
   if (!scene.inventory.remove('ammo', 1)) return fail(scene, 'Mermin yok! Üret veya satın al.');
   p.actionCd = 0.3;
-  scene.fireBullet(p.x, p.y - 2, Phaser.Math.Angle.Between(p.x, p.y - 2, wx, wy), dmg, 320);
+  const r = rollDamage(scene, weapon, dmg);
+  scene.fireBullet(p.x, p.y - 2, Phaser.Math.Angle.Between(p.x, p.y - 2, wx, wy), r.dmg, 320);
   scene.cameras.main.shake(40, 0.002);
   audio.sfx('shoot');
 }
