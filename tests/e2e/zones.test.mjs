@@ -109,7 +109,7 @@ test('keşif bölgeleri: kilit, açılış, ışınlanma, zombi, ganimet, kayıt
   assert.equal(out.zone, null, 'köye döner');
   assert.ok(out.y > B && out.y < 120, `kuzey geçidinin köy tarafı (y=${out.y})`);
   assert.equal(out.camX, 0);
-  assert.equal(out.camW, 96 * 16);
+  assert.equal(out.camW, 128 * 16);
 
   // Askeri Üs: kırık köprü odun + taş + hurda ile onarılır; hastane kartı Selin'de
   const mil = await page.evaluate(async () => {
@@ -154,7 +154,7 @@ test('keşif bölgeleri: kilit, açılış, ışınlanma, zombi, ganimet, kayıt
   assert.ok(Number.isFinite(loaded.cleared));
   assert.equal(loaded.looted, 2);
   assert.equal(loaded.zone, null, 'yüklemede köye döner');
-  assert.ok(loaded.x < 96 * 16, 'ana haritada');
+  assert.ok(loaded.x < 128 * 16, 'ana haritada');
   assert.deepEqual(loaded.gates, ['north:true', 'east:true', 'south:false', 'west:false']);
   assert.ok(loaded.milAlive > 0, 'temizlenmemiş bölge yeniden dolar');
 
@@ -249,7 +249,7 @@ test('co-op: misafir bölgeye girip çıkar, orman kenarından geçemez', { time
   await tp(ex[0], ex[1]);
   await guest.waitForFunction(() => /Köye dön/.test(game.scene.getScene('Game').net.hint), null, { timeout: 5000 });
   await guest.evaluate(() => game.scene.getScene('Game').interact());
-  await guest.waitForFunction(() => { const s = game.scene.getScene('Game'); return !s.zones.zoneAt(s.player.x, s.player.y) && s.player.x < 96 * 16; }, null, { timeout: 5000 });
+  await guest.waitForFunction(() => { const s = game.scene.getScene('Game'); return !s.zones.zoneAt(s.player.x, s.player.y) && s.player.x < 128 * 16; }, null, { timeout: 5000 });
   const back = await guest.evaluate(() => { const s = game.scene.getScene('Game'); return { camX: s.cameras.main._bounds.x, y: s.player.y }; });
   assert.equal(back.camX, 0);
   assert.ok(back.y > B, 'köy tarafında');

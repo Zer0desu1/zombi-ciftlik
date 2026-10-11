@@ -36,7 +36,8 @@ export class Farm {
     if (!t || !(t.index <= T.GRASS3 || t.index === T.FARM)) return false;
     if (this.reserved.some((r) => tx >= r.x && ty >= r.y && tx < r.x + r.w && ty < r.y + r.h)) return false;
     const s = this.scene, x = tx * TILE, y = ty * TILE;
-    if (s.lakeRect && Phaser.Geom.Rectangle.Overlaps(s.lakeRect, new Phaser.Geom.Rectangle(x, y, TILE, TILE))) return false;
+    const tr = new Phaser.Geom.Rectangle(x, y, TILE, TILE);
+    if ((s.lakeRects || [s.lakeRect]).some((r) => r && Phaser.Geom.Rectangle.Overlaps(r, tr))) return false;
     // Ağaç, kaya, bina, yapı gibi gövdeler; canlılar ve mermiler engel sayılmaz
     return !s.physics.overlapRect(x + 2, y + 2, TILE - 4, TILE - 4, true, true)
       .some((b) => b.gameObject && !(b.gameObject instanceof Actor) && !s.bullets?.contains(b.gameObject));

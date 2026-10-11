@@ -517,12 +517,15 @@ function hostLocal(onConn, { preferCode } = {}) {
     else if (m.k === 'bye') conns.get(m.from)?._fire('dc-closed');
   };
   const bye = () => conns.forEach((c) => c.close('dc-closed'));
-  window.addEventListener('pagehide', bye);
-  return Promise.resolve({
-    code, signal: { ok: true, tries: 0 }, signalOk: () => true,
+  // Sayfa kapanırken önce host'un son mesajları (beforeHide: kayıt + "host ayrılıyor") gitsin, sonra kanallar kapansın
+  const onHide = () => { try { api.beforeHide?.(); } catch (e) { console.warn(e); } bye(); };
+  window.addEventListener('pagehide', onHide);
+  const api = {
+    code, signal: { ok: true, tries: 0 }, signalOk: () => true, beforeHide: null,
     rebind: (fn) => { handler = fn; },
-    close: () => { bye(); window.removeEventListener('pagehide', bye); ch.close(); }
-  });
+    close: () => { bye(); window.removeEventListener('pagehide', onHide); ch.close(); }
+  };
+  return Promise.resolve(api);
 }
 
 function joinLocal(code) {

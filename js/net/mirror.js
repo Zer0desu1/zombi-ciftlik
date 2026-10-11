@@ -181,6 +181,13 @@ export class NetClock {
   // Her hızlı pakette: ht = host gönderim zamanı
   observe(ht) {
     const now = performance.now(), o = ht - now, s = this.samples;
+    // Gerçek gönderim aralığı: host'un kare hızı düşükse (büyük harita, zayıf cihaz) paketler 50 ms'den seyrek
+    // gelir; gecikme bu aralığı karşılamazsa tampon boşalır ve vekiller son örnekte bekleyip sıçrar.
+    if (this.lastHt != null) {
+      const gap = ht - this.lastHt;
+      if (gap > 0 && gap < 1000) this.gap = this.gap == null ? gap : this.gap + (gap - this.gap) * 0.1;
+    }
+    this.lastHt = ht;
     s.push([now, o]);
     while (s.length && now - s[0][0] > 3000) s.shift();
     let max = -Infinity;
@@ -191,7 +198,8 @@ export class NetClock {
     // Titreşim payı: ofsetlerin %90 yayılımı
     const sorted = s.map((x) => x[1]).sort((a, b) => a - b);
     const p10 = sorted[Math.floor(sorted.length * 0.1)] ?? max;
-    this.target = Math.min(450, Math.max(70, this.base + (max - p10) + 25));
+    const base = Math.max(this.base, (this.gap || 0) * 1.25);
+    this.target = Math.min(450, Math.max(70, base + (max - p10) + 25));
   }
   // Oynatma zamanı (host saatinde)
   renderTime(dt) {

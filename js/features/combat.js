@@ -177,7 +177,7 @@ function useShotgun(scene, ctx) {
 }
 
 function useBow(scene, ctx) {
-  if (S.charge) return;
+  if (S.charge && !scene.player?.netRemote) return; // host'un gerdiği yay misafirin okunu engellemesin
   if (scene.inventory.count('arrow') <= 0) return noAmmo(scene, 'Okun yok! 1 odun + 1 taştan 5 ok üret.', 'OK YOK!');
   const ptr = scene.input.activePointer;
   // Çok oyunculu misafir: germe girdisi host'ta yok → tam gerilmiş ok

@@ -739,6 +739,11 @@ function updateNew(scene, dt, st, night, zs) {
   }
 }
 
+// Yerleştirirken gösterilen menzil halkaları (eşya id → yarıçap)
+function placeRanges() {
+  return { turret: TURRET_LEVELS[1].range, flame_turret: FLAME.range, lamp_post: 90, catapult: CATA.range, archer_tower: TOWER_LEVELS[1].range, repair_station: STATION.range, mine: MINE.radius };
+}
+
 // ---------- Modül ----------
 export default {
   id: 'defense',
@@ -836,7 +841,7 @@ export default {
     const gfx = scene.rangeGfx;
     gfx.clear();
     const slot = scene.inventory.slots[scene.selected];
-    const ranges = { turret: TURRET_LEVELS[1].range, flame_turret: FLAME.range, lamp_post: 90, catapult: CATA.range, archer_tower: TOWER_LEVELS[1].range, repair_station: STATION.range, mine: MINE.radius };
+    const ranges = placeRanges();
     if (slot && ranges[slot.id] && scene.ghost?.visible) {
       const ok = canPlace(scene, scene.ghost.x, scene.ghost.y);
       gfx.lineStyle(1, ok ? 0x88ff88 : 0xff6666, 0.5).strokeCircle(scene.ghost.x, scene.ghost.y, ranges[slot.id]);
@@ -845,6 +850,22 @@ export default {
         if (Math.abs(p.x - t.x) < UPGRADE_REACH && Math.abs(p.y - t.y) < UPGRADE_REACH) { gfx.lineStyle(1, 0xffd166, 0.35).strokeCircle(t.x, t.y, t.range); break; }
       }
     }
+  },
+
+  // Co-op misafir: yerleştirme önizlemesi yerel (ghost misafirin kendi imleci) → menzil halkası ve kule tabanı da yerel
+  guestInit(scene) {
+    if (scene.rangeGfx) { scene.rangeGfx.netLocal = true; scene.rangeGfx.setVisible(true); }
+  },
+
+  guestUpdate(scene) {
+    const gfx = scene.rangeGfx, g = scene.ghost;
+    if (!gfx || !g) return;
+    gfx.clear();
+    const slot = scene.inventory.slots[scene.selected];
+    if (g.visible && slot?.id === 'archer_tower') g.setOrigin(0.5, 2 / 3);
+    else if (g.originY !== 0.5) g.setOrigin(0.5);
+    const r = slot && placeRanges()[slot.id];
+    if (r && g.visible) gfx.lineStyle(1, g.tintTopLeft === 0xff6666 ? 0xff6666 : 0x88ff88, 0.5).strokeCircle(g.x, g.y, r);
   },
 
   save(scene) {

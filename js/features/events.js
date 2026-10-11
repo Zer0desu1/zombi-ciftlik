@@ -24,7 +24,7 @@ const DAY_EVENT_CHANCE = 0.85;
 const NIGHT_EVENT_CHANCE = 0.4;
 const DAY_EVENT_HOURS = [8, 13];   // büyük gündüz olayının başlayabileceği saat aralığı
 const TRADER_LEAVES = 18;          // tüccar bu saatte toplanır
-const MAX_CHESTS = 4;
+const MAX_CHESTS = 6;               // 128×88 harita: daha çok keşif alanı
 const NEST_HP = 16;
 const METEOR_HITS = 6;
 const FESTIVAL_SELL = 1.5;         // festivalde ekin satış fiyatı çarpanı
@@ -128,7 +128,8 @@ function freeTile(scene, tx, ty, size = 0, allowTown = false) {
     const t = scene.layer?.getTileAt(x, y);
     if (!t || t.index > 2) return false;
   }
-  if (scene.lakeRect && Phaser.Geom.Rectangle.Overlaps(scene.lakeRect, new Phaser.Geom.Rectangle((tx - size) * TILE - 8, (ty - size) * TILE - 8, (size * 2 + 1) * TILE + 16, (size * 2 + 1) * TILE + 16))) return false;
+  const tr = new Phaser.Geom.Rectangle((tx - size) * TILE - 8, (ty - size) * TILE - 8, (size * 2 + 1) * TILE + 16, (size * 2 + 1) * TILE + 16);
+  if ((scene.lakeRects || [scene.lakeRect]).some((r) => r && Phaser.Geom.Rectangle.Overlaps(r, tr))) return false;
   const w = (size * 2 + 1) * TILE;
   return scene.physics.overlapRect((tx - size) * TILE + 1, (ty - size) * TILE + 1, w - 2, w - 2, true, true).length === 0;
 }
@@ -183,7 +184,7 @@ function startTrader(scene, restore) {
   st.active = { type: 'trader', x: spot.x, y: spot.y, tx: man.x, ty: man.y, stock, objs: [camp, man] };
   if (!restore) {
     [camp, man].forEach((o) => { o.setAlpha(0); scene.tweens.add({ targets: o, alpha: 1, duration: 800 }); });
-    scene.hud.toast(`🐪 Gezgin bir tüccar ${dirOf(spot.x, spot.y)[2].toLocaleLowerCase('tr')} kamp kurdu! Nadir eşyalar satıyor (saat ${TRADER_LEAVES}:00'e kadar).`, 'info');
+    scene.toastAll(`🐪 Gezgin bir tüccar ${dirOf(spot.x, spot.y)[2].toLocaleLowerCase('tr')} kamp kurdu! Nadir eşyalar satıyor (saat ${TRADER_LEAVES}:00'e kadar).`, 'info');
     audio.sfx('coin');
   }
   return true;
@@ -219,7 +220,7 @@ function startSurvivor(scene, restore) {
   const flare = scene.add.image(spot.x + 12, spot.y + 2, 'ev_flare').setDepth(spot.y + 8);
   st.active = { type: 'survivor', x: spot.x, y: spot.y, name: n.npcName, npc: n, objs: [flare], smokeT: 0 };
   if (!restore) {
-    scene.hud.toast(`🧨 ${dirOf(spot.x, spot.y)[2]} kırmızı bir işaret fişeği yükseliyor! Yaralı ${n.npcName} yardım bekliyor.`, 'warn');
+    scene.toastAll(`🧨 ${dirOf(spot.x, spot.y)[2]} kırmızı bir işaret fişeği yükseliyor! Yaralı ${n.npcName} yardım bekliyor.`, 'warn');
     audio.sfx('whoosh');
     // Gökyüzüne yükselen fişek
     const spark = scene.add.image(spot.x + 12, spot.y, 'ev_fireball').setScale(0.5).setDepth(9500);
@@ -241,7 +242,7 @@ function startMeteor(scene) {
   if (!spot) return false;
   const { x, y } = spot;
   st.active = { type: 'meteor', x, y, objs: [] };
-  scene.hud.toast(`☄️ Gökyüzünde parlayan bir şey var… ${dirOf(x, y)[1].toLocaleLowerCase('tr')} düşüyor!`, 'warn');
+  scene.toastAll(`☄️ Gökyüzünde parlayan bir şey var… ${dirOf(x, y)[1].toLocaleLowerCase('tr')} düşüyor!`, 'warn');
   audio.sfx('whoosh');
   scene.time.delayedCall(1800, () => {
     if (!scene.sys.isActive() || S(scene) !== st) return;
@@ -274,7 +275,7 @@ function placeMeteor(scene, x, y, hits, impact) {
   audio.sfx('explode');
   if (scene.shakeAt) scene.shakeAt(x, y, 220, 260, 0.008); // çok oyunculu: yakındaki her oyuncunun ekranı
   else if (Phaser.Geom.Rectangle.Contains(scene.cameras.main.worldView, x, y)) scene.cameras.main.shake(260, 0.008);
-  scene.hud.toast('☄️ Göktaşı yere çakıldı! Kazmayla kırarsan nadir malzeme çıkar.', 'info');
+  scene.toastAll('☄️ Göktaşı yere çakıldı! Kazmayla kırarsan nadir malzeme çıkar.', 'info');
 }
 
 function mineMeteor(scene) {
@@ -323,7 +324,7 @@ function placeNest(scene, x, y, hp, announce) {
     img.setAlpha(0);
     scene.tweens.add({ targets: img, alpha: 1, duration: 900 });
     scene.spawnParticles(x, y, 0x5e3a2e, 10);
-    scene.hud.toast(`🕳️ ${dirOf(x, y)[2]} bir zombi yuvası belirdi! Gece olmadan yok et, yoksa oradan zombi çıkar.`, 'warn');
+    scene.toastAll(`🕳️ ${dirOf(x, y)[2]} bir zombi yuvası belirdi! Gece olmadan yok et, yoksa oradan zombi çıkar.`, 'warn');
     audio.sfx('groan');
   }
 }
@@ -380,7 +381,7 @@ function updateNest(scene, dt) {
     nest.spawned++;
   }
   scene.spawnParticles(nest.x, nest.y, 0x8fe04a, 6);
-  if (nest.spawned <= n) scene.hud.toast(`🕳️ Yok edilmeyen yuvadan zombiler çıkıyor (${dirOf(nest.x, nest.y)[0].toLocaleLowerCase('tr')})!`, 'warn');
+  if (nest.spawned <= n) scene.toastAll(`🕳️ Yok edilmeyen yuvadan zombiler çıkıyor (${dirOf(nest.x, nest.y)[0].toLocaleLowerCase('tr')})!`, 'warn');
 }
 
 // ================= Hasat festivali =================
@@ -427,7 +428,7 @@ function startFestival(scene, restore) {
   st.festDay = scene.timeSys.day;
   if (!restore) {
     scene.hud.banner('🎉 Hasat Festivali', 'Bugün hasat 2 kat! Tüccarlar ekinlere %50 fazla ödüyor.');
-    scene.hud.toast(`🎉 Köy meydanında festival var! Bereket yağmuru: ${watered} tarla karesi sulandı.`, 'ok');
+    scene.toastAll(`🎉 Köy meydanında festival var! Bereket yağmuru: ${watered} tarla karesi sulandı.`, 'ok');
     audio.sfx('drum');
   }
   return true;
@@ -448,7 +449,7 @@ function startFog(scene) {
   if (!scene.setWeather) return false;
   scene.setWeather('fog', true);
   st.active = { type: 'fog', objs: [] };
-  scene.hud.toast('🌫️ Sisli Gece: ormandan yoğun bir sis çöktü. Görüş kısa, zombiler seni ancak yakından fark eder. Şafağa kadar dayanırsan ödül var.', 'warn');
+  scene.toastAll('🌫️ Sisli Gece: ormandan yoğun bir sis çöktü. Görüş kısa, zombiler seni ancak yakından fark eder. Şafağa kadar dayanırsan ödül var.', 'warn');
   return true;
 }
 
@@ -459,16 +460,23 @@ function spawnChest(scene, at) {
   let spot = at;
   if (!spot) {
     const rz = RUINS_ZONE, edge = 6;
-    const ruins = Math.random() < 0.45;
+    const roll = Math.random(), ruins = roll < 0.3;
     const taken = (tx, ty) => st.chests.some((c) => Math.abs(c.x - (tx * TILE + 8)) < 48 && Math.abs(c.y - (ty * TILE + 8)) < 48);
-    spot = ruins
+    // İlgi noktaları (MapBuilder: taş ocağı, yaşlı koru, terk edilmiş kamp, mezra, göl kıyıları)
+    const pois = scene.mapPOIs || [];
+    if (!ruins && roll < 0.65 && pois.length) {
+      const poi = Phaser.Utils.Array.GetRandom(pois);
+      spot = pickSpot(scene, { region: { x0: poi.x - 1, x1: poi.x + poi.w, y0: poi.y - 1, y1: poi.y + poi.h }, minPlayer: 80, near: (tx, ty) => !taken(tx, ty) });
+      if (spot) spot.poi = poi.id;
+    }
+    if (!spot) spot = ruins
       ? pickSpot(scene, { region: { x0: rz.x - 4, x1: rz.x + rz.w + 3, y0: rz.y - 4, y1: rz.y + rz.h + 3 }, allowTown: true, minPlayer: 60,
         near: (tx, ty) => !(tx >= rz.x - 1 && ty >= rz.y - 1 && tx <= rz.x + rz.w && ty <= rz.y + rz.h) && !taken(tx, ty) })
       : pickSpot(scene, { minPlayer: 100, minShelter: 180, near: (tx, ty) => (tx < edge || ty < edge || tx > MAP_W - 1 - edge || ty > MAP_H - 1 - edge || nearTrees(scene, tx, ty)) && !taken(tx, ty) });
     if (!spot) return null;
   }
   const img = scene.add.image(spot.x, spot.y, 'ev_chest').setDepth(spot.y + 6);
-  const c = { x: spot.x, y: spot.y, img, opened: false };
+  const c = { x: spot.x, y: spot.y, img, opened: false, poi: spot.poi };
   st.chests.push(c);
   return c;
 }
@@ -491,7 +499,7 @@ function openChest(scene, c) {
     .filter(([id]) => id && ITEMS[id]);
   const list = Phaser.Utils.Array.Shuffle(table).slice(0, 2).map(([id, a, b]) => [id, Phaser.Math.Between(a, b)]);
   let rare = null;
-  if (Math.random() < 0.08) {
+  if (Math.random() < (c.poi ? 0.15 : 0.08)) { // ilgi noktalarındaki (uzak) sandıklar biraz daha cömert
     rare = Phaser.Utils.Array.GetRandom(['relic', 'meteor_ore', 'rare_core'].filter((id) => ITEMS[id]));
     list.push([rare, 1]);
   }
@@ -531,8 +539,8 @@ function endActive(scene, quiet) {
     else scene.tweens.add({ targets: o, alpha: 0, duration: 700, onComplete: () => o.destroy() });
   });
   if (quiet) return;
-  if (a.type === 'trader') scene.hud.toast('🐪 Gezgin tüccar kampını toplayıp yoluna devam etti.', 'info');
-  if (a.type === 'festival') scene.hud.toast('🎉 Festival sona erdi. Fiyatlar normale döndü.', 'info');
+  if (a.type === 'trader') scene.toastAll('🐪 Gezgin tüccar kampını toplayıp yoluna devam etti.', 'info');
+  if (a.type === 'festival') scene.toastAll('🎉 Festival sona erdi. Fiyatlar normale döndü.', 'info');
 }
 
 function trigger(scene, type) {
@@ -584,7 +592,7 @@ function onHour(scene, h) {
 function onDusk(scene) {
   const st = S(scene);
   if (st.active && st.active.type !== 'meteor') endActive(scene);
-  if (st.nest) scene.time.delayedCall(2500, () => st.nest && scene.hud?.toast('🕳️ Zombi yuvası kıpırdanıyor… bu gece oradan da zombi gelecek!', 'warn'));
+  if (st.nest) scene.time.delayedCall(2500, () => st.nest && scene.toastAll('🕳️ Zombi yuvası kıpırdanıyor… bu gece oradan da zombi gelecek!', 'warn'));
   if (Math.random() >= NIGHT_EVENT_CHANCE || scene.timeSys.day < 2) return;
   const fogOk = scene.setWeather && scene.weather === 'clear' && !scene.waves.bloodMoon;
   const type = pickWeighted([['fog', fogOk ? 3 : 0], ['meteor', st.meteor ? 0 : 2]].filter(([, w]) => w > 0));
@@ -598,8 +606,12 @@ function onDawn(scene) {
   if (st.active?.type === 'fog') {
     st.active = null;
     const coins = 20 + Math.min(40, scene.waves.wave * 3);
-    scene.player.addCoins(coins);
-    scene.time.delayedCall(2600, () => scene.hud?.toast(`🌫️ Sisli geceyi atlattın: +${coins} 🪙`, 'ok'));
+    // Co-op: sisli geceyi atlatan her oyuncuya (misafirlere de) ödül + bildirim
+    const msg = `🌫️ Sisli geceyi atlattın: +${coins} 🪙`;
+    for (const p of scene.allPlayers?.(true) || [scene.player]) {
+      if (p.netRemote && scene.net?.asPlayer) scene.net.asPlayer(p, () => { p.addCoins(coins); scene.hud.toast(msg, 'ok'); });
+      else { p.addCoins(coins); scene.time.delayedCall(2600, () => scene.hud?.toast(msg, 'ok')); }
+    }
   } else if (st.active) endActive(scene, true);
   if (st.nest) { st.nest.spawned = 0; st.nest.t = 4; }
   const add = Phaser.Math.Between(1, 2);
@@ -640,7 +652,9 @@ export default {
     const shotHit = (a, b) => {
       const [shot, nest] = a.isNest ? [b, a] : [a, b];
       if (!shot.active || !nest.isNest) return;
-      damageNest(scene, shot.dmg || 1);
+      // Misafirin mermisi: yuva ödülü/ganimeti/anahtar misafire (bağlam takası)
+      const hit = () => damageNest(scene, shot.dmg || 1);
+      if (shot.owner && scene.net?.asPlayer) scene.net.asPlayer(shot.owner, hit); else hit();
       shot.destroy();
     };
     scene.physics.add.overlap(scene.bullets, st.solids, shotHit);
@@ -715,7 +729,7 @@ export default {
     st.pending = null;
     const ts = scene.timeSys;
     if (!d) {
-      for (let i = 0; i < 3; i++) spawnChest(scene);
+      for (let i = 0; i < 4; i++) spawnChest(scene);
       if (!isNew) planDay(scene); // olay verisi olmayan eski kayıt
       return;
     }

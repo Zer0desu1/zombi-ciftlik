@@ -700,6 +700,9 @@ function drawZoneMinimap(scene) {
   const cv = box?.querySelector('canvas');
   if (!cv || !box.classList.contains('show') || document.hidden) return;
   const z = DEF[id], ctx = cv.getContext('2d');
+  // Bölge planı 128×88 çizilir; mini harita tuvali (2 px/kare ana harita) neyse ona ölçeklenir
+  const k = cv.width / 128;
+  ctx.setTransform(k, 0, 0, k, 0, 0);
   ctx.drawImage(st.mini[id], 0, 0);
   const mx = (x) => Math.round(4 + (x - z.ox) / 4), my = (y) => Math.round(4 + (y - z.oy) / 4);
   const dot = (x, y, col, r = 1) => { ctx.fillStyle = col; ctx.fillRect(mx(x) - r, my(y) - r, r * 2, r * 2); };
@@ -713,6 +716,7 @@ function drawZoneMinimap(scene) {
   ctx.fillStyle = '#000'; ctx.fillRect(mx(p.x) - 2, my(p.y) - 2, 4, 4);
   ctx.fillStyle = (scene.time.now % 1000) < 600 ? '#ffffff' : '#ffe08a'; ctx.fillRect(mx(p.x) - 1, my(p.y) - 1, 2, 2);
   ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.font = '8px sans-serif'; ctx.fillText(`${z.icon} ${z.short}`, 5, 86);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
 // ---------- Askeri tüfek ----------

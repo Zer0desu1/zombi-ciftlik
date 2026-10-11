@@ -88,7 +88,7 @@ function join(scene, n) {
   st.joined++;
   audio.sfx('quest');
   scene.spawnParticles(n.x, n.y - 6, 0xffe08a, 12);
-  scene.hud.toast(`🏡 ${n.npcName} köye katıldı! (${rec?.thanks ? n.role : 'Hayatta kalan'})`, 'ok');
+  scene.toastAll(`🏡 ${n.npcName} köye katıldı! (${rec?.thanks ? n.role : 'Hayatta kalan'})`, 'ok');
   scene.events.emit('npcJoined', n);
 }
 
@@ -104,7 +104,7 @@ function startSiege(scene, n) {
     list.push(scene.spawnZombie(n.x + Math.cos(a) * r, n.y + Math.sin(a) * r, kind));
   }
   n.siege = list;
-  scene.hud.toast(`❗ ${n.npcName} zombilerle kuşatılmış! ${count} zombiyi temizle.`, 'warn');
+  scene.toastAll(`❗ ${n.npcName} zombilerle kuşatılmış! ${count} zombiyi temizle.`, 'warn');
   audio.sfx('alarm');
 }
 

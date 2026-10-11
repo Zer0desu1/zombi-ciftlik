@@ -15,6 +15,7 @@ export const REASONS = {
   'dc-closed': 'Veri kanalı kapandı: karşı taraf sayfayı kapattı/yeniledi ya da ağ koptu',
   'dc-error': 'Veri kanalı hatası',
   'host-closed': 'Host odayı kapattı',
+  'host-left': 'Host sekmeyi kapattı ya da yeniledi; aynı oda koduyla dönerse otomatik bağlanırsın',
   'peer-left': 'Karşı taraf oyundan ayrıldı',
   'signal-lost': 'Sinyal sunucusu (PeerJS) bağlantısı koptu; oyun bağlantısı etkilenmez, yeniden bağlanılıyor',
   'signal-error': 'Sinyal sunucusu hatası',

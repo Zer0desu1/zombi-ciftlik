@@ -13,9 +13,11 @@ import director from './director.js';
 import harvest from './harvest.js';
 import settlement from './settlement.js';
 import wildlife from './wildlife.js';
+import wildstock from './wildstock.js';
 import monsters from './monsters.js';
+import predators from './predators.js';
 import events from './events.js';
 import zones from './zones.js';
 
-registerFeatures([mobile, world, farming, animals, combat, wildlife, monsters, zombies, defense, town, settlement, events, progression, juice, harvest, director, zones]);
+registerFeatures([mobile, world, farming, animals, combat, wildlife, wildstock, monsters, predators, zombies, defense, town, settlement, events, progression, juice, harvest, director, zones]);
 export { features } from './registry.js';

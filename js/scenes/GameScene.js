@@ -1,4 +1,4 @@
-import { TILE, MAP_W, MAP_H, LEGACY_MAP_W, LEGACY_MAP_H, MAP_VERSION, ZOOM, HOTBAR_SIZE, ITEMS, START_INVENTORY, PLAYER_STATS, DIFFICULTIES } from '../config.js';
+import { TILE, MAP_W, MAP_H, MAP_SIZES, MAP_VERSION, ZOOM, HOTBAR_SIZE, ITEMS, START_INVENTORY, PLAYER_STATS, DIFFICULTIES } from '../config.js';
 import { loadRecords, recordRun } from '../systems/Records.js';
 import { audio } from '../audio.js';
 import { Player } from '../entities/Player.js';
@@ -216,12 +216,13 @@ export class GameScene extends Phaser.Scene {
 
   applySave(d) {
     const p = this.player;
-    // Harita sürümü 1 (64×44): eski alan aynı koordinatlarda olduğundan oyuncu/yapı/tarla aynen geçerli.
+    // Harita sürümü 1 (64×44) / 2 (96×64): eski alan aynı koordinatlarda olduğundan oyuncu/yapı/tarla aynen geçerli.
     // Eski kayıtta ana harita dışındaki (keşif bölgesi) konum, bölgeler artık daha sağda olduğu için kaydırılır.
-    // Kaynak tükenme durumu kayda yazılmaz; eski alanın kaynak dizilimi zaten birebir aynı üretilir.
+    // Kaynak tükenme durumu kayda yazılmaz; eski alanların kaynak dizilimi zaten birebir aynı üretilir.
     this.loadedMapVersion = d.mapVersion || 1;
-    if (this.loadedMapVersion < 2 && d.player && (d.player.x > LEGACY_MAP_W * TILE || d.player.y > LEGACY_MAP_H * TILE)) {
-      d.player = { ...d.player, x: d.player.x + (MAP_W - LEGACY_MAP_W) * TILE };
+    const old = MAP_SIZES[this.loadedMapVersion];
+    if (old && old.w !== MAP_W && d.player && (d.player.x > old.w * TILE || d.player.y > old.h * TILE)) {
+      d.player = { ...d.player, x: d.player.x + (MAP_W - old.w) * TILE };
     }
     if (d.player) {
       p.setPosition(d.player.x, d.player.y);
@@ -351,7 +352,7 @@ export class GameScene extends Phaser.Scene {
   // ---------------- Olaylar ----------------
   wireEvents() {
     // Sahne yeniden başlatıldığında özel olay dinleyicileri birikmesin
-    const custom = ['waveStart', 'waveEnd', 'zombieKilled', 'structureDestroyed', 'playerDied', 'remotePlayerDied', 'shelterFallen', 'questsChanged', 'cropGrew'];
+    const custom = ['waveStart', 'waveEnd', 'zombieKilled', 'structureDestroyed', 'playerDied', 'remotePlayerDied', 'netPlayerAdded', 'shelterFallen', 'questsChanged', 'cropGrew'];
     this.events.once('shutdown', () => custom.forEach((e) => this.events.off(e)));
     this.timeSys.on('dusk', () => this.waves.start());
     this.timeSys.on('dawn', (day) => this.onDawn(day));
@@ -494,6 +495,22 @@ export class GameScene extends Phaser.Scene {
     const me = this.netHostPlayer || this.player;
     if (Phaser.Math.Distance.Between(x, y, me.x, me.y) < range) this.cameras.main.shake(dur, intensity);
     this.net?.shakeAt?.(x, y, range, dur, intensity);
+  }
+
+  // Herkesi ilgilendiren bildirim (olay, uyarı): tek oyunculuda düz toast; co-op host'ta misafirlere de gider
+  toastAll(msg, ty = 'info') {
+    if (this.net?.toastAll) this.net.toastAll(msg, ty);
+    else this.hud.toast(msg, ty);
+  }
+
+  // Ortak başarı ödülü (hedef, gece bonusu…): her oyuncuya kendi bağlamında para + isteğe bağlı toast
+  rewardAll(coins, msg, ty = 'ok') {
+    for (const p of this.allPlayers(true)) {
+      const fn = () => { if (coins) p.addCoins(coins); if (msg) this.hud.toast(msg, ty); };
+      if (p.netRemote && this.net?.asPlayer) this.net.asPlayer(p, fn);
+      else if (this.net?.ctx) { if (coins) p.addCoins(coins); if (msg) queueMicrotask(() => this.hud?.toast(msg, ty)); } // host, misafir bağlamı içinden
+      else fn();
+    }
   }
 
   addStructure(kind, x, y) { return createStructure(this, kind, x, y); }

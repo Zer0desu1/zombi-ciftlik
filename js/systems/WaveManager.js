@@ -152,7 +152,7 @@ export class WaveManager {
   }
 
   // Sürü doğma noktası: oynanabilir alanın kenarında, ama sığınaktan en fazla SPAWN_RX/SPAWN_RY uzakta.
-  // 96×64 haritada doğu/güney kenarı sığınaktan ~2 kat uzak; sınırsız bırakılırsa zombiler sığınağa
+  // 128×88 haritada doğu/güney kenarı sığınaktan çok uzak; sınırsız bırakılırsa zombiler sığınağa
   // çok geç ulaşır ve gece temposu bozulur. Kutunun dışındaki (uzak) kenarlarda sürü açık alanda,
   // kutunun sınırında çıkar. Batı/kuzey kenarları zaten kutunun içinde: eski davranış korunur.
   edgePoint(side = Phaser.Math.Between(0, 3)) {

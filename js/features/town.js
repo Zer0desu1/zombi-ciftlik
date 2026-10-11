@@ -114,6 +114,8 @@ const NIGHT_HELP = {
   hunter: { desc: 'gece %50 hızlı ok', run: () => 'nöbette daha hızlı ok atıyor' }
 };
 
+const ITEM_HELP = new Set(['farmer', 'merchant', 'doctor']); // eşya veren dostlar (co-op: her oyuncuya)
+
 function giveHelp(scene, items) {
   const parts = [];
   Object.entries(items).forEach(([id, n]) => { if (ITEMS[id]) { scene.giveItem(id, n); parts.push(`${n}× ${itemName(id)}`); } });
@@ -128,10 +130,11 @@ function applyFriendPerks(scene) {
   });
 }
 
-function nightHelp(scene) {
+function nightHelp(scene, itemsOnly = false) {
   const msgs = [];
   REL_KEYS.forEach((key) => {
     if (heartsOf(scene, key) < HELP_HEARTS) return;
+    if (itemsOnly && !ITEM_HELP.has(key)) return;
     const npc = npcByKey(scene, key);
     if (!npc) return; // köye katılmamış dost yardım edemez
     const m = NIGHT_HELP[key]?.run(scene);
@@ -515,7 +518,7 @@ function birth(scene, momName, dadName) {
   const baby = spawnSurvivor(scene, { name, gender, variant: rand(0, 2), job: null, arrived: today(scene), child: GROW_DAYS, parents: [momName, dadName] }, false);
   scene.spawnParticles(baby.x, baby.y - 6, 0xff8fb0, 10);
   audio.sfx('levelup');
-  scene.hud.toast(`👶 ${momName} ve ${dadName} bir ${gender === 'f' ? 'kız' : 'erkek'} bebek sahibi oldu: ${name}!`, 'ok');
+  scene.toastAll(`👶 ${momName} ve ${dadName} bir ${gender === 'f' ? 'kız' : 'erkek'} bebek sahibi oldu: ${name}!`, 'ok');
   return baby;
 }
 
@@ -575,7 +578,7 @@ function pair(scene, a, b) {
   audio.sfx('quest');
   scene.spawnParticles(a.x, a.y - 8, 0xff8fb0, 8);
   scene.spawnParticles(b.x, b.y - 8, 0xff8fb0, 8);
-  scene.hud.toast(`💞 ${a.npcName} ve ${b.npcName} artık bir çift!`, 'ok');
+  scene.toastAll(`💞 ${a.npcName} ve ${b.npcName} artık bir çift!`, 'ok');
 }
 
 // Eşi artık hiçbir yerde olmayan (ayrılmış/silinmiş) kişinin eş bilgisini temizle
@@ -608,7 +611,7 @@ function familyDawn(scene) {
     if (!s.child) {
       s.arrived = day; // işsiz ayrılma sayacı büyüdüğü günden başlar
       s.growUp();
-      scene.hud.toast(`🎉 ${s.npcName} büyüdü! Artık işe alınabilir.`, 'ok');
+      scene.toastAll(`🎉 ${s.npcName} büyüdü! Artık işe alınabilir.`, 'ok');
     }
   });
   const seen = new Set();
@@ -644,10 +647,10 @@ function spawnSurvivor(scene, data, announce) {
     const rec = scene.settlement?.strand(s);
     s.setAlpha(0);
     scene.tweens.add({ targets: s, alpha: 1, duration: 600 });
-    if (rec) scene.hud.toast(rec.mode === 'rescue'
+    if (rec) scene.toastAll(rec.mode === 'rescue'
       ? `📻 Telsizden yardım çağrısı: ${s.npcName} zombilerin arasında mahsur! Haritada ❗ olarak görünüyor.`
       : `👣 ${s.npcName} adında bir hayatta kalan köyün yakınlarında dolaşıyor. Bulup davet edebilirsin.`, 'info');
-    else scene.hud.toast(`Hayatta kalan ${s.npcName} kasabaya sığındı! Konuşup işe alabilirsin.`, 'ok');
+    else scene.toastAll(`Hayatta kalan ${s.npcName} kasabaya sığındı! Konuşup işe alabilirsin.`, 'ok');
   }
   return s;
 }
@@ -695,10 +698,10 @@ function payWages(scene) {
   survivors(scene).forEach((s) => {
     if (s.job) {
       if (p.coins >= WAGE) { p.addCoins(-WAGE); paid += WAGE; }
-      else { s.setJob(null); scene.hud.toast(`${s.npcName} maaşını alamadı ve işi bıraktı!`, 'warn'); }
+      else { s.setJob(null); scene.toastAll(`${s.npcName} maaşını alamadı ve işi bıraktı!`, 'warn'); }
     } else if (!s.child && !s.partner && survHearts(scene, s) < 2 && today(scene) - (s.arrived || 0) > 3) {
       // Çocuklar ve eşi olanlar köye bağlıdır, ayrılmaz
-      scene.hud.toast(`${s.npcName} iş bulamadı ve kasabadan ayrıldı.`, 'info');
+      scene.toastAll(`${s.npcName} iş bulamadı ve kasabadan ayrıldı.`, 'info');
       removeSurvivor(scene, s);
     }
   });
@@ -790,6 +793,10 @@ function onInventoryChange(scene) {
 }
 
 function completeTask(scene, t) {
+  // Co-op: bağlam dışında (şafak değerlendirmesi, taret öldürmesi…) tamamlanan ilanın ödülü kabul eden misafire
+  const net = scene.net;
+  const by = net?.isHost && !net.ctx && t.by ? [...net.guests.values()].find((g) => g.name === t.by) : null;
+  if (by) return net.withGuest(by, () => completeTask(scene, t)) ?? false;
   if (t.done || !t.accepted || taskProgress(scene, t) < t.amount) return false;
   if (t.type === 'deliver' && !scene.inventory.remove(t.item, t.amount)) return false;
   t.done = true;
@@ -831,6 +838,7 @@ function openBoard(scene) {
         btn.disabled = late;
         btn.onclick = () => {
           t.accepted = true;
+          if (scene.net?.ctx) t.by = scene.net.ctx.name; // co-op: ödül kabul edene
           if (t.type === 'gather') syncGather(scene);
           audio.sfx('click');
           scene.events.emit('questsChanged');
@@ -1077,6 +1085,8 @@ export default {
       scene.town.faintedTonight = false;
       scene.town.minShelter = 1;
       nightHelp(scene);
+      // Co-op: dost yardımı (eşya) misafirlere de; sığınak onarımı gibi ortak etkiler yalnızca bir kez
+      scene.net?.eachGuest?.(() => nightHelp(scene, true));
     };
     const onDied = () => {
       if (!scene.waves.active) return;
@@ -1088,12 +1098,14 @@ export default {
     scene.events.on('waveEnd', onWaveEnd);
     scene.events.on('waveStart', onWaveStart);
     scene.events.on('playerDied', onDied);
+    scene.events.on('remotePlayerDied', onDied); // misafirin bayılması da "kimse bayılmasın" ilanını bozar
     scene.events.once('shutdown', () => {
       scene.events.off('questCompleted', onQuest);
       scene.events.off('zombieKilled', onKill);
       scene.events.off('waveEnd', onWaveEnd);
       scene.events.off('waveStart', onWaveStart);
       scene.events.off('playerDied', onDied);
+      scene.events.off('remotePlayerDied', onDied);
     });
     scene.inventory.onChange(() => onInventoryChange(scene));
     // Çok oyunculu: misafirin topladığı odun/taş da toplama ilanlarına sayılır (host misafir bağlamında yayar)
@@ -1104,8 +1116,8 @@ export default {
       payWages(scene);
       familyDawn(scene);
       const doc = npcByKey(scene, 'doctor');
-      if (doc?.treatedTonight) { scene.hud.toast(`Selin gece sığınakta yaralıları ${doc.treatedTonight} kez tedavi etti ✚`, 'info'); doc.treatedTonight = 0; }
-      scene.time.delayedCall(2500, () => scene.hud.toast('📋 İlan panosunda yeni görevler var', 'info'));
+      if (doc?.treatedTonight) { scene.toastAll(`Selin gece sığınakta yaralıları ${doc.treatedTonight} kez tedavi etti ✚`, 'info'); doc.treatedTonight = 0; }
+      scene.time.delayedCall(2500, () => scene.toastAll('📋 İlan panosunda yeni görevler var', 'info'));
     });
   },
 

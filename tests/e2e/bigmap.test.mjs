@@ -1,4 +1,4 @@
-// Büyütülmüş harita (96×64): sınırlar, eski alanın kaynak dizilimi, eski (sürüm 1) kayıt uyumu,
+// Büyütülmüş harita (128×88): sınırlar, eski alanların (64×44 ve 96×64) kaynak dizilimi, eski (sürüm 1/2) kayıt uyumu,
 // zombi doğma mesafesi ve co-op harita özeti. Kısa ölçümler; uzun simülasyon yok.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,7 +22,7 @@ test('büyük harita: sınırlar, eski dizilim, eski kayıt, zombi mesafesi', { 
 
   const info = await page.evaluate(async () => {
     const { MAP_W, MAP_H } = await import('./js/config.js');
-    const { FOREST_PX, LEGACY_RES } = await import('./js/systems/MapBuilder.js');
+    const { FOREST_PX, LEGACY_RES, V2_RES } = await import('./js/systems/MapBuilder.js');
     const { T } = await import('./js/systems/Farm.js');
     const s = game.scene.getScene('Game');
     const res = s.resources.getChildren();
@@ -70,27 +70,65 @@ test('büyük harita: sınırlar, eski dizilim, eski kayıt, zombi mesafesi', { 
       const r = res[i];
       return !r || r.kind !== o.kind || Math.round(r.x) !== o.tx * 16 + 8 || Math.round(r.y) !== o.ty * 16 + (o.kind === 'tree' ? 4 : 8);
     }).length;
-    const newArea = res.slice(LEGACY_RES).filter((r) => r.x >= 62 * 16 || r.y >= 42 * 16);
+    // Sürüm 2 (96×64) alanı: 'zombi-ciftlik-genis' akışı ve sürüm 2 kenar/geçit kurallarıyla birebir aynı olmalı
+    const rng2 = new Phaser.Math.RandomDataGenerator(['zombi-ciftlik-genis']);
+    const VW = 96, VH = 64, d2 = [];
+    for (let y = 0; y < VH; y++) { const row = []; for (let x = 0; x < VW; x++) row.push(x < W && y < H ? data[y][x] : 0); d2.push(row); }
+    for (let y = 0; y < VH; y++) for (let x = 0; x < VW; x++) if (x >= W || y >= H) rng2.frac();
+    for (let x = 3; x < VW - 3; x++) d2[23][x] = T.PATH;
+    for (let y = 4; y < VH - 3; y++) d2[y][32] = T.PATH;
+    const gate2 = new Set(['32,0', '32,1', '32,2', '32,3', '32,60', '32,61', '32,62', '32,63', '0,23', '1,23', '2,23', '93,23', '94,23', '95,23']);
+    const eb2 = (x, y) => x < 2 || y < 2 || x >= VW - 2 || y >= VH - 2 || gate2.has(`${x},${y}`);
+    const out2 = [];
+    const place2 = (kind, count) => {
+      let tries = 0;
+      while (count > 0 && tries++ < 3000) {
+        const tx = rng2.between(2, VW - 3), ty = rng2.between(2, VH - 3);
+        if (tx < W - 2 && ty < H - 2) continue;
+        if (eb2(tx, ty) || reserved.some((r) => inRect(tx, ty, r)) || d2[ty][tx] === T.PATH || used.has(`${tx},${ty}`)) continue;
+        if ([[0, 1], [0, -1], [1, 0], [-1, 0]].some(([dx, dy]) => gate2.has(`${tx + dx},${ty + dy}`))) continue;
+        used.add(`${tx},${ty}`); out2.push({ tx, ty, kind }); count--;
+      }
+    };
+    place2('tree', 71); place2('rock', 38);
+    const v2Mismatch = out2.filter((o, i) => {
+      const r = res[LEGACY_RES + i];
+      return !r || r.kind !== o.kind || Math.round(r.x) !== o.tx * 16 + 8 || Math.round(r.y) !== o.ty * 16 + (o.kind === 'tree' ? 4 : 8);
+    }).length;
+    const newArea = res.slice(V2_RES).filter((r) => r.x >= 94 * 16 || r.y >= 62 * 16);
     return {
-      MAP_W, MAP_H, B: FOREST_PX, LEGACY_RES, legacyMismatch, total: res.length,
+      MAP_W, MAP_H, B: FOREST_PX, LEGACY_RES, V2_RES, legacyMismatch, v2Mismatch, v2n: out2.length, total: res.length,
       newTrees: newArea.filter((r) => r.kind === 'tree').length, newRocks: newArea.filter((r) => r.kind === 'rock').length,
+      pois: (s.mapPOIs || []).map((o) => o.id), lakes: (s.lakeRects || []).length, wild: (s.wildAreas || []).length,
+      waterBodies: s.obstacles.getChildren().filter((o) => o.isWater).length,
+      roadS: s.layer.getTileAt(60, 74).index === T.PATH, roadE: s.layer.getTileAt(110, 50).index === T.PATH,
       worldW: s.physics.world.bounds.width, camW: s.cameras.main._bounds.width, camH: s.cameras.main._bounds.height,
       gates: s.forestEdge.gates.map((g) => `${g.id}:${Math.floor(g.rect.centerX / 16)},${Math.floor(g.rect.centerY / 16)}`),
-      oldStrip: s.forestEdge.group.getChildren().filter((b) => b.body && (Math.abs(b.body.x - 62 * 16) < 2 || Math.abs(b.body.y - 42 * 16) < 2)).length,
-      pathE: s.layer.getTileAt(90, 23).index === T.PATH, pathS: s.layer.getTileAt(32, 58).index === T.PATH,
+      oldStrip: s.forestEdge.group.getChildren().filter((b) => b.body && (Math.abs(b.body.x - 94 * 16) < 2 || Math.abs(b.body.y - 62 * 16) < 2 || Math.abs(b.body.x - 62 * 16) < 2 || Math.abs(b.body.y - 42 * 16) < 2)).length,
+      pathE: s.layer.getTileAt(122, 23).index === T.PATH, pathS: s.layer.getTileAt(32, 82).index === T.PATH,
+      statics: s.physics.world.staticBodies.size,
       zoneX: s.zones.defs[0].ox
     };
   });
-  assert.equal(info.MAP_W, 96);
-  assert.equal(info.MAP_H, 64);
-  assert.equal(info.camW, 96 * 16);
-  assert.equal(info.camH, 64 * 16);
+  console.log(`[bigmap] kaynak ${info.total} (yeni alan ${info.newTrees} ağaç / ${info.newRocks} kaya) · statik gövde ${info.statics}`);
+  assert.equal(info.MAP_W, 128);
+  assert.equal(info.MAP_H, 88);
+  assert.equal(info.camW, 128 * 16);
+  assert.equal(info.camH, 88 * 16);
   assert.equal(info.legacyMismatch, 0, 'eski 64×44 alanının ağaç/kaya dizilimi aynı kalmalı');
-  assert.ok(info.newTrees >= 50 && info.newRocks >= 25, `yeni alanda kaynak var (${info.newTrees} ağaç, ${info.newRocks} kaya)`);
+  assert.equal(info.v2n, info.V2_RES - info.LEGACY_RES);
+  assert.equal(info.v2Mismatch, 0, '96×64 alanının ağaç/kaya dizilimi sürüm 2 ile aynı kalmalı');
+  assert.ok(info.newTrees >= 80 && info.newRocks >= 35, `yeni alanda kaynak var (${info.newTrees} ağaç, ${info.newRocks} kaya)`);
   assert.equal(info.oldStrip, 0, 'eski kenarlarda orman şeridi kalmamalı');
   assert.ok(info.pathE && info.pathS, 'yollar yeni kenarlara uzanır');
-  assert.deepEqual(info.gates, ['north:32,1', 'east:95,23', 'south:32,63', 'west:1,23']);
-  assert.ok(info.zoneX > 96 * 16, 'keşif bölgeleri yeni haritanın sağında');
+  assert.ok(info.roadS && info.roadE, 'yeni güney/doğu yolları');
+  assert.deepEqual(info.gates, ['north:32,1', 'east:127,23', 'south:32,87', 'west:1,23']);
+  assert.ok(info.zoneX > 128 * 16, 'keşif bölgeleri yeni haritanın sağında');
+  assert.equal(info.lakes, 4, 'eski göl + 3 yeni göl');
+  assert.equal(info.waterBodies, 8);
+  assert.ok(['quarry', 'grove', 'camp', 'hamlet'].every((id) => info.pois.includes(id)), `ilgi noktaları (${info.pois})`);
+  assert.ok(info.wild >= 3, 'yaban hayvanı alanları');
+  assert.ok(info.statics < 900, `statik gövde sayısı makul (${info.statics})`);
 
   // Oyuncu yeni doğu/güney kenarlarına kadar yürür ama orman şeridine giremez
   const push = async (x, y, vx, vy) => {
@@ -98,11 +136,11 @@ test('büyük harita: sınırlar, eski dizilim, eski kayıt, zombi mesafesi', { 
     await page.waitForTimeout(900);
     return page.evaluate(() => { const s = game.scene.getScene('Game'); s.virtualMove = { x: 0, y: 0 }; return { x: s.player.x, y: s.player.y }; });
   };
-  const W = 96 * 16, H = 64 * 16;
-  // Engelsiz bir satır/sütun bul (kaynaklar yolu kesmesin): yatay yol y=23, dikey yol x=32 yakını
-  const e = await push(W - 90, 23 * 16 + 40, 1, 0);
+  const W = 128 * 16, H = 88 * 16;
+  // Yollar engelsiz (yeni alanda kaynaklar yol kenarına konmaz): yatay yol y=23, dikey yol x=32
+  const e = await push(W - 90, 23 * 16 + 8, 1, 0);
   assert.ok(e.x > W - info.B - 30 && e.x <= W - info.B + 1, `doğu kenarına ulaşır ama şeride girmez (x=${e.x})`);
-  const so = await push(32 * 16 + 40, H - 90, 0, 1);
+  const so = await push(32 * 16 + 8, H - 90, 0, 1);
   assert.ok(so.y > H - info.B - 30 && so.y <= H - info.B + 4, `güney kenarına ulaşır ama şeride girmez (y=${so.y})`);
 
   // Zombi doğma noktası sığınaktan makul uzaklıkta; uzak kenardan yürüyüş süresi ölçülür
@@ -143,7 +181,7 @@ test('büyük harita: sınırlar, eski dizilim, eski kayıt, zombi mesafesi', { 
     localStorage.setItem('zombi-ciftlik-save-v1', JSON.stringify(d));
     return { v, x: s.player.x, y: s.player.y, tilled, structs: d.structures.length };
   });
-  assert.equal(before.v, 2, 'yeni kayıtlar harita sürümü 2 yazar');
+  assert.equal(before.v, 3, 'yeni kayıtlar harita sürümü 3 yazar');
   assert.ok(before.tilled, 'tarla açıldı');
   const load = async () => {
     await page.reload();
@@ -174,14 +212,35 @@ test('büyük harita: sınırlar, eski dizilim, eski kayıt, zombi mesafesi', { 
   const zr = await page.evaluate(() => { const s = game.scene.getScene('Game'); return { x: s.player.x, y: s.player.y, zone: s.zones.zoneAt(s.player.x, s.player.y) }; });
   assert.equal(zr.zone, null);
   assert.ok(Math.abs(zr.x - (32 * 16 + 8)) < 24 && zr.y < 100, `eski bölge konumu kuzey geçidinin köy tarafına döner (${zr.x},${zr.y})`);
+
+  // Sürüm 2 kaydı: 96×64 içindeki konum aynen geçerli; eski keşif bölgesi konumu (x = 96*16 + 192 + …) köye döner
+  await page.evaluate(() => {
+    const d = JSON.parse(localStorage.getItem('zombi-ciftlik-save-v1'));
+    d.player.x = 90 * 16 + 8; d.player.y = 23 * 16 + 8; d.mapVersion = 2;
+    localStorage.setItem('zombi-ciftlik-save-v1', JSON.stringify(d));
+  });
+  await load();
+  const v2 = await page.evaluate(() => { const s = game.scene.getScene('Game'); return { x: s.player.x, y: s.player.y, ver: s.loadedMapVersion }; });
+  assert.equal(v2.ver, 2);
+  assert.equal(Math.round(v2.x), 90 * 16 + 8);
+  assert.equal(Math.round(v2.y), 23 * 16 + 8);
+  await page.evaluate(() => {
+    const d = JSON.parse(localStorage.getItem('zombi-ciftlik-save-v1'));
+    d.player.x = 96 * 16 + 192 + 100; d.player.y = 100; d.mapVersion = 2;
+    localStorage.setItem('zombi-ciftlik-save-v1', JSON.stringify(d));
+  });
+  await load();
+  const zr2 = await page.evaluate(() => { const s = game.scene.getScene('Game'); return { x: s.player.x, y: s.player.y, zone: s.zones.zoneAt(s.player.x, s.player.y) }; });
+  assert.equal(zr2.zone, null);
+  assert.ok(Math.abs(zr2.x - (32 * 16 + 8)) < 24 && zr2.y < 100, `sürüm 2 bölge konumu kuzey geçidinin köy tarafına döner (${zr2.x},${zr2.y})`);
   assertNoErrors(assert, errors);
 });
 
 test('büyük harita co-op: host ve misafir aynı haritayı kurar; ağıl/olay engelleri misafire katı bildirilir', { timeout: 90000 }, async (t) => {
   const { host, guest, hostErr, guestErr } = await setupMP(t);
   const [a, b] = await Promise.all([host.evaluate(`(${mapDigest})()`), guest.evaluate(`(${mapDigest})()`)]);
-  assert.equal(a.w, 96);
-  assert.equal(a.hgt, 64);
+  assert.equal(a.w, 128);
+  assert.equal(a.hgt, 88);
   assert.deepEqual(b, a, 'harita özeti eşit');
 
   // Host'ta olay kayası (meteor) → misafire katı gövde (sb) olarak gider

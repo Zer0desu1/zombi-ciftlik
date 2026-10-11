@@ -5,8 +5,8 @@
 body.playing:not(.is-touch) #feature-dock.show { display: flex; }
 /* Bildirimler dock ve mini haritanın altında kalmasın */
 body.playing:not(.is-touch):has(#feature-dock.show) #toasts { right: 72px; }
-body.playing:not(.is-touch):has(#jc-minimap.show) #toasts { top: 180px; }
-body.playing:not(.is-touch):has(#jc-minimap.big.show) #toasts { top: 276px; }
+body.playing:not(.is-touch):has(#jc-minimap.show) #toasts { top: 183px; }
+body.playing:not(.is-touch):has(#jc-minimap.big.show) #toasts { top: 282px; }
 .dock-btn { position: relative; width: 36px; height: 36px; padding: 0; display: grid; place-items: center; font-size: 18px; line-height: 1; border-radius: 9px; }
 .dock-btn img { width: 22px; height: 22px; image-rendering: pixelated; }
 .dock-btn .tip {
@@ -203,7 +203,7 @@ body.is-touch.landscape #hud-top { top: calc(6px + env(safe-area-inset-top)); ma
 
 /* --- Yatay: sağ sütun eylem kümesine ayrılır; mini harita ve co-op paneli üst kısımda kalır --- */
 body.is-touch.landscape #jc-minimap { top: calc(var(--hud-h, 56px) + 6px); right: var(--mc-sr); }
-body.is-touch.landscape #jc-minimap.big { width: 132px; height: 88px; }
+body.is-touch.landscape #jc-minimap.big { width: 128px; height: 88px; }
 /* Etiket balonu sağ sütunda kalsın (üst ortadaki ipucu/hedef kartlarına uzanmasın) */
 body.is-touch.landscape .mc-interact .tag { max-width: 180px; }
 body.is-touch.landscape #net-panel { top: calc(env(safe-area-inset-top, 0px) + 108px); left: var(--mc-s); right: auto; max-height: calc(44vh - 100px); overflow: hidden; }

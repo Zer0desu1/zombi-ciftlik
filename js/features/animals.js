@@ -17,8 +17,16 @@ Object.assign(ITEMS, {
   cake:           { name: 'Kek',             type: 'food', icon: 'i_cake',     sell: 90, heal: 50, energy: 50 },
   feed:           { name: 'Yem',             type: 'material', icon: 'i_feed', sell: 1, desc: 'Ağıldaki yalağa koy (E). Her hayvan günde 1 yer.', onUse: (s) => useFeed(s) },
   animal_chicken: { name: 'Tavuk',           type: 'material', icon: 'i_chicken', desc: 'Kullan → ağıldaki kümese yerleşir.', onUse: (s) => useAnimalItem(s, 'chicken') },
-  animal_cow:     { name: 'İnek',            type: 'material', icon: 'i_cow',     desc: 'Kullan → ağıldaki ahıra yerleşir.', onUse: (s) => useAnimalItem(s, 'cow') }
+  animal_cow:     { name: 'İnek',            type: 'material', icon: 'i_cow',     desc: 'Kullan → ağıldaki ahıra yerleşir.', onUse: (s) => useAnimalItem(s, 'cow') },
+  animal_sheep:   { name: 'Koyun',           type: 'material', icon: 'i_sheep',   desc: 'Kullan → ağıldaki ahıra yerleşir.', onUse: (s) => useAnimalItem(s, 'sheep') },
+  wool:           { name: 'Yün',             type: 'crop', icon: 'i_wool',     sell: 30, desc: 'Koyundan kırkılmış yün. İyi para eder.' },
+  wool_big:       { name: 'Kaliteli Yün',    type: 'crop', icon: 'i_wool_big', sell: 45, desc: 'Mutlu koyundan (4+ kalp) yumuşacık yün.' },
+  rope:           { name: 'Halat',           type: 'material', icon: 'i_rope', sell: 3, desc: 'Doğadaki inek ve koyunları yakalamaya yarar (tavuğa gerekmez).' }
 });
+
+// Koyun: ağıl hayvanı türü (Animal.js tablosu modül yüklenirken genişletilir)
+ANIMAL_TYPES.sheep = ANIMAL_TYPES.sheep || { name: 'Koyun', tex: 'a_sheep', icon: 'i_sheep', hp: 36, speed: 14, product: 'wool', productBig: 'wool_big', house: 'barn', cap: 4, h: 13 };
+ANIMAL_NAMES.sheep = ANIMAL_NAMES.sheep || ['Kuzucuk', 'Pamukçuk', 'Bulut', 'Kıvırcık', 'Boncuk', 'Karabaş', 'Lokum', 'Paşa'];
 
 RECIPES.push(
   { out: 'feed',   qty: 4, cost: { wheat: 1 } },
@@ -26,17 +34,21 @@ RECIPES.push(
   { out: 'omelet', qty: 1, cost: { egg_big: 1 } },
   { out: 'cheese', qty: 1, cost: { milk: 2 } },
   { out: 'cheese', qty: 3, cost: { milk_big: 2 } },
-  { out: 'cake',   qty: 1, cost: { egg: 1, milk: 1, wheat: 2 } }
+  { out: 'cake',   qty: 1, cost: { egg: 1, milk: 1, wheat: 2 } },
+  { out: 'rope',   qty: 1, cost: { wheat: 2 } },
+  { out: 'rope',   qty: 3, cost: { wool: 1 } }
 );
 
 // Hayvan Pazarı (ağıl tabelası + Hayvanlar paneli); Kemal de yem ve hayvan satar
 SHOPS.animals = [
   { id: 'animal_chicken', qty: 1, price: 120 },
   { id: 'animal_cow', qty: 1, price: 400 },
+  { id: 'animal_sheep', qty: 1, price: 260 },
+  { id: 'rope', qty: 2, price: 20 },
   { id: 'feed', qty: 1, price: 5 },
   { id: 'feed', qty: 10, price: 45 }
 ];
-SHOPS.merchant.push({ id: 'feed', qty: 10, price: 45 }, { id: 'animal_chicken', qty: 1, price: 120 }, { id: 'animal_cow', qty: 1, price: 400 });
+SHOPS.merchant.push({ id: 'feed', qty: 10, price: 45 }, { id: 'animal_chicken', qty: 1, price: 120 }, { id: 'animal_cow', qty: 1, price: 400 }, { id: 'animal_sheep', qty: 1, price: 260 });
 
 // Hayvan ürünleri isteyen görevler (zinciri mevcut görevlerin sonuna eklenir)
 [
@@ -101,6 +113,20 @@ function drawCow(ctx, f) {
   R(ctx, 19, 6 + hy, 4, 3, P); R(ctx, 21, 7 + hy, 1, 1, '#a85f5f'); // burun
 }
 
+function drawSheep(ctx, f) {
+  const W = '#f4f1ea', S = '#dcd6ca', K = '#2b2420', E = '#f6f3ec', P = '#e8a0a0';
+  const hy = f ? 1 : 0;
+  const legs = f ? [4, 6, 10, 12] : [3, 6, 10, 13];
+  legs.forEach((x) => { R(ctx, x, 10, 1, 3, K); });
+  R(ctx, 2, 4, 12, 6, W); R(ctx, 3, 3, 10, 1, W); R(ctx, 3, 10, 10, 1, S);   // yün gövde
+  [[3, 3], [6, 2], [9, 2], [12, 3], [2, 6], [13, 7]].forEach(([x, y]) => R(ctx, x, y, 2, 2, W));
+  [[4, 5], [8, 4], [11, 6], [6, 8]].forEach(([x, y]) => R(ctx, x, y, 1, 1, S)); // kıvrımlar
+  R(ctx, 13, 3 + hy, 4, 4, K);                                // baş
+  R(ctx, 12, 3 + hy, 1, 1, K); R(ctx, 13, 2 + hy, 2, 1, W);   // kulak + perçem
+  R(ctx, 15, 4 + hy, 1, 1, E);                                // göz
+  R(ctx, 16, 6 + hy, 1, 1, P);                                // burun
+}
+
 // 2 karelik hayvan sayfası: her kare ayrı tuvalde konturlanır
 function animalSheet(scene, key, fw, fh, draw) {
   const tex = addCanvas(scene, key, fw * 2, fh, (ctx) => {
@@ -118,6 +144,7 @@ function animalSheet(scene, key, fw, fh, draw) {
 function makeTextures(scene) {
   animalSheet(scene, 'a_chicken', 12, 12, drawChicken);
   animalSheet(scene, 'a_cow', 24, 16, drawCow);
+  animalSheet(scene, 'a_sheep', 18, 14, drawSheep);
 
   // Kümes (32x28): kapı açık/kapalı
   const coop = (closed) => (ctx) => {
@@ -220,7 +247,30 @@ function makeTextures(scene) {
     outline(ctx, 16, 16, '#3a2e2a');
   });
 
-  [['a_chicken', 6], ['a_cow', 4]].forEach(([key, rate]) => {
+  icon('i_sheep', (ctx) => {
+    const { c, ctx: fc } = makeCanvas(18, 14);
+    drawSheep(fc, 0); outline(fc, 18, 14, '#3a2e2a');
+    ctx.drawImage(c, -1, 1);
+  });
+  const wool = (base, shade, sparkle) => (ctx) => {
+    [[3, 6, 5], [6, 4, 5], [9, 6, 5], [5, 8, 6], [2, 9, 4], [10, 9, 4]].forEach(([x, y, n]) => R(ctx, x, y, n, n - 1, base));
+    R(ctx, 4, 12, 8, 1, shade); R(ctx, 7, 7, 1, 1, shade); R(ctx, 10, 10, 1, 1, shade); R(ctx, 5, 10, 1, 1, shade);
+    outline(ctx, 16, 16, '#3a2e2a');
+    if (sparkle) { R(ctx, 13, 1, 1, 3, '#ffffff'); R(ctx, 12, 2, 3, 1, '#ffffff'); }
+  };
+  icon('i_wool', wool('#f4f1ea', '#cfc8bb'));
+  icon('i_wool_big', wool('#fff6d8', '#e0c98a', true));
+  icon('i_rope', (ctx) => {
+    for (let i = 0; i < 3; i++) {
+      const r = 5 - i;
+      R(ctx, 8 - r, 3 + i, r * 2, 1, '#c9a06b'); R(ctx, 8 - r, 12 - i, r * 2, 1, '#a87f4f');
+      R(ctx, 3 + i, 8 - r, 1, r * 2, '#b8915c'); R(ctx, 12 - i, 8 - r, 1, r * 2, '#b8915c');
+    }
+    R(ctx, 12, 11, 2, 1, '#c9a06b'); R(ctx, 13, 12, 2, 2, '#a87f4f');
+    outline(ctx, 16, 16, '#3a2e2a');
+  });
+
+  [['a_chicken', 6], ['a_cow', 4], ['a_sheep', 5]].forEach(([key, rate]) => {
     if (!scene.anims.exists(`${key}_walk`)) scene.anims.create({ key: `${key}_walk`, frames: [{ key, frame: 0 }, { key, frame: 1 }], frameRate: rate, repeat: -1 });
   });
 }
@@ -275,10 +325,11 @@ function refreshVisuals(scene) {
 
 function countType(scene, type) { return st(scene).animals.filter((a) => a.type === type).length; }
 
-function spawnAnimal(scene, type, data = {}) {
+function spawnAnimal(scene, type, data = {}, at = null) {
   const S = st(scene);
   const h = doorSpot(ANIMAL_TYPES[type].house);
-  const a = new Animal(scene, h.x + Phaser.Math.Between(-4, 4), h.y + 6, type, data);
+  const a = at ? new Animal(scene, at.x, at.y, type, data) : new Animal(scene, h.x + Phaser.Math.Between(-4, 4), h.y + 6, type, data);
+  if (type === 'sheep') { a.body.setSize(12, 5).setOffset(3, 8); a.radius = 7; }
   a.ranch = S.api;
   S.animals.push(a);
   scene.extraTargets.push(a);
@@ -293,15 +344,25 @@ function removeAnimal(scene, a) {
   if (i >= 0) scene.extraTargets.splice(i, 1);
 }
 
-// Yeni hayvanı ağıla ekle (kapasite kontrolü ile)
-function addAnimal(scene, type) {
+// Ağıla yeni hayvan alınabilir mi? null = evet, yoksa 'nopen' | 'full'. reserved: yolda olan (yakalanmış) hayvanlar
+function admitBlock(scene, type, reserved = 0) {
+  if (!st(scene).built) return 'nopen';
+  return countType(scene, type) + reserved >= ANIMAL_TYPES[type].cap ? 'full' : null;
+}
+const fullText = (def) => `${def.house === 'coop' ? 'Kümes' : 'Ahır'} dolu! (en fazla ${def.cap} ${def.name.toLocaleLowerCase('tr')})`;
+
+// Yeni hayvanı ağıla ekle (kapasite kontrolü ile). opts: { at:{x,y}, name, via } (via: 'catch' → yakalanan hayvan)
+function addAnimal(scene, type, opts = {}) {
   const def = ANIMAL_TYPES[type];
-  if (!st(scene).built) { scene.hud.notice('Önce ağılı kur! (sığınağın kuzeybatısındaki kazıklı alan)'); audio.sfx('error'); return null; }
-  if (countType(scene, type) >= def.cap) { scene.hud.notice(`${def.house === 'coop' ? 'Kümes' : 'Ahır'} dolu! (en fazla ${def.cap} ${def.name.toLowerCase()})`); audio.sfx('error'); return null; }
+  const block = admitBlock(scene, type);
+  if (block === 'nopen') { scene.hud.notice('Önce ağılı kur! (sığınağın kuzeybatısındaki kazıklı alan)'); audio.sfx('error'); return null; }
+  if (block === 'full') { scene.hud.notice(fullText(def)); audio.sfx('error'); return null; }
   const used = new Set(st(scene).animals.map((x) => x.animalName));
   const pool = ANIMAL_NAMES[type].filter((n) => !used.has(n));
-  const a = spawnAnimal(scene, type, { name: pool.length ? Phaser.Utils.Array.GetRandom(pool) : undefined });
-  scene.hud.toast(`🎉 ${a.animalName} adlı ${def.name.toLowerCase()} ağıla yerleşti!`, 'ok');
+  const name = opts.name && !used.has(opts.name) ? opts.name : (pool.length ? Phaser.Utils.Array.GetRandom(pool) : undefined);
+  const a = spawnAnimal(scene, type, { name }, opts.at || null);
+  scene.hud.toast(opts.via === 'catch' ? `🪢 Yakalanan ${def.name.toLocaleLowerCase('tr')} ${a.animalName} ağıla girdi!` : `🎉 ${a.animalName} adlı ${def.name.toLowerCase()} ağıla yerleşti!`, 'ok');
+  scene.events.emit('animalAdded', a);
   return a;
 }
 
@@ -435,7 +496,7 @@ function tryBuildPen(scene) {
   scene.spawnParticles(SIGN.x, SIGN.y - 30, 0xc8a070, 20);
   scene.cameras.main.shake(120, 0.003);
   audio.sfx('quest');
-  scene.hud.banner('Ağıl kuruldu! 🐔', 'Tabeladaki Hayvan Pazarı' + "'" + 'ndan tavuk ve inek alabilirsin.');
+  scene.hud.banner('Ağıl kuruldu! 🐔', 'Tabeladaki Hayvan Pazarı' + "'" + 'ndan hayvan al ya da doğadaki tavuk/inek/koyunları yakala (🪢).');
   scene.events.emit('penBuilt');
 }
 
@@ -519,12 +580,13 @@ function openPanel(scene, tab = 'mine') {
       `<span class="chip ${S.doorsClosed ? 'good' : ''}">Kapılar: ${S.doorsClosed ? 'Kapalı 🔒' : 'Açık 🔓'}</span>` +
       `<span class="chip">Kümes ${countType(scene, 'chicken')}/${ANIMAL_TYPES.chicken.cap}</span>` +
       `<span class="chip">Ahır ${countType(scene, 'cow')}/${ANIMAL_TYPES.cow.cap}</span>` +
+      `<span class="chip">Koyun ${countType(scene, 'sheep')}/${ANIMAL_TYPES.sheep.cap}</span>` +
       `<span class="chip">${scene.player.coins} 🪙</span>`);
     root.appendChild(sum);
     const list = el('div', 'list');
     if (tab === 'mine') {
       if (!S.built) list.appendChild(el('p', 'tip', `Henüz ağılın yok. Sığınağın kuzeybatısındaki kazıklı alana git ve ağılı kur (${costText()}).`));
-      else if (!S.animals.length) list.appendChild(el('p', 'tip', 'Henüz hayvanın yok. Hayvan Pazarı\'ndan tavuk ya da inek al.'));
+      else if (!S.animals.length) list.appendChild(el('p', 'tip', 'Henüz hayvanın yok. Hayvan Pazarı\'ndan tavuk, inek ya da koyun al — ya da doğadaki sürülerden yakala (🪢).'));
       S.animals.forEach((a) => {
         const tags = [
           a.fed ? '<span class="chip good">Tok</span>' : '<span class="chip bad">Aç</span>',
@@ -589,6 +651,12 @@ export default {
     // Ağıl alanı tarlaya kapalı; ağıl oyuncu kurunca belirir
     scene.farm.reserved.push({ x: PEN.x0, y: PEN.y0, w: PEN.x1 - PEN.x0 + 1, h: PEN.y1 - PEN.y0 + 1 });
     showPenSite(scene);
+    // Doğadan yakalanan hayvanlar (wildstock) için: kapı noktaları, kapasite ve kabul
+    const gx = T(PEN.gate) + 8;
+    S.gate = { out: { x: gx, y: T(PEN.y1) + 22 }, mid: { x: gx, y: T(PEN.y1) + 8 }, in: { x: gx, y: ROAM.y1 - 4 } };
+    S.canAdmit = (type, reserved = 0) => (ANIMAL_TYPES[type] ? admitBlock(scene, type, reserved) : 'bad');
+    S.fullText = (type) => fullText(ANIMAL_TYPES[type]);
+    S.admit = (type, opts = {}) => addAnimal(scene, type, { at: S.gate.in, via: 'catch', ...opts });
     S.env = {
       roam: ROAM,
       trough: { x: TROUGH.x - 12, y: TROUGH.y + 2 },

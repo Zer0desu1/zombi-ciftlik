@@ -426,7 +426,7 @@ function crowAttack(scene) {
     scene.farm.refresh(p);
     if (i < 3) flyCrow(scene, p.tx * TILE + 8, p.ty * TILE + 6, i * 250);
   });
-  if (eaten.length) scene.hud.toast(`Kargalar ${eaten.length} ekinini yedi! Korkuluk yap (6 odun).`, 'warn');
+  if (eaten.length) scene.toastAll(`Kargalar ${eaten.length} ekinini yedi! Korkuluk yap (6 odun).`, 'warn');
 }
 
 function flyCrow(scene, x, y, delay) {
@@ -482,11 +482,14 @@ function onHarvest(scene, e) {
   if (!it || !scene.textures.exists(it.icon)) return;
   // Ürün tarladan havaya zıplar, sonra envantere (hotbar slotuna) uçar
   const img = scene.add.image(e.x, e.y, it.icon).setDepth(15000).setScale(0.8);
+  // Co-op: hedef host'un ekranındaki hotbar → aynalanmaz; misafirin hasadında host'ta da hotbar'a uçmaz
+  img.netSkip = true;
+  const byGuest = !!scene.net?.ctx;
   scene.tweens.add({
     targets: img, y: e.y - 18, scale: 1.1, duration: 240, ease: 'Quad.easeOut',
     onComplete: () => {
       const sx = img.x, sy = img.y;
-      const goal = harvestTargetNode(scene, e.item);
+      const goal = byGuest ? null : harvestTargetNode(scene, e.item);
       if (!goal) { scene.tweens.add({ targets: img, alpha: 0, scale: 0.4, duration: 200, onComplete: () => img.destroy() }); return; }
       scene.tweens.addCounter({
         from: 0, to: 1, duration: 420, ease: 'Cubic.easeIn',

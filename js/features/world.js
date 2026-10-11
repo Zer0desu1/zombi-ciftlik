@@ -315,10 +315,10 @@ function setWeather(scene, type, silent) {
   if (changed || !silent) scene.events.emit('weatherChanged', type, WEATHERS[type]);
   if (!silent) {
     const w = WEATHERS[type];
-    if (type === 'rain') scene.hud.toast(snow ? '❄️ Kar yağıyor. Tarla nemli kalacak.' : '🌧️ Yağmur yağıyor: tarlan kendiliğinden sulanıyor!', 'info');
-    else if (type === 'storm') scene.hud.toast('⛈️ Fırtına! Tarla sulandı ama bu gece zombiler daha hızlı.', 'warn');
-    else if (type === 'fog') scene.hud.toast('🌫️ Sisli bir gün. Zombiler seni zor fark eder.', 'info');
-    else if (Math.random() < 0.3) scene.hud.toast(`${w.icon} Hava açık. Ekinlerini sulamayı unutma.`, 'info');
+    if (type === 'rain') scene.toastAll(snow ? '❄️ Kar yağıyor. Tarla nemli kalacak.' : '🌧️ Yağmur yağıyor: tarlan kendiliğinden sulanıyor!', 'info');
+    else if (type === 'storm') scene.toastAll('⛈️ Fırtına! Tarla sulandı ama bu gece zombiler daha hızlı.', 'warn');
+    else if (type === 'fog') scene.toastAll('🌫️ Sisli bir gün. Zombiler seni zor fark eder.', 'info');
+    else if (Math.random() < 0.3) scene.toastAll(`${w.icon} Hava açık. Ekinlerini sulamayı unutma.`, 'info');
   }
 }
 
@@ -400,7 +400,8 @@ function freeTile(scene, tx, ty) {
   if (tx >= 24 && ty >= 9 && tx < 58 && ty < 36) return false;              // kasaba
   const t = scene.layer.getTileAt(tx, ty);
   if (!t || t.index > 2) return false;                                       // yalnızca çimen
-  if (scene.lakeRect && Phaser.Geom.Rectangle.Overlaps(scene.lakeRect, new Phaser.Geom.Rectangle(tx * TILE - 4, ty * TILE - 4, 24, 24))) return false;
+  const tr = new Phaser.Geom.Rectangle(tx * TILE - 4, ty * TILE - 4, 24, 24);
+  if ((scene.lakeRects || [scene.lakeRect]).some((r) => r && Phaser.Geom.Rectangle.Overlaps(r, tr))) return false;
   if (scene._world.forage.some((f) => f.tx === tx && f.ty === ty)) return false;
   return scene.physics.overlapRect(tx * TILE + 2, ty * TILE + 4, 12, 10, false, true).length === 0;
 }
@@ -467,18 +468,23 @@ function openChest(scene) {
 }
 
 // ---------------- Balık tutma ----------------
+// Haritadaki tüm göllerin (scene.lakeRects) en yakınına uzaklık
 function lakeDist(scene) {
-  const r = scene.lakeRect, p = scene.player;
-  if (!r || !p) return Infinity;
+  const p = scene.player, lakes = scene.lakeRects || (scene.lakeRect ? [scene.lakeRect] : []);
+  if (!lakes.length || !p) return Infinity;
   const px = p.x, py = p.y + 4;
-  const dx = Math.max(r.x - px, 0, px - r.right), dy = Math.max(r.y - py, 0, py - r.bottom);
-  return Math.hypot(dx, dy);
+  let best = Infinity;
+  for (const r of lakes) {
+    const dx = Math.max(r.x - px, 0, px - r.right), dy = Math.max(r.y - py, 0, py - r.bottom);
+    best = Math.min(best, Math.hypot(dx, dy));
+  }
+  return best;
 }
 
 function tryFish(scene, fromItem) {
   if (scene.hud.isModalOpen() || !scene.player.alive) return;
   if (lakeDist(scene) > 18) {
-    if (fromItem) { scene.hud.notice('Olta için gölün kıyısına git (haritanın sol altı).'); audio.sfx('error'); }
+    if (fromItem) { scene.hud.notice('Olta için bir gölün kıyısına git (köyün sol altı ya da doğu/güney kırları).'); audio.sfx('error'); }
     return;
   }
   if (!scene.player.useEnergy(3)) return;
@@ -698,7 +704,7 @@ export default {
       return d < 26 ? { dist: d, label: 'Sandığı aç', run: () => openChest(s) } : null;
     });
     scene.addInteraction((s) => {
-      if (!s.lakeRect || Math.abs(s.player.x - s.lakeRect.centerX) > 120 || Math.abs(s.player.y - s.lakeRect.centerY) > 90) return null;
+      if (!(s.lakeRects || [s.lakeRect]).some((r) => r && Math.abs(s.player.x - r.centerX) < 120 && Math.abs(s.player.y - r.centerY) < 90)) return null;
       const d = lakeDist(s);
       if (d > 18 || !s.inventory.count('fishing_rod')) return null;
       return { dist: d + 6, label: 'Balık tut', run: () => tryFish(s, false) };
@@ -819,12 +825,14 @@ export default {
 
     // Sis: zombiler oyuncuyu ancak yakından fark eder → uzaktakiler başka hedefe yönelir
     if (st.weather === 'fog' && scene.timeSys.isNight) {
-      const p = scene.player;
+      // (çok oyunculu: misafir karakterleri de sisin korumasından yararlanır)
+      const ps = scene.allPlayers ? scene.allPlayers() : [scene.player];
       let alts = null;
       for (const z of scene.zombies.getChildren()) {
-        if (z.dead || z.target !== p) continue;
+        const p = z.target;
+        if (z.dead || !ps.includes(p)) continue;
         if (Phaser.Math.Distance.Between(z.x, z.y, p.x, p.y) <= FOG_DETECT) continue;
-        if (!alts) alts = scene.zombieTargets().filter((t) => t !== p && t.active !== false && !t.hidden);
+        if (!alts) alts = scene.zombieTargets().filter((t) => !ps.includes(t) && t.active !== false && !t.hidden);
         let best = null, bd = Infinity;
         for (const t of alts) {
           const w = t.isShelter ? 1.6 : t.isStructure ? 1.3 : 1;

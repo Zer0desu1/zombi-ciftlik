@@ -667,13 +667,22 @@ export default {
       return oGive(id, n);
     };
     // Altın kazanç/harcama istatistiği
-    const p = scene.player;
-    const oCoins = p.addCoins.bind(p);
-    p.addCoins = (n) => {
-      oCoins(n);
-      if (n > 0) ST().coinsEarned += n; else if (n < 0) ST().coinsSpent -= n;
-      if (n > 0) checkAch(scene);
+    // Çok oyunculu: her oyuncunun kendi istatistiğine (misafir → kendi bağlamında). Host'un parası bir misafir
+    // bağlamının içinden değişirse (yakın öldürme payı, hediye) misafirin istatistiğine yazılmasın diye atlanır.
+    const wrapCoins = (pl) => {
+      const oCoins = pl.addCoins.bind(pl);
+      pl.addCoins = (n) => {
+        oCoins(n);
+        const bump = () => {
+          if (n > 0) ST().coinsEarned += n; else if (n < 0) ST().coinsSpent -= n;
+          if (n > 0) checkAch(scene);
+        };
+        if (pl.netRemote) { if (scene.net?.asPlayer) scene.net.asPlayer(pl, bump); }
+        else if (!scene.net?.ctx) bump();
+      };
     };
+    wrapCoins(scene.player);
+    scene.events.on('netPlayerAdded', wrapCoins);
 
     scene.events.on('zombieKilled', (z) => {
       ST().kills++; ST().nightKills++;

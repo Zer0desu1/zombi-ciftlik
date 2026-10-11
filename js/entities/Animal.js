@@ -171,4 +171,4 @@ export class Animal extends Actor {
 }
 
 // Ürün → balon ikonu
-const ITEM_ICON = { egg: 'i_egg', egg_big: 'i_egg_big', milk: 'i_milk', milk_big: 'i_milk_big' };
+const ITEM_ICON = { egg: 'i_egg', egg_big: 'i_egg_big', milk: 'i_milk', milk_big: 'i_milk_big', wool: 'i_wool', wool_big: 'i_wool_big' };

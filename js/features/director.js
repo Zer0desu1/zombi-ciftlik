@@ -9,11 +9,17 @@ import { loadRecords, recordEndlessNight } from '../systems/Records.js';
 
 // ---------------- Adım adım hedefler ----------------
 const cropsWhere = (s, fn) => { let n = 0; for (const p of s.farm.plots.values()) if (p.crop && fn(p)) n++; return n; };
+// Co-op: takımın toplam odunu (misafir bağlamında s.inventory misafirinki olabilir → host'unki net.hostInv)
+const woodCount = (s) => {
+  let n = (s.net?.hostInv || s.inventory).count('wood');
+  if (s.net?.guests) for (const g of s.net.guests.values()) n += g.inv.count('wood');
+  return n;
+};
 const OBJECTIVES = [
   { id: 'till',      text: 'Çapayla tarlada 3 kare sür',            hint: 'Çapa seçip çimenli bir yere tıkla (batıdaki açık çayır ideal)', goal: 3, prog: (s) => s.farm.plots.size, reward: 10 },
   { id: 'plant',     text: '3 tohum ek',                              hint: 'Tohum seçip sürülmüş toprağa tıkla',          goal: 3, prog: (s) => cropsWhere(s, () => true), reward: 10 },
   { id: 'water',     text: 'Ekinlerini sula',                         hint: 'Sulama kabıyla ekili kareye tıkla',           goal: 3, prog: (s) => cropsWhere(s, (p) => p.watered), reward: 10 },
-  { id: 'wood',      text: 'Baltayla ağaç kes',                       hint: 'Kasabanın dışındaki ağaçlara git',           goal: 10, prog: (s) => s.inventory.count('wood'), reward: 10 },
+  { id: 'wood',      text: 'Baltayla ağaç kes',                       hint: 'Kasabanın dışındaki ağaçlara git',           goal: 10, prog: (s) => woodCount(s), reward: 10 },
   { id: 'invite',    text: 'Bir hayatta kalanı köye kat',            hint: 'Haritada 💬 olanları davet et, ❗ olanları zombilerden kurtar', goal: 1, prog: (s) => s.settlement?.joinedCount() || 0, reward: 20 },
   { id: 'barricade', text: 'Barikat üret ve yerleştir',               hint: 'Envanter → Üretim → Barikat, sonra sığınağın önüne koy', goal: 1, prog: (s) => s.barricades.countActive(true), reward: 20 },
   { id: 'night1',    text: 'İlk geceyi atlat',                        hint: 'Sığınağı koru; sürüler kenarlardan gelir',    goal: 1, prog: (s) => s.waves.wave - (s.waves.active ? 1 : 0), reward: 25 },
@@ -153,7 +159,7 @@ function hordeAlert(s, h) {
   layer.appendChild(n);
   setTimeout(() => n.remove(), 4000);
   const dir = { kuzey: 'Kuzeyden', güney: 'Güneyden', batı: 'Batıdan', doğu: 'Doğudan' }[h.sideName] || 'Kenardan';
-  s.hud.toast(`${dir} ${h.count} zombilik sürü geliyor!`, 'warn');
+  s.toastAll(`${dir} ${h.count} zombilik sürü geliyor!`, 'warn');
 }
 
 function currentObjective() {
@@ -188,9 +194,9 @@ function checkObjectives(s) {
   if (!o) return;
   if (o.prog(s, st) >= o.goal) {
     st.done.push(o.id);
-    if (o.reward) s.player.addCoins(o.reward);
     audio.sfx('quest');
-    s.hud.toast(`✅ Hedef tamam: ${o.text}${o.reward ? ` · +${o.reward} 🪙` : ''}`, 'ok');
+    // Ortak hedef: ödül ve bildirim her oyuncuya
+    s.rewardAll(o.reward || 0, `✅ Hedef tamam: ${o.text}${o.reward ? ` · +${o.reward} 🪙` : ''}`, 'ok');
   }
 }
 
@@ -507,7 +513,7 @@ export default {
           st.earlyStart = true;
           s.timeSys.speedMul = 14;
           audio.sfx('alarm');
-          s.hud.toast('Zaman hızlandı… Gece geliyor! Erken başlattığın için ödül +%30.', 'warn');
+          s.toastAll('Zaman hızlandı… Gece geliyor! Erken başlattığın için ödül +%30.', 'warn');
         }
       };
     });
@@ -516,9 +522,13 @@ export default {
     const farm = scene.farm;
     const harvest = farm.harvest.bind(farm);
     farm.harvest = (...a) => { const r = harvest(...a); if (r) st.harvested = true; return r; };
-    const player = scene.player;
-    const addCoins = player.addCoins.bind(player);
-    player.addCoins = (n) => { if (n > 0 && scene.hud?.modal === 'shop') st.sold = true; return addCoins(n); };
+    // (çok oyunculu: misafir karakterleri de — misafir bağlamında hud.modal misafirin paneli)
+    const wrapSell = (pl) => {
+      const addCoins = pl.addCoins.bind(pl);
+      pl.addCoins = (n) => { if (n > 0 && scene.hud?.modal === 'shop') st.sold = true; return addCoins(n); };
+    };
+    wrapSell(scene.player);
+    scene.events.on('netPlayerAdded', wrapSell);
 
     const ev = scene.events;
     const onHorde = (h) => hordeAlert(scene, h);
@@ -533,8 +543,7 @@ export default {
     const onWaveEnd = (w) => {
       if (st.earlyStart) {
         const bonus = Math.round(15 * w * 0.3 * (scene.difficulty?.reward ?? 1));
-        scene.player.addCoins(bonus);
-        scene.hud.toast(`Erken başlatma ödülü: +${bonus} 🪙`, 'ok');
+        scene.rewardAll(bonus, `Erken başlatma ödülü: +${bonus} 🪙`, 'ok');
         st.earlyStart = false;
       }
       if (st.finalNight) {
@@ -605,7 +614,7 @@ export default {
       ff = true;
       scene.timeSys.speedMul = 12;
       const bonus = Math.round(8 * w.wave * (scene.difficulty?.reward ?? 1));
-      scene.player.addCoins(bonus);
+      scene.rewardAll(bonus); // herkese (banner zaten herkese gider)
       scene.hud.banner('Sürü temizlendi!', `Şafak yaklaşıyor · temizleme ödülü +${bonus} 🪙`);
     }
     // Kule tüfeği

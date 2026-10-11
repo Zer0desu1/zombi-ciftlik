@@ -119,17 +119,17 @@ const CSS = `
 @keyframes jcWave { 0% { opacity: 0 } 12% { opacity: 1 } 30% { opacity: .55 } 45% { opacity: .95 } 100% { opacity: 0 } }
 @keyframes jcHurt { 0% { opacity: .9 } 100% { opacity: 0 } }
 @keyframes jcLow { 0%,100% { opacity: .35 } 50% { opacity: .8 } }
-#jc-minimap { position: absolute; top: 74px; right: 66px; width: 144px; height: 96px; padding: 0; border-radius: 10px;
+#jc-minimap { position: absolute; top: 74px; right: 66px; width: 144px; height: 99px; padding: 0; border-radius: 10px;
   overflow: hidden; pointer-events: auto; cursor: pointer; display: none; transition: width .2s ease, height .2s ease; }
 #jc-minimap.show { display: block; }
 #jc-minimap canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
-#jc-minimap.big { width: 288px; height: 192px; }
+#jc-minimap.big { width: 288px; height: 198px; }
 #jc-minimap .jc-lbl { position: absolute; left: 6px; bottom: 3px; font-size: 9px; color: rgba(255,255,255,.7); text-shadow: 0 1px 2px #000; pointer-events: none; }
-body.is-touch #jc-minimap { top: calc(env(safe-area-inset-top, 0px) + 124px); right: 8px; width: 96px; height: 64px; border-radius: 8px; }
-body.is-touch #jc-minimap.big { width: 192px; height: 128px; }
+body.is-touch #jc-minimap { top: calc(env(safe-area-inset-top, 0px) + 124px); right: 8px; width: 96px; height: 66px; border-radius: 8px; }
+body.is-touch #jc-minimap.big { width: 192px; height: 132px; }
 @media (max-width: 600px) {
-  #jc-minimap { top: calc(env(safe-area-inset-top, 0px) + 124px); right: 8px; width: 96px; height: 64px; border-radius: 8px; }
-  #jc-minimap.big { width: 192px; height: 128px; }
+  #jc-minimap { top: calc(env(safe-area-inset-top, 0px) + 124px); right: 8px; width: 96px; height: 66px; border-radius: 8px; }
+  #jc-minimap.big { width: 192px; height: 132px; }
 }
 .jc-set { display: grid; gap: 12px; font-size: 14px; }
 .jc-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; min-height: 44px; }
@@ -590,7 +590,7 @@ function updateWater(scene) {
 }
 
 // ---------------- Mini harita ----------------
-const MM_W = MAP_W * 2, MM_H = MAP_H * 2; // 192x128 (2px/tile; CSS'te 1.5px/tile ölçekli gösterilir)
+const MM_W = MAP_W * 2, MM_H = MAP_H * 2; // 256x176 (2px/tile; CSS'te ~1.1px/tile ölçekli gösterilir, oran 16:11)
 
 // Tile index → ortalama renk (tileset'ten örneklenir; yeni tile türleri de otomatik çalışır)
 function tileColors(scene) {
@@ -635,6 +635,9 @@ function buildMinimapBg(scene) {
     const w = (o.displayWidth || 16) * s, h = (o.displayHeight || 16) * s;
     ctx.fillStyle = col; ctx.fillRect(Math.round(o.x * s - w / 2), Math.round(o.y * s - h / 2), Math.max(1, Math.round(w)), Math.max(1, Math.round(h)));
   };
+  // Göller (görüntü + görünmez su gövdesi; karo değil)
+  ctx.fillStyle = '#3f7fc4';
+  (scene.lakeRects || (scene.lakeRect ? [scene.lakeRect] : [])).forEach((l) => ctx.fillRect(Math.round(l.x * s), Math.round(l.y * s), Math.round(l.width * s), Math.round(l.height * s)));
   scene.obstacles?.getChildren().forEach((o) => { if (o.visible) rect(o, o.texture?.key === 'fence' ? '#8a5a3a' : '#5d3c27'); });
   scene.resources?.getChildren().forEach((r) => {
     if (r.depleted || !r.visible) return;

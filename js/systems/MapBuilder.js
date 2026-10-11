@@ -1,4 +1,4 @@
-import { TILE, MAP_W, MAP_H, LEGACY_MAP_W, LEGACY_MAP_H, FARM_ZONE, SHELTER_TILE, MARKET_TILE, FORGE_TILE } from '../config.js';
+import { TILE, MAP_W, MAP_H, LEGACY_MAP_W, LEGACY_MAP_H, V2_MAP_W, V2_MAP_H, FARM_ZONE, SHELTER_TILE, MARKET_TILE, FORGE_TILE } from '../config.js';
 import { Shelter } from '../entities/Structures.js';
 import { T } from './Farm.js';
 import { makeCanvas, PAL, dith } from '../textures.js';
@@ -8,6 +8,29 @@ const inRect = (x, y, r) => x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r
 // Keşif alanları (tile koordinatları): sol altta göl, doğuda terk edilmiş ev
 export const LAKE_ZONE = { x: 3, y: 35, w: 8, h: 5 };
 export const RUINS_ZONE = { x: 55, y: 27, w: 6, h: 5 };
+
+// --- Sürüm 3 (128×88) yeni alanı: doğu şeridi (x ≥ 94) ve güney şeridi (y ≥ 62) ---
+// Göller (eski göl dokusuyla aynı 8×5 boyut), taş ocağı, yaşlı koru, terk edilmiş kamp, güney mezrası ve
+// yaban hayvanlarına açık çayırlar. Hepsi tile koordinatı; eski alanlara dokunmaz.
+export const NEW_LAKES = [
+  { x: 114, y: 30, w: 8, h: 5, flip: true },
+  { x: 10, y: 72, w: 8, h: 5 },
+  { x: 84, y: 78, w: 8, h: 5, flip: true }
+];
+export const QUARRY_ZONE = { x: 98, y: 62, w: 9, h: 7 };
+export const GROVE_ZONE = { x: 60, y: 64, w: 18, h: 8 };
+export const CAMP_ZONE = { x: 116, y: 60, w: 6, h: 5 };
+const HAMLET_ZONE = { x: 42, y: 68, w: 16, h: 6 };
+const HAMLET_HOUSES = [[44, 70], [52, 70]];
+// Yaban hayvanı çayırları: ağaç/kaya konmaz (wildlife/predators isterse scene.wildAreas'tan okur)
+export const MEADOWS = [
+  { id: 'ne_meadow', x: 98, y: 4, w: 24, h: 15 },
+  { id: 'e_meadow', x: 96, y: 40, w: 12, h: 16 },
+  { id: 's_meadow', x: 20, y: 64, w: 20, h: 8 }
+];
+// Yeni yollar: güney yolu (y=74, dikey ana yoldan doğuya) + doğu yolu (x=110, yatay ana yoldan güneye) → halka
+const ROAD_S = { y: 74, x0: 33, x1: 110 };
+const ROAD_E = { x: 110, y0: 24, y1: 74 };
 
 // --- Orman sınırı: haritanın dört kenarında oyuncunun giremediği sık orman şeridi ---
 // Zombiler ve hayvanlar bu şeritle çarpışmaz (ormandan çıkıp gelirler); yalnızca oyuncu durdurulur.
@@ -53,16 +76,32 @@ const legacyEdgeBlocked = (tx, ty) => tx < FOREST_TILES || ty < FOREST_TILES || 
 const legacyPath = (data, tx, ty) => data[ty][tx] === T.PATH && !(ty === 23 && tx > LW - 4) && !(tx === 32 && ty > LH - 4);
 export const LEGACY_RES = 92; // eski haritadaki kaynak sayısı (60 ağaç + 32 kaya)
 
+// --- Sürüm 2 (96×64) harita uyumu ---
+// 96×64 alanının ek kaynakları sürüm 2'deki kenar/geçit kurallarıyla aynı 'zombi-ciftlik-genis' akışından
+// yerleştirilir; böylece kaynak sırası 0..V2_RES-1 sürüm 2 ile birebir aynıdır. Sürüm 3 alanı ayrı tohumla dolar.
+const VW = V2_MAP_W, VH = V2_MAP_H;
+const v2Gate = new Set([
+  ...[0, 1, 2, 3].map((y) => `32,${y}`), ...[VH - 4, VH - 3, VH - 2, VH - 1].map((y) => `32,${y}`),
+  ...[0, 1, 2].map((x) => `${x},23`), ...[VW - 3, VW - 2, VW - 1].map((x) => `${x},23`)
+]);
+const v2EdgeBlocked = (tx, ty) => tx < FOREST_TILES || ty < FOREST_TILES || tx >= VW - FOREST_TILES || ty >= VH - FOREST_TILES || v2Gate.has(`${tx},${ty}`);
+export const V2_RES = LEGACY_RES + 71 + 38; // sürüm 2 haritasındaki kaynak sayısı
+// Alan oranı (96×64'e göre): zemin süsü sayıları buna göre ölçeklenir
+const AREA_K = (MAP_W * MAP_H) / (VW * VH);
+
 // Dünyayı (zemin, binalar, kaynaklar) kurar. Aynı tohumla her seferinde aynı harita oluşur.
 export function buildWorld(scene) {
   const rng = new Phaser.Math.RandomDataGenerator(['zombi-ciftlik']);
   // Yeni alan (x ≥ 64 ya da y ≥ 44) için ayrı tohum: eski akış değişmesin
   const rng2 = new Phaser.Math.RandomDataGenerator(['zombi-ciftlik-genis']);
+  // Sürüm 3 alanı (x ≥ 96 ya da y ≥ 64) için üçüncü tohum: sürüm 2 akışı değişmesin
+  const rng3 = new Phaser.Math.RandomDataGenerator(['zombi-ciftlik-genis-3']);
   const grass = (r) => (r < 0.08 ? T.GRASS2 : r < 0.2 ? T.GRASS3 : T.GRASS);
   const data = [];
   for (let y = 0; y < MAP_H; y++) data.push(new Array(MAP_W));
   for (let y = 0; y < LH; y++) for (let x = 0; x < LW; x++) data[y][x] = grass(rng.frac());
-  for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) if (x >= LW || y >= LH) data[y][x] = grass(rng2.frac());
+  for (let y = 0; y < VH; y++) for (let x = 0; x < VW; x++) if (x >= LW || y >= LH) data[y][x] = grass(rng2.frac());
+  for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) if (x >= VW || y >= VH) data[y][x] = grass(rng3.frac());
   const set = (x, y, t) => { if (x >= 0 && y >= 0 && x < MAP_W && y < MAP_H) data[y][x] = t; };
 
   // Hazır tarla yok: FARM_ZONE yalnızca ağaçsız açık bir çayır olarak bırakılır, tarlayı oyuncu kurar
@@ -72,6 +111,9 @@ export function buildWorld(scene) {
   for (let x = 22; x <= 32; x++) set(x, 14, T.PATH);
   for (let x = 33; x <= 48; x++) set(x, 17, T.PATH);
   for (let y = 23; y <= 27; y++) set(44, y, T.PATH);
+  // Sürüm 3: güney ve doğu yolları (yalnızca yeni alanda)
+  for (let x = ROAD_S.x0; x <= ROAD_S.x1; x++) set(x, ROAD_S.y, T.PATH);
+  for (let y = ROAD_E.y0; y <= ROAD_E.y1; y++) set(ROAD_E.x, y, T.PATH);
   // Meydan
   for (let y = 21; y <= 25; y++) for (let x = 27; x <= 37; x++) set(x, y, T.STONE);
 
@@ -101,6 +143,8 @@ export function buildWorld(scene) {
   addBlock(fx, fy, 'forge', 44, 22, 2, 14, 18);
   // Dekoratif evler
   [[14, 27], [20, 27], [48, 31], [53, 13]].forEach(([tx, ty]) => addBlock(tx * TILE + 24, ty * TILE + 22, 'house', 40, 20, 4, 22, 20));
+  // Güney mezrası (sürüm 3): terk edilmiş iki ev
+  HAMLET_HOUSES.forEach(([tx, ty]) => addBlock(tx * TILE + 24, ty * TILE + 22, 'house', 40, 20, 4, 22, 20));
 
   const fz = FARM_ZONE;
 
@@ -113,21 +157,40 @@ export function buildWorld(scene) {
     { x: LAKE_ZONE.x - 1, y: LAKE_ZONE.y - 1, w: LAKE_ZONE.w + 2, h: LAKE_ZONE.h + 2 },
     { x: RUINS_ZONE.x - 1, y: RUINS_ZONE.y - 1, w: RUINS_ZONE.w + 2, h: RUINS_ZONE.h + 2 }
   ];
+  // Sürüm 3 alanında ayrılmış yerler (yalnızca yeni alanın yerleşimini etkiler; eski akışlara dokunmaz).
+  // Sıra önemli: ilk 'poiN' tanesi göl/ocak/koru/kamp/mezra (süsler de kaçınır), sonrakiler çayırlar.
+  const pad = (r, m = 1) => ({ x: r.x - m, y: r.y - m, w: r.w + m * 2, h: r.h + m * 2 });
+  const reserved3 = [
+    ...NEW_LAKES.map((l) => pad(l)), pad(QUARRY_ZONE), pad(GROVE_ZONE, 0), pad(CAMP_ZONE), HAMLET_ZONE, ...MEADOWS
+  ];
+  const poiN = NEW_LAKES.length + 4;
   const used = new Set();
-  // legacy: eski alan, eski RNG ve eski kurallar · aksi halde yeni alan (rng2), yeni kenar kuralları
-  const place = (kind, count, legacy = true) => {
+  // 'legacy': eski alan, eski RNG ve eski kurallar · 'v2': 96×64 alanı (rng2, sürüm 2 kuralları)
+  // 'v3': 128×88'in yeni alanı (rng3) · region verilirse (v3) yalnızca o dikdörtgende küme halinde
+  const nextTo = (tx, ty, fn) => [[0, 1], [0, -1], [1, 0], [-1, 0]].some(([dx, dy]) => fn(tx + dx, ty + dy));
+  const place = (kind, count, mode = 'legacy', region = null) => {
     let tries = 0;
     while (count > 0 && tries++ < 3000) {
       let tx, ty;
-      if (legacy) {
+      if (mode === 'legacy') {
         tx = rng.between(1, LW - 2); ty = rng.between(2, LH - 2);
         if (reserved.some((r) => inRect(tx, ty, r)) || legacyPath(data, tx, ty) || used.has(`${tx},${ty}`)) continue;
-      } else {
-        tx = rng2.between(FOREST_TILES, MAP_W - FOREST_TILES - 1); ty = rng2.between(FOREST_TILES, MAP_H - FOREST_TILES - 1);
-        // Yalnızca eski haritada olmayan (ya da eski orman şeridi olan) kareler
+      } else if (mode === 'v2') {
+        tx = rng2.between(FOREST_TILES, VW - FOREST_TILES - 1); ty = rng2.between(FOREST_TILES, VH - FOREST_TILES - 1);
+        // Yalnızca 64×44 haritada olmayan (ya da onun orman şeridi olan) kareler
         if (tx < LW - FOREST_TILES && ty < LH - FOREST_TILES) continue;
-        if (edgeBlocked(tx, ty) || reserved.some((r) => inRect(tx, ty, r)) || data[ty][tx] === T.PATH || used.has(`${tx},${ty}`)) continue;
-        if ([[0, 1], [0, -1], [1, 0], [-1, 0]].some(([dx, dy]) => GATE_TILES.has(`${tx + dx},${ty + dy}`))) continue;
+        if (v2EdgeBlocked(tx, ty) || reserved.some((r) => inRect(tx, ty, r)) || data[ty][tx] === T.PATH || used.has(`${tx},${ty}`)) continue;
+        if (nextTo(tx, ty, (x, y) => v2Gate.has(`${x},${y}`))) continue;
+      } else {
+        if (region) { tx = rng3.between(region.x, region.x + region.w - 1); ty = rng3.between(region.y, region.y + region.h - 1); }
+        else { tx = rng3.between(FOREST_TILES, MAP_W - FOREST_TILES - 1); ty = rng3.between(FOREST_TILES, MAP_H - FOREST_TILES - 1); }
+        // Yalnızca 96×64 haritada olmayan (ya da onun orman şeridi olan) kareler
+        if (tx < VW - FOREST_TILES && ty < VH - FOREST_TILES) continue;
+        if (edgeBlocked(tx, ty) || data[ty][tx] === T.PATH || used.has(`${tx},${ty}`)) continue;
+        if (!region && reserved3.some((r) => inRect(tx, ty, r))) continue;
+        if (nextTo(tx, ty, (x, y) => GATE_TILES.has(`${x},${y}`))) continue;
+        // Yeni yolların kenarına konmaz (yollar ve geçiş açık kalsın)
+        if (nextTo(tx, ty, (x, y) => data[y]?.[x] === T.PATH)) continue;
       }
       used.add(`${tx},${ty}`);
       const x = tx * TILE + 8, y = ty * TILE + (kind === 'tree' ? 4 : 8);
@@ -149,12 +212,15 @@ export function buildWorld(scene) {
   // Eski alanın kaynakları eski kenar kurallarıyla kaydırılır (eski haritadakiyle aynı konum).
   relocateEdgeResources(resources, data, used, reserved);
   // Yeni alan: eski yoğunlukla orantılı (eski iç alan ~2816 kare → 60 ağaç / 32 kaya; eklenen ~3328 kare)
-  place('tree', 71, false);
-  place('rock', 38, false);
+  place('tree', 71, 'v2');
+  place('rock', 38, 'v2');
+  // Sürüm 3 alanı (~4900 yeni kare): dağınık kaynak + yaşlı koru ve taş ocağı kümeleri
+  place('tree', 74, 'v3');
+  place('rock', 34, 'v3');
+  place('tree', 30, 'v3', GROVE_ZONE);
+  place('rock', 16, 'v3', QUARRY_ZONE);
 
-  // --- Göl (sol alt) ---
-  const lz = LAKE_ZONE, lw = lz.w * TILE, lh = lz.h * TILE, lx = lz.x * TILE, ly = lz.y * TILE;
-  if (scene.textures.exists('lake')) scene.lakeImage = scene.add.image(lx, ly, 'lake').setOrigin(0, 0).setDepth(-9.8);
+  // --- Göller: sol alttaki ilk göl (scene.lakeRect) + sürüm 3 alanındaki yeni göller (scene.lakeRects hepsini tutar) ---
   // Yuvarlak köşeli su gövdesi: iki görünmez blok (oyuncu kıyıda durabilir)
   const waterBlock = (x, y, w, h) => {
     const b = obstacles.create(x + w / 2, y + h / 2, 'px').setVisible(false);
@@ -162,9 +228,20 @@ export function buildWorld(scene) {
     b.isWater = true;
     return b;
   };
-  waterBlock(lx + 4, ly + 14, lw - 8, lh - 28);
-  waterBlock(lx + 14, ly + 5, lw - 28, lh - 10);
-  scene.lakeRect = new Phaser.Geom.Rectangle(lx + 3, ly + 3, lw - 6, lh - 6);
+  scene.lakeRects = [];
+  scene.lakeImages = [];
+  const makeLake = (lz) => {
+    const lw = lz.w * TILE, lh = lz.h * TILE, lx = lz.x * TILE, ly = lz.y * TILE;
+    if (scene.textures.exists('lake')) scene.lakeImages.push(scene.add.image(lx, ly, 'lake').setOrigin(0, 0).setDepth(-9.8).setFlipX(!!lz.flip));
+    waterBlock(lx + 4, ly + 14, lw - 8, lh - 28);
+    waterBlock(lx + 14, ly + 5, lw - 28, lh - 10);
+    const rect = new Phaser.Geom.Rectangle(lx + 3, ly + 3, lw - 6, lh - 6);
+    scene.lakeRects.push(rect);
+    return rect;
+  };
+  scene.lakeRect = makeLake(LAKE_ZONE);
+  scene.lakeImage = scene.lakeImages[0];
+  NEW_LAKES.forEach(makeLake);
 
   // --- Terk edilmiş ev (doğu) ---
   const rz = RUINS_ZONE;
@@ -180,19 +257,57 @@ export function buildWorld(scene) {
       .forEach(([tx, ty, key]) => scene.add.image(tx * TILE + 8, ty * TILE + 10, key).setDepth(ty * TILE));
   }
 
+  // --- Terk edilmiş kamp (sürüm 3, doğu yolunun yanı): yıkık kulübe + dağınık enkaz; ganimet sandıkları events.js'te ---
+  const cz = CAMP_ZONE;
+  if (scene.textures.exists('ruins')) {
+    addBlock((cz.x + 2) * TILE + 8, cz.y * TILE + 26, 'ruins', 40, 18, 4, 24, 20).setFlipX(true);
+    [[cz.x, cz.y + 1, 'debris'], [cz.x + 5, cz.y + 4, 'debris'], [cz.x + 1, cz.y + 4, 'rubble'], [cz.x + 4, cz.y + 4, 'rubble']]
+      .forEach(([tx, ty, key]) => scene.add.image(tx * TILE + 8, ty * TILE + 10, key).setDepth(ty * TILE));
+  }
+  // Taş ocağı: kayaların arasında moloz (yalnızca dekor)
+  if (scene.textures.exists('rubble')) {
+    const qz = QUARRY_ZONE;
+    [[qz.x + 1, qz.y + 1], [qz.x + 6, qz.y + 2], [qz.x + 3, qz.y + 5], [qz.x + 8, qz.y + 6]].forEach(([tx, ty]) => {
+      if (!used.has(`${tx},${ty}`)) scene.add.image(tx * TILE + 8, ty * TILE + 10, 'rubble').setDepth(ty * TILE);
+    });
+  }
+
+  // İlgi noktaları (events.js ganimet sandıkları; diğer modüller de okuyabilir) — tile dikdörtgenleri
+  scene.mapPOIs = [
+    { id: 'quarry', name: 'Taş Ocağı', ...QUARRY_ZONE },
+    { id: 'grove', name: 'Yaşlı Koru', ...GROVE_ZONE },
+    { id: 'camp', name: 'Terk Edilmiş Kamp', ...CAMP_ZONE },
+    { id: 'hamlet', name: 'Güney Mezrası', ...HAMLET_ZONE },
+    ...NEW_LAKES.map((l, i) => ({ id: `lake${i + 2}`, name: 'Göl Kıyısı', x: l.x - 2, y: l.y - 2, w: l.w + 4, h: l.h + 4 }))
+  ];
+  // Yaban hayvanları için geniş, açık alanlar (tile): çayırlar (ağaçsız) + koru (yırtıcılar için)
+  scene.wildAreas = [...MEADOWS.map((m) => ({ ...m, kind: 'meadow' })), { id: 'grove', kind: 'forest', ...GROVE_ZONE }];
+
   // --- Çiçek / çalı süslemeleri (çarpışmasız) ---
   scene.decorFlowers = [];
   if (scene.textures.exists('flower_0')) {
+    // 96×64 alanı sürüm 2 sınırları/kurallarıyla (aynı dizilim), sonra yeni alan ayrı tohumla
     let n = 100, tries = 0;
     while (n > 0 && tries++ < 4400) {
-      const tx = rng.between(1, MAP_W - 2), ty = rng.between(2, MAP_H - 2);
+      const tx = rng.between(1, VW - 2), ty = rng.between(2, VH - 2);
       if (data[ty][tx] === T.PATH || data[ty][tx] === T.FARM || data[ty][tx] === T.STONE || used.has(`${tx},${ty}`)) continue;
-      if (edgeBlocked(tx, ty)) continue; // orman şeridi
+      if (v2EdgeBlocked(tx, ty)) continue; // orman şeridi
       if (inRect(tx, ty, { x: fz.x - 1, y: fz.y - 1, w: fz.w + 2, h: fz.h + 2 }) || inRect(tx, ty, reserved[3]) || inRect(tx, ty, reserved[4])) continue;
       if (inRect(tx, ty, { x: 26, y: 12, w: 26, h: 20 })) continue; // kasaba binaları
       used.add(`${tx},${ty}`);
       const key = `flower_${rng.between(0, 3)}`;
       scene.decorFlowers.push(scene.add.image(tx * TILE + rng.between(4, 12), ty * TILE + rng.between(6, 12), key).setDepth(ty * TILE - 2));
+      n--;
+    }
+    n = 80; tries = 0;
+    while (n > 0 && tries++ < 4000) {
+      const tx = rng3.between(1, MAP_W - 2), ty = rng3.between(2, MAP_H - 2);
+      if (tx < VW - FOREST_TILES && ty < VH - FOREST_TILES) continue;
+      if (data[ty][tx] > T.GRASS3 || used.has(`${tx},${ty}`) || edgeBlocked(tx, ty)) continue;
+      if (reserved3.some((r, i) => i < poiN && inRect(tx, ty, r))) continue; // göl/ocak/koru/kamp/mezra
+      used.add(`${tx},${ty}`);
+      const key = `flower_${rng3.between(0, 3)}`;
+      scene.decorFlowers.push(scene.add.image(tx * TILE + rng3.between(4, 12), ty * TILE + rng3.between(6, 12), key).setDepth(ty * TILE - 2));
       n--;
     }
   }
@@ -201,7 +316,7 @@ export function buildWorld(scene) {
   gatePathTiles().forEach(([x, y]) => { data[y][x] = T.PATH; layer.putTileAt(T.PATH, x, y); });
 
   paintGround(scene, data, used, buildings);
-  placeBushes(scene, data, used, reserved);
+  placeBushes(scene, data, used, [...reserved, ...reserved3.slice(0, poiN)]);
   buildForestEdge(scene);
 
   return {
@@ -233,11 +348,12 @@ function paintGround(scene, data, used, buildings) {
   const isGrass = (tx, ty) => { const t = tileAt(tx, ty); return t >= 0 && t <= T.GRASS3; };
   const onGrass = (px, py) => isGrass(Math.floor(px / TILE), Math.floor(py / TILE));
   const dot = (px, py, col) => { ctx.fillStyle = col; ctx.fillRect(px, py, 1, 1); };
-  const lake = scene.lakeRect;
-  const inLake = (px, py) => lake && px >= lake.x - 4 && py >= lake.y - 4 && px < lake.right + 4 && py < lake.bottom + 4;
+  const lakes = scene.lakeRects || (scene.lakeRect ? [scene.lakeRect] : []), lake = scene.lakeRect;
+  const inLake = (px, py) => lakes.some((l) => px >= l.x - 4 && py >= l.y - 4 && px < l.right + 4 && py < l.bottom + 4);
+  const nK = (n) => Math.round(n * AREA_K); // süs sayıları alanla ölçeklenir
 
   // 1) Büyük ton lekeleri: karo tekrarını kırar (koyu ve açık, kareli tarama)
-  for (let i = 0; i < 150; i++) {
+  for (let i = 0; i < nK(150); i++) {
     const cx = rng.between(0, W), cy = rng.between(0, H), rx = rng.between(10, 26), ry = rng.between(7, 16);
     const col = rng.frac() < 0.6 ? '#4a9646' : '#5eab53', th = rng.frac() * 0.25 - 0.3;
     for (let y = -ry; y <= ry; y++) for (let x = -rx; x <= rx; x++) {
@@ -293,9 +409,17 @@ function paintGround(scene, data, used, buildings) {
   if (lake) trail(7 * TILE + 6, 24 * TILE + 4, 7 * TILE + 6, lake.y - 8);
   trail((RUINS_ZONE.x - 1) * TILE + 6, 24 * TILE + 4, (RUINS_ZONE.x - 1) * TILE + 6, (RUINS_ZONE.y + 4) * TILE);
   buildings.forEach((b) => { if (b.texture.key === 'house') trail(b.x - 3, b.y + b.height / 2 + 4, b.x - 3, b.y + b.height / 2 + 22); });
+  // Sürüm 3: doğu yolundan kampa ve taş ocağına, güney yolundan güney göllerine
+  trail((ROAD_E.x + 1) * TILE + 4, (CAMP_ZONE.y + 3) * TILE + 6, CAMP_ZONE.x * TILE - 4, (CAMP_ZONE.y + 3) * TILE + 6);
+  trail((ROAD_E.x - 1) * TILE + 6, (QUARRY_ZONE.y + 3) * TILE + 6, (QUARRY_ZONE.x + QUARRY_ZONE.w) * TILE + 6, (QUARRY_ZONE.y + 3) * TILE + 6);
+  NEW_LAKES.forEach((l) => {
+    if (l.y < ROAD_S.y) return;
+    const x = (l.x + l.w / 2) * TILE + 6;
+    trail(x, (ROAD_S.y + 1) * TILE + 4, x, l.y * TILE - 8);
+  });
 
-  // 5) Göl kıyısı: nemli koyu çim halkası, sazlar ve çakıllar
-  if (lake) {
+  // 5) Göl kıyıları: nemli koyu çim halkası, sazlar ve çakıllar
+  for (const lake of lakes) {
     const cx = lake.centerX, cy = lake.centerY, hw = lake.width / 2, hh = lake.height / 2;
     for (let py = lake.y - 12; py < lake.bottom + 12; py++) for (let px = lake.x - 12; px < lake.right + 12; px++) {
       const ex = Math.max(0, Math.abs(px - cx) - hw + 10), ey = Math.max(0, Math.abs(py - cy) - hh + 10);
@@ -319,7 +443,7 @@ function paintGround(scene, data, used, buildings) {
   // 6) Çiçek kümeleri, ot tutamları ve çakıllar (yalnızca çimde, kaynak karolarından uzak)
   const FL = PAL.flower;
   const freeGrass = (px, py) => onGrass(px, py) && !used.has(`${Math.floor(px / TILE)},${Math.floor(py / TILE)}`) && !inLake(px, py);
-  for (let i = 0; i < 240; i++) {
+  for (let i = 0; i < nK(240); i++) {
     const cx = rng.between(8, W - 8), cy = rng.between(8, H - 8);
     if (!freeGrass(cx, cy)) continue;
     const a = FL[rng.between(0, FL.length - 1)], b = rng.frac() < 0.4 ? FL[rng.between(0, FL.length - 1)] : a;
@@ -332,13 +456,13 @@ function paintGround(scene, data, used, buildings) {
       else dot(px, py, col);
     }
   }
-  for (let i = 0; i < 560; i++) {
+  for (let i = 0; i < nK(560); i++) {
     const px = rng.between(2, W - 3), py = rng.between(2, H - 3);
     if (!freeGrass(px, py)) continue;
     dot(px, py, G[2]); dot(px + 2, py, G[2]); dot(px + 1, py + 1, G[2]); dot(px + 1, py, G[4]);
     if (rng.frac() < 0.3) dot(px + 1, py - 1, G[5]);
   }
-  for (let i = 0; i < 150; i++) {
+  for (let i = 0; i < nK(150); i++) {
     const px = rng.between(2, W - 3), py = rng.between(2, H - 3);
     if (!freeGrass(px, py)) continue;
     dot(px, py, S[4]); dot(px + 1, py, S[3]); dot(px, py + 1, 'rgba(24,20,37,0.3)'); dot(px + 1, py + 1, 'rgba(24,20,37,0.3)');
@@ -367,8 +491,9 @@ function placeBushes(scene, data, used, reserved) {
   scene.decorBushes = [];
   const add = (x, y) => scene.decorBushes.push(scene.add.image(x, y, 'bush').setDepth(y + 7));
   [[14, 27], [20, 27], [48, 31], [53, 13]].forEach(([tx, ty]) => { add(tx * TILE + 2, ty * TILE + 36); add(tx * TILE + 47, ty * TILE + 38); });
-  let n = 48, tries = 0;
-  while (n > 0 && tries++ < 1750) {
+  HAMLET_HOUSES.forEach(([tx, ty]) => { add(tx * TILE + 2, ty * TILE + 36); add(tx * TILE + 47, ty * TILE + 38); });
+  let n = Math.round(48 * AREA_K), tries = 0;
+  while (n > 0 && tries++ < 1750 * AREA_K) {
     const tx = rng.between(1, MAP_W - 2), ty = rng.between(2, MAP_H - 2);
     if (reserved.some((r) => inRect(tx, ty, r)) || data[ty][tx] > T.GRASS3 || used.has(`${tx},${ty}`)) continue;
     if (edgeBlocked(tx, ty)) continue;

@@ -39,6 +39,21 @@ test('NetClock: en az gecikmeli paketten host saati, titreşimle artan oynatma g
   } finally { performance.now = real; }
 });
 
+test('NetClock: düşük kare hızlı host (seyrek paket) → gecikme gönderim aralığını karşılar (tampon boşalmaz)', () => {
+  const c = new NetClock(50);
+  const real = performance.now;
+  let now = 1000;
+  performance.now = () => now;
+  try {
+    // host ~9 FPS: 110 ms'de bir paket, titreşim yok
+    for (let i = 0; i < 80; i++) { now += 110; c.observe(now + 3000 - 10); }
+    assert.ok(c.target >= 110 + 20, `hedef gecikme aralıktan büyük olmalı: ${c.target}`);
+    // normal hızda (50 ms) hedef yine küçülür
+    for (let i = 0; i < 120; i++) { now += 50; c.observe(now + 3000 - 10); }
+    assert.ok(c.target < 110, `aralık düşünce hedef küçülmeli: ${c.target}`);
+  } finally { performance.now = real; }
+});
+
 test('oda kodu normalleştirme', () => {
   assert.equal(normalizeCode('zc-abcde'), 'ZC-ABCDE');
   assert.equal(normalizeCode('abcde'), 'ZC-ABCDE');

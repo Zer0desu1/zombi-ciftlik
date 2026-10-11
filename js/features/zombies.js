@@ -170,7 +170,7 @@ function updateOffscreen(scene) {
   list.sort((a, b) => a.d - b.d);
   if (few && zs.length && list.length && !st.offHinted) {
     st.offHinted = true;
-    scene.hud.toast(`Son ${zs.length} zombi! Kırmızı oklar yerlerini gösteriyor.`, 'info');
+    scene.toastAll(`Son ${zs.length} zombi! Kırmızı oklar yerlerini gösteriyor.`, 'info');
   }
   const m = 36, cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
   ui.off.forEach((o, i) => {
@@ -391,7 +391,7 @@ export default {
       const fresh = KIND_ORDER.filter((k) => plan.counts[k] > 0 && !st.seen.includes(k));
       fresh.forEach((k, i) => {
         st.seen.push(k);
-        if (k !== 'boss') scene.time.delayedCall(3600 + i * 1400, () => scene.hud.toast(`Yeni tür: ${ZOMBIE_TYPES[k].icon} ${ZOMBIE_TYPES[k].name} — ${ZOMBIE_TYPES[k].desc}`, 'warn'));
+        if (k !== 'boss') scene.time.delayedCall(3600 + i * 1400, () => scene.toastAll(`Yeni tür: ${ZOMBIE_TYPES[k].icon} ${ZOMBIE_TYPES[k].name} — ${ZOMBIE_TYPES[k].desc}`, 'warn'));
       });
       showPreview(scene, plan);
       st.hideArrowsAt = scene.time.now + 15000;
@@ -401,7 +401,7 @@ export default {
         scene.time.delayedCall(3300, () => {
           scene.hud.banner('🩸 Kanlı Ay', `Zombiler 1.5 kat daha kalabalık · ganimet 2 kat!`);
           audio.sfx('alarm');
-          scene.cameras.main.shake(250, 0.004);
+          scene.shakeAt ? scene.shakeAt(0, 0, 1e7, 250, 0.004) : scene.cameras.main.shake(250, 0.004); // herkes
         });
       }
     });
@@ -428,14 +428,14 @@ export default {
       placeTop(st.ui);
       scene.hud.banner('👑 Mezar Bekçisi', 'Patron uyandı! Yer sarsıntısından uzak dur.');
       audio.sfx('alarm');
-      scene.cameras.main.shake(400, 0.006);
+      scene.shakeAt ? scene.shakeAt(0, 0, 1e7, 400, 0.006) : scene.cameras.main.shake(400, 0.006); // herkes
     };
     ev.on('bossSpawned', onBoss);
     // Yağmacılar ekin çiğneyince bir kez uyar (gece başına)
     ev.on('cropTrampled', () => {
       if (st.trampleWarned) return;
       st.trampleWarned = true;
-      scene.hud.toast('🌱 Zombiler tarlanı çiğniyor! Ekinlerini koru.', 'warn');
+      scene.toastAll('🌱 Zombiler tarlanı çiğniyor! Ekinlerini koru.', 'warn');
     });
     ev.once('shutdown', () => {
       ev.off('bossSpawned', onBoss);
@@ -469,7 +469,7 @@ export default {
           const plan = w.nextPlan;
           showPreview(scene, plan);
           const kinds = KIND_ORDER.filter((k) => plan.counts[k] > 0).map((k) => `${plan.counts[k]} ${lname(k)}`).join(', ');
-          scene.hud.toast(`${plan.blood ? '🩸 Kanlı Ay yaklaşıyor! ' : '🔭 Keşif: '}Bu gece ${kinds} — ${sideText(plan)}`, 'warn');
+          scene.toastAll(`${plan.blood ? '🩸 Kanlı Ay yaklaşıyor! ' : '🔭 Keşif: '}Bu gece ${kinds} — ${sideText(plan)}`, 'warn');
           if (plan.blood) audio.sfx('alarm');
         }
       }

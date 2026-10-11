@@ -1,20 +1,23 @@
 // Oyun genel sabitleri ve veri tabloları
 export const TILE = 16;
-// Harita 64×44'ten 96×64'e büyütüldü: eski alan aynı koordinatlarda kaldı, yeni alan sağa ve aşağıya eklendi.
-export const MAP_W = 96;
-export const MAP_H = 64;
+// Harita 64×44 → 96×64 → 128×88 büyütüldü: eski alanlar aynı koordinatlarda kaldı, yeni alan hep sağa ve aşağıya eklendi.
+export const MAP_W = 128;
+export const MAP_H = 88;
 // Eski (sürüm 1) harita boyutu: tohumlu kaynak dizilimi bu alanda eskisiyle birebir aynı üretilir
 export const LEGACY_MAP_W = 64;
 export const LEGACY_MAP_H = 44;
-export const MAP_VERSION = 2;
+// Sürüm 2 harita boyutu: 96×64 alanının dizilimi de sürüm 2 ile birebir aynı üretilir
+export const V2_MAP_W = 96;
+export const V2_MAP_H = 64;
+export const MAP_VERSION = 3;
 export const ZOOM = 3;
 
 // Zaman (oyun dakikası)
 export const DAY_START = 6 * 60;      // 06:00
 export const NIGHT_START = 20 * 60;   // 20:00
 export const GAME_MIN_PER_SEC = 4;    // (eski) — artık gündüz/gece süreleri aşağıda
-// Gerçek süreler: gündüz (06–20) ~2 dk, gece (20–06) ~80 sn. Dalga erken temizlenirse şafağa hızla geçilir.
-export const DAY_SECONDS = 120;
+// Gerçek süreler: gündüz (06–20) ~3 dk, gece (20–06) ~80 sn. Dalga erken temizlenirse şafağa hızla geçilir.
+export const DAY_SECONDS = 180;
 export const NIGHT_SECONDS = 80;
 
 // Zorluk: count = zombi sayısı, hp = zombi canı, dmg = zombi hasarı, reward = dalga ödülü çarpanı
@@ -23,6 +26,9 @@ export const DIFFICULTIES = {
   normal: { id: 'normal', name: 'Normal', icon: '⚔️', count: 1,    hp: 1,    dmg: 1,    reward: 1.2, desc: 'Dengeli: geceye hazırlanmazsan kaybedersin.' },
   hard:   { id: 'hard',   name: 'Zor',    icon: '💀', count: 1.35, hp: 1.25, dmg: 1.25, reward: 1.5, desc: 'Her gece bir kuşatma. Hata affetmez.' }
 };
+
+// Harita sürümü → o sürümdeki harita boyutu (kayıt göçü: ana harita dışındaki konumlar kaydırılır)
+export const MAP_SIZES = { 1: { w: LEGACY_MAP_W, h: LEGACY_MAP_H }, 2: { w: V2_MAP_W, h: V2_MAP_H }, 3: { w: MAP_W, h: MAP_H } };
 
 // Bölgeler (tile koordinatları)
 export const FARM_ZONE = { x: 6, y: 8, w: 16, h: 13 };

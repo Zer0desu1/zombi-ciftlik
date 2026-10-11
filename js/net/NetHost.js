@@ -97,6 +97,7 @@ export class NetHost {
     ready.then((h) => {
       if (this.closed) { if (!this.keepRoom) h.close(); return; }
       this.handle = h;
+      h.beforeHide = () => this.onPageHide(); // yerel taşıyıcı: kanallar kapanmadan önce
       this.code = h.code;
       saveRoomCode(h.code);
       netLog('host', 'room-open', `${h.code}${preferCode ? (preferCode === h.code ? ' (önceki kod geri alındı)' : ` (önceki ${preferCode} alınamadı)`) : ''} · TURN: ${getTurn() ? 'kullanıcı' : 'yok'}`);
@@ -121,6 +122,16 @@ export class NetHost {
       if (!hidden) { const now = performance.now(); for (const g of this.guests.values()) g.lastSeen = Math.max(g.lastSeen, now - SILENT_MS + 5000); }
     };
     document.addEventListener('visibilitychange', this.onVis);
+    // Sekme kapanıyor/yenileniyor: misafirlerin son ilerlemesi kayda yazılsın (otomatik kayıt 60 sn'de bir) ve
+    // misafirlere net bir neden gitsin (yalnızca "veri kanalı kapandı" değil). Oda kodu korunur, misafirler yeniden dener.
+    this.onPageHide = () => {
+      if (this.closed || this.leaving) return;
+      this.leaving = true;
+      setTimeout(() => { this.leaving = false; }, 1000); // bfcache'ten dönülürse tekrar çalışabilsin
+      try { scene.saveGame?.(false); } catch (e) { console.warn('Çıkış kaydı', e); }
+      this.broadcast({ t: 'hostleave' });
+    };
+    window.addEventListener('pagehide', this.onPageHide, true); // yakalama: taşıyıcının kapanışından önce çalışsın
     this.keepAlive(scene.game);
     scene.events.once('shutdown', () => this.close());
   }
@@ -336,9 +347,10 @@ export class NetHost {
 
   addGuest(conn, rawName, sid, gender = 'm') {
     const s = this.scene;
-    let name = String(rawName || 'Misafir').trim().slice(0, 14) || 'Misafir';
+    const base = String(rawName || 'Misafir').trim().slice(0, 14) || 'Misafir';
+    let name = base;
     const taken = new Set([this.name, ...[...this.guests.values()].map((x) => x.name)]);
-    for (let i = 2; taken.has(name); i++) name = `${String(rawName).slice(0, 12)}${i}`;
+    for (let i = 2; taken.has(name); i++) name = `${base.slice(0, 12)}${i}`;
     const used = new Set([...this.guests.values()].map((x) => x.slot));
     let slot = 1; while (used.has(slot)) slot++;
     const id = `g${++this.seq}`;
@@ -383,6 +395,8 @@ export class NetHost {
     this.guests.set(id, g);
     s.netPlayers.push(p);
     this.initGuestState(g, saved);
+    // Özellikler misafir karakterine kendi sarmalayıcılarını kursun (ör. para istatistiği, satış hedefi)
+    try { s.events.emit('netPlayerAdded', p, g); } catch (e) { console.warn('netPlayerAdded', e); }
 
     // Mevcut misafirlerin taban durumu güncel olsun, sonra yeniye tamamını gönder
     if (this.guests.size > 1) this.sendSnapshot();
@@ -490,6 +504,16 @@ export class NetHost {
     });
   }
 
+  // Herkese toast: host ekranı + tüm misafirler (misafir bağlamında çağrılsa da; o anki hud.toast misafire yönlenir)
+  toastAll(msg, ty = 'info') {
+    const s = this.scene, m = String(msg);
+    if (this.ctx) {
+      this.ctx.out.push({ t: 'toast', m, ty });
+      queueMicrotask(() => { if (!this.closed && s.hud) s.hud.toast(m, ty); });
+    } else s.hud.toast(m, ty);
+    for (const g of this.guests.values()) if (g !== this.ctx) this.send(g, { t: 'toast', m, ty });
+  }
+
   giverName() { return this.ctx ? this.ctx.name : this.name; }
 
   giveItem(toId, idx, n) {
@@ -549,6 +573,7 @@ export class NetHost {
     this.closed = true;
     this.stopPing?.();
     document.removeEventListener('visibilitychange', this.onVis);
+    window.removeEventListener('pagehide', this.onPageHide, true);
     this.unhook?.();
     this.broadcast(this.keepRoom ? { t: 'restart' } : { t: 'bye' });
     for (const g of [...this.guests.values()]) g.conn.close('host-closed');

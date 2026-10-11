@@ -146,6 +146,7 @@ function syncHuntables(scene) {
   h.length = 0;
   (scene.wildlife?.deer || []).forEach((d) => h.push(d));
   st.slimes.forEach((s) => h.push(s));
+  (scene.predators?.wild || []).forEach((b) => { if (!b.dead) h.push(b); }); // predators.js: vahşi yırtıcılar
   scene.huntables = h;
 }
 
@@ -363,13 +364,16 @@ export default {
     scene.physics.add.overlap(scene.bullets, st.group, (a, b) => {
       const [bl, s] = pair(a, b);
       if (!bl.active || s.dead) return;
-      s.takeDamage(bl.dmg || 1, bl);
+      // Misafirin mermisi: ganimet/görev/XP misafire
+      const hit = () => s.takeDamage(bl.dmg || 1, bl);
+      if (bl.owner && scene.net?.asPlayer) scene.net.asPlayer(bl.owner, hit); else hit();
       bl.destroy();
     });
     if (scene.shotGroup) scene.physics.add.overlap(scene.shotGroup, st.group, (a, b) => {
       const [sh, s] = pair(a, b);
       if (!sh.active || s.dead) return;
-      hitTarget(scene, s, sh.dmg || 1, sh.crit, sh, sh.weapon);
+      const hit = () => hitTarget(scene, s, sh.dmg || 1, sh.crit, sh, sh.weapon);
+      if (sh.owner && scene.net?.asPlayer) scene.net.asPlayer(sh.owner, hit); else hit();
       sh.destroy();
     });
 

@@ -161,7 +161,8 @@ export class NetGuest {
   onLost(reason) {
     if (this.closed || this.ended) return;
     this.drops++;
-    this.lastReason = reason || 'dc-closed';
+    this.lastReason = this.hostLeft ? 'host-left' : (reason || 'dc-closed');
+    this.hostLeft = false;
     this.lastLostAt = Date.now();
     this.welcomed = false;
     netLog('misafir', 'lost', `${this.lastReason} · ${reasonText(this.lastReason)}`);
@@ -188,7 +189,7 @@ export class NetGuest {
     const r = this.joinErr === 'ice-failed' || this.joinErr === 'join-failed' ? this.joinErr : this.lastReason;
     if (r === 'ice-failed' || r === 'ice-disconnected' || r === 'join-failed' || (this.drops >= 2 && this.pair && this.pair.local !== 'relay' && this.pair.remote !== 'relay'))
       return getTurn() ? '' : 'Farklı ağlardan bağlanıyorsanız oda panelindeki 📶 Bağlantı → TURN sunucusu ekleyin.';
-    if (r === 'room-not-found') return 'Host\'un sayfası açık mı? Host sayfayı yenilediyse aynı kodla geri gelmesi beklenir.';
+    if (r === 'room-not-found' || r === 'host-left') return 'Host\'un sayfası açık mı? Host sayfayı yenilediyse aynı kodla geri gelmesi beklenir.';
     return '';
   }
 
@@ -300,6 +301,10 @@ export class NetGuest {
         netLog('misafir', 'lost', 'host-closed · Host odayı kapattı');
         if (this.started) { this.panel?.hideReconnect(); this.panel?.setStatus('Host odayı kapattı.', true); s.hud.toast('Host odayı kapattı.', 'warn'); }
         else this.onFail?.('Host odayı kapattı');
+        return;
+      case 'hostleave': // host sekmesi kapanıyor/yenileniyor: kopma nedeni bu olsun (yeniden deneme sürer)
+        this.hostLeft = true;
+        netLog('misafir', 'host-left');
         return;
       case 'vis':
         this.peerHidden = !!m.h;

@@ -259,18 +259,19 @@ export class Zombie extends Actor {
   }
 
   pickTarget() {
-    const s = this.scene, role = this.role, p = s.player;
+    const s = this.scene, role = this.role;
+    const isP = (c) => c === s.player || c === s.netHostPlayer || !!c?.netRemote; // co-op: misafir karakterleri de oyuncu
     let best = null, bestD = Infinity;
     for (const c of s.zombieTargets()) {
       if (!c || !c.active || c.hidden) continue;
       // Yapılar daha az çekici; sığınak normalde en son seçenek (iri zombiler hariç)
       let w = c.isShelter ? (role === 'sapper' ? 0.9 : 1.6) : c.isStructure ? 1.3 : 1;
-      if (role === 'raider') w *= c === p ? 1.5 : c.ranch ? 0.6 : 1;
+      if (role === 'raider') w *= isP(c) ? 1.5 : c.ranch ? 0.6 : 1;
       const d = Phaser.Math.Distance.Between(this.x, this.y, c.x, c.y) * w;
       if (d < bestD) { bestD = d; best = c; }
     }
     // Yağmacı: oyuncu dibinde değilse en yakın ekini çiğnemeye gider
-    if (role === 'raider' && s.farm?.plots && !(best === p && bestD < 90)) {
+    if (role === 'raider' && s.farm?.plots && !(isP(best) && bestD < 90)) {
       if (this.cropGoal?.active) return this.cropGoal;
       let plot = null, pd = bestD * 0.8;
       for (const pl of s.farm.plots.values()) {
@@ -419,7 +420,7 @@ export class Zombie extends Actor {
     this.dead = true;
     if (this.kind === 'bloater') this.explode();
     if (this.isBoss) {
-      this.scene.cameras.main.shake(400, 0.01);
+      if (this.scene.shakeAt) this.scene.shakeAt(this.x, this.y, 1e5, 400, 0.01); else this.scene.cameras.main.shake(400, 0.01);
       this.scene.spawnParticles(this.x, this.y, 0x6d8a7a, 24);
     }
     audio.sfx('zdie');

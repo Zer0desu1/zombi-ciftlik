@@ -123,7 +123,12 @@ function throwBomb(scene, ctx) {
   scene.tweens.add({
     targets: bomb, x: ex, duration: 420, ease: 'Linear',
     onUpdate: (tw) => { const k = tw.progress; bomb.y = p.y - 4 + (ey - p.y) * k - Math.sin(k * Math.PI) * 26; bomb.rotation = k * 8; },
-    onComplete: () => { bomb.destroy(); explode(scene, ex, ey); }
+    onComplete: () => {
+      bomb.destroy();
+      // Co-op: patlama misafirin bombasıysa öldürme/XP/görev misafire (tween sonunda bağlam yok)
+      const run = () => explode(scene, ex, ey);
+      if (p.netRemote && scene.net?.asPlayer) scene.net.asPlayer(p, run); else run();
+    }
   });
 }
 
@@ -137,7 +142,7 @@ function explode(scene, x, y) {
   scene.tweens.add({ targets: ring, scale: 1, alpha: 0, duration: 320, onComplete: () => ring.destroy() });
   scene.spawnParticles(x, y, 0xf08a24, 16);
   scene.spawnParticles(x, y, 0xffd166, 10);
-  scene.cameras.main.shake(140, 0.006);
+  scene.shakeAt ? scene.shakeAt(x, y, 220, 140, 0.006) : scene.cameras.main.shake(140, 0.006); // co-op: yakındaki herkes
   audio.sfx('shoot');
   audio.sfx('zdie');
 }
@@ -246,7 +251,7 @@ function trample(scene) {
   }
   if (hit && !S.trampleWarned) {
     S.trampleWarned = true;
-    scene.hud.toast('🧟 Zombiler tarlanı çiğniyor! Tarlayı da korumalısın.', 'warn');
+    scene.toastAll('🧟 Zombiler tarlanı çiğniyor! Tarlayı da korumalısın.', 'warn');
   }
 }
 
@@ -315,7 +320,7 @@ export default {
       S.morale = forecast(scene);
       scene.morale = S.morale;
       S.trampleWarned = false;
-      scene.hud.toast(`${S.morale.icon} Kasaba morali: ${S.morale.name}. ${S.morale.desc}`, S.morale.id === 'hungry' ? 'warn' : 'ok');
+      scene.toastAll(`${S.morale.icon} Kasaba morali: ${S.morale.name}. ${S.morale.desc}`, S.morale.id === 'hungry' ? 'warn' : 'ok');
     };
     scene.events.on('waveStart', onWaveStart);
     scene.timeSys.on('dawn', () => {
@@ -323,8 +328,8 @@ export default {
       const wasFeast = S.morale?.id === 'feast';
       const eaten = Math.min(S.pantry, need);
       S.pantry -= eaten;
-      if (eaten < need) scene.hud.toast(`😟 Kilerde yeterli yiyecek yoktu (${eaten}/${need}). Hasat edip kilere bağışla, yoksa savunucular zayıf kalır.`, 'warn');
-      if (wasFeast) { scene.shelter.repair(scene.shelter.maxHp * 0.2); scene.hud.toast('🎉 Ziyafet sonrası kasaba sığınağı onardı (+%20).', 'ok'); }
+      if (eaten < need) scene.toastAll(`😟 Kilerde yeterli yiyecek yoktu (${eaten}/${need}). Hasat edip kilere bağışla, yoksa savunucular zayıf kalır.`, 'warn');
+      if (wasFeast) { scene.shelter.repair(scene.shelter.maxHp * 0.2); scene.toastAll('🎉 Ziyafet sonrası kasaba sığınağı onardı (+%20).', 'ok'); }
       S.morale = null;
       scene.morale = forecast(scene);
       for (const p of scene.farm.plots.values()) p.trampled = false;
