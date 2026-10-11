@@ -155,7 +155,7 @@ const BABY_GAP = 4, BABY_CHANCE = 0.4, GROW_DAYS = 3, MATE_HEARTS = 3;
 const JOB_IDS = Object.keys(SURVIVOR_JOBS);
 // Diyalogda işe alma metinleri
 const JOB_THANKS = {
-  waterer: 'Teşekkürler! Tarlayı sular, olanı toplayıp kapına getiririm.',
+  waterer: 'Teşekkürler! Tarlayı sular, olanı toplayıp köy sandığına koyarım.',
   sentry: 'Teşekkürler! Gece nöbeti bende.',
   lumberjack: 'Teşekkürler! Baltamı kaptım, odunlar yolda.',
   miner: 'Teşekkürler! Kazmamla taş getiririm.'

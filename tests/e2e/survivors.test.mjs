@@ -38,9 +38,11 @@ test('hayatta kalanlar: meslekler, eş bulma, bebek, kayıt', { timeout: 60000 }
     for (let i = 0; i < 12 && !tree.depleted; i++) a.update(1.4);
     out.depleted = tree.depleted;
     out.carry = a.carry.wood || 0;
-    const before = s.inventory.count('wood');
+    // Teslimat köy sandığına (storage) gider; sandık yoksa/doluysa oyuncuya
+    const woodAll = () => s.inventory.count('wood') + (s.storage?.count('wood') || 0);
+    const before = woodAll();
     a.unload();
-    out.delivered = s.inventory.count('wood') - before;
+    out.delivered = woodAll() - before;
 
     // Madenci
     b.setJob('miner');
@@ -87,7 +89,7 @@ test('hayatta kalanlar: meslekler, eş bulma, bebek, kayıt', { timeout: 60000 }
   assert.equal(r.state1, 'work');
   assert.equal(r.depleted, true, 'ağaç kesilmeli');
   assert.ok(r.carry >= 2 && r.carry <= 4, `taşınan odun ${r.carry}`);
-  assert.equal(r.delivered, r.carry, 'odun oyuncuya verilmeli');
+  assert.equal(r.delivered, r.carry, 'odun sandığa/oyuncuya teslim edilmeli');
   assert.equal(r.minerRole, 'Madenci');
   assert.equal(r.rock, true);
   assert.deepEqual(r.partners, ['Elif', 'Ali']);

@@ -139,6 +139,8 @@ function loadPeerJS() {
 // hızlı (güvenilmez) kanalda kayıp = mesaj düşer, sıra karışabilir.
 // ?maxMsg=16300 → tek iletimin en büyük boyutu (bayt); aşan iletim düşer (PeerJS/SCTP sınırı benzetimi).
 // ?chunk=N → parça boyutu (karakter; test için küçültülebilir).
+// ?relDrop=N → güvenilir kanalda anlık görüntü (t:'s') mesajlarının yüzde N'i HİÇ teslim edilmez: alıcıda uygulanamayan /
+// yarı açık bağlantıda kaybolan fark benzetimi (kendini onaran özetin testi). Bağlantı başına conn.dropSnap ile de ayarlanır.
 function simConfig() {
   const q = qs();
   const lag = Math.max(0, +q.get('lag') || 0), jitter = Math.max(0, +q.get('jitter') || 0);
@@ -147,6 +149,7 @@ function simConfig() {
 }
 export const NET_SIM = simConfig();
 const MAX_MSG_SIM = Math.max(0, +qs().get('maxMsg') || 0);
+const SNAP_DROP_SIM = Math.min(1, Math.max(0, (+qs().get('relDrop') || 0) / 100));
 const CHUNK = Math.max(200, Math.min(4000, +qs().get('chunk') || 4000)); // 4000 krk × ≤3 bayt + zarf < 16300
 const PEER_MAX_BYTES = 16000;            // PeerJS json sınırı (16300) altında güvenli pay
 const BUF_HIGH = 512 * 1024;             // güvenilir kanal: bu tampon seviyesinin üstünde kuyrukta bekle
@@ -217,12 +220,14 @@ function makeConn(id, io) {
   };
   const c = {
     id, open: true, reason: null, role: '-', _data: null, _close: null, _fired: false, fastFn: null,
-    stats: { out: 0, in: 0, outMsgs: 0, inMsgs: 0, fastOut: 0, dropped: 0, fastDropped: 0, chunked: 0, chunks: 0, maxMsg: 0, peakBuf: 0, stalls: 0, tooBig: 0, t0: performance.now() },
+    dropSnap: SNAP_DROP_SIM,
+    stats: { simDropped: 0, out: 0, in: 0, outMsgs: 0, inMsgs: 0, fastOut: 0, dropped: 0, fastDropped: 0, chunked: 0, chunks: 0, maxMsg: 0, peakBuf: 0, stalls: 0, tooBig: 0, t0: performance.now() },
     send(m) { c._out(m, false); },
     sendFast(m) { c._out(m, true); },
     get fastOpen() { return !!(c.fastFn || io.fast); },
     _out(m, fast) {
       if (!c.open) return;
+      if (c.dropSnap && !fast && m?.t === 's' && Math.random() < c.dropSnap) { c.stats.simDropped++; return; } // benzetim
       let s;
       try { s = JSON.stringify(m); } catch (e) { console.warn('Ağ mesajı serileştirilemedi', e); return; }
       const n = s.length;

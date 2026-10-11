@@ -109,9 +109,11 @@ test('çiftçi: hasat → yeniden ekim, boş kareye ekim, mevsim kontrolü', { t
     farm.inSeason = realIn;
 
     // Teslimat: artan tohum oyuncuya gider
-    const before = inv.count('seed_wheat');
+    // Teslimat köy sandığına (storage) gider; sandık yoksa/doluysa oyuncuya
+    const all = (id) => inv.count(id) + (s.storage?.count(id) || 0);
+    const before = all('seed_wheat');
     a.unload();
-    out.deliveredSeed = inv.count('seed_wheat') - before;
+    out.deliveredSeed = all('seed_wheat') - before;
 
     // 7) Ayşe de aynı mantığı kullanır
     a.hide(); a.sm.set('sheltered');
@@ -122,9 +124,9 @@ test('çiftçi: hasat → yeniden ekim, boş kareye ekim, mevsim kontrolü', { t
     ayse.sm.set('harvesting'); ayse.plot = plot;
     step(ayse, 4);
     out.ayse = { crop: plot.crop?.type, stage: plot.crop?.stage, wheat: Object.keys(ayse.carry).some((k) => k.startsWith('wheat')), states: ['goPlant', 'planting', 'deliver', 'goHarvest'].every((k) => ayse.sm.states[k]) };
-    const w = inv.count('wheat') + inv.count('wheat_s') + inv.count('wheat_g');
+    const w = all('wheat') + all('wheat_s') + all('wheat_g');
     ayse.unload();
-    out.ayseDelivered = inv.count('wheat') + inv.count('wheat_s') + inv.count('wheat_g') - w;
+    out.ayseDelivered = all('wheat') + all('wheat_s') + all('wheat_g') - w;
     return out;
   });
 
@@ -145,7 +147,7 @@ test('çiftçi: hasat → yeniden ekim, boş kareye ekim, mevsim kontrolü', { t
   assert.equal(r.conflict.state, 'tend', 'kare doluysa vazgeçmeli');
   assert.equal(r.conflict.crop, 'carrot');
   assert.equal(r.conflict.carry, 1);
-  assert.equal(r.deliveredSeed, 1, 'artan tohum oyuncuya verilmeli');
+  assert.equal(r.deliveredSeed, 1, 'artan tohum sandığa/oyuncuya teslim edilmeli');
   assert.equal(r.ayse.crop, 'wheat', 'Ayşe yeniden ekmeli');
   assert.equal(r.ayse.stage, 0);
   assert.equal(r.ayse.wheat, true, 'Ayşe ürünü taşımalı');

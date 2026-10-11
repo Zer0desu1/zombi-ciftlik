@@ -16,6 +16,56 @@ const MOVE_HOLD = 0.6;   // sn: duran nesnenin konumu bu süre daha hızlı akı
 const KEYFRAME = 1;      // sn: hareketsiz nesnelerin konumu güvenilir akışta doğrulanır
 const TELEPORT = 48;     // px: bundan büyük sıçrama enterpole edilmez
 
+// ---------------- Durum özeti (kendini onaran eşitleme) ----------------
+// Farklar (oluşturma/silme/doku/görünürlük, tarla, kaynak) yalnızca DEĞİŞİNCE bir kez gönderilir. Bir fark
+// misafirde uygulanamazsa (işleyici istisnası, yarı açık / kopan bağlantıda kaybolan mesaj…) host bunu bilemez ve
+// aynı alan tekrar değişene kadar misafir yanlış durumda kalır (ör. host'ta kesilmiş ağaç misafirde ayakta).
+// Host birkaç saniyede bir küçük bir özet (kaynak bit kümesi + aynalanan nesne / tarla / özellik / envanter
+// özetleri) yollar; misafir kendi durumundan aynı özeti hesaplar, uymayan bölümün tamamını ister.
+
+// FNV-1a 32 bit (iki tarafta aynı)
+export function hashStr(s) {
+  let h = 0x811c9dc5;
+  s = String(s);
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return h >>> 0;
+}
+
+// Sıradan bağımsız küme özeti: [toplam(hash) mod 2^32, adet]
+export function setHash(strings) {
+  let sum = 0, n = 0;
+  for (const s of strings) { sum = (sum + hashStr(s)) >>> 0; n++; }
+  return [sum, n];
+}
+
+// Aynalanan nesnenin özet imzası: varlık + görünürlük + görünüm (doku / yazı / çubuk genişliği).
+// Konum ve sık değişen ayrıntılar (alfa, ölçek) dahil değil: konum zaten periyodik doğrulanıyor.
+export function mirrorSig(id, r) {
+  if (!r.v) return `${id}|${r.k}|0`;
+  return `${id}|${r.k}|1|${r.t ?? ''}|${r.s ?? ''}|${r.w ?? ''}`;
+}
+
+// Envanter özeti (misafir yalnızca id + adet tutar)
+export function invSig(inv) {
+  return (inv?.slots || []).map((x) => (x ? `${x.id}:${x.count}` : '')).join(',').replace(/,+$/, ''); // sondaki boş slotlar sayılmaz
+}
+
+// Boole listesi ↔ base64 bit kümesi (355 kaynak ≈ 60 karakter)
+export function packBits(list) {
+  const bytes = new Uint8Array(Math.ceil(list.length / 8));
+  list.forEach((b, i) => { if (b) bytes[i >> 3] |= 1 << (i & 7); });
+  let s = '';
+  for (const x of bytes) s += String.fromCharCode(x);
+  return btoa(s);
+}
+export function unpackBits(str, n) {
+  const out = new Array(n).fill(false);
+  let s = '';
+  try { s = atob(String(str || '')); } catch { return out; }
+  for (let i = 0; i < n; i++) out[i] = !!((s.charCodeAt(i >> 3) || 0) & (1 << (i & 7)));
+  return out;
+}
+
 function styleKey(o) {
   const s = o.style;
   return [s.fontFamily, s.fontSize, s.fontStyle, s.color, s.stroke, s.strokeThickness, s.resolution || 1, s.align, s.backgroundColor || ''].join('|');
@@ -122,6 +172,13 @@ export class MirrorWriter {
       if (now - ps.at <= MOVE_HOLD) out.push(id, Math.round(x * 2), Math.round(y * 2));
     }
     return out;
+  }
+
+  // Misafirin bilmesi gereken (gönderilmiş) durumun özeti: [toplam, adet]
+  digest() {
+    const sigs = [];
+    for (const [id, rec] of this.prev) sigs.push(mirrorSig(id, rec));
+    return setHash(sigs);
   }
 
   // Yeni katılan misafir için son durumun tamamı
@@ -273,21 +330,60 @@ export class MirrorReader {
   }
 
   // Güvenilir fark. rt = şu anki oynatma zamanı (konum sıfırlamalarında tampon başlangıcı)
-  apply(o, x, rt = 0) {
-    const s = this.scene;
+  apply(o, x, rt = 0, quiet = false) {
     // Not: silinen id'ler JSON dizisinde sayı, vekil haritasının anahtarları (for…in) metin → String() şart.
     // (Eskiden burada eşleşmediği için silinen nesnelerin vekilleri misafirde "takılı" kalıyordu.)
     if (x) for (const raw of x) {
       const id = String(raw), m = this.objs.get(id);
-      if (m) { this.onEvent?.('gone', m); m.solidZone?.destroy(); m.destroy(); this.objs.delete(id); }
+      if (!m) continue;
+      this.objs.delete(id);
+      try { if (!quiet) this.onEvent?.('gone', m); m.solidZone?.destroy(); m.destroy(); } catch (e) { console.warn('Vekil silinemedi', id, e); }
     }
     if (!o) return;
     for (const id in o) {
-      const rec = o[id];
+      // Tek bir kaydın istisnası diğerlerini düşürmesin; uygulanamayan kaydın özeti (m.dg) güncellenmez →
+      // bir sonraki özet karşılaştırmasında uyuşmazlık çıkar ve tam yeniden eşitleme istenir.
+      try { this.applyRec(id, o[id], rt); } catch (e) {
+        this.errors = (this.errors || 0) + 1;
+        if (this.errors <= 3) console.warn('Vekil güncellenemedi', id, e);
+      }
+    }
+  }
+
+  // Özet imzası için bilinen son alanlar (yalnızca kayıt tamamen uygulandıktan sonra)
+  track(id, m, rec) {
+    const dg = m.dg || (m.dg = { k: rec.k || m.nk });
+    if ('v' in rec) dg.v = rec.v;
+    if ('t' in rec) dg.t = rec.t;
+    if ('s' in rec) dg.s = rec.s;
+    if ('w' in rec) dg.w = rec.w;
+  }
+
+  // Host'un MirrorWriter.digest() ile aynı özet
+  digest() {
+    const sigs = [];
+    for (const [id, m] of this.objs) sigs.push(m.dg ? mirrorSig(id, m.dg) : `${id}|?`);
+    return setHash(sigs);
+  }
+
+  // Tam yeniden eşitleme: host'un bildiği tüm nesneler (MirrorWriter.full). Listede olmayan vekiller silinir,
+  // var olanların tüm alanları yeniden yazılır, eksikler oluşturulur.
+  applyFull(o, rt = 0) {
+    const del = [];
+    for (const id of this.objs.keys()) if (!(id in o)) del.push(id);
+    // Var olan vekilin özetini sıfırla: tam kayıt uygulanamazsa uyuşmazlık sürsün
+    for (const id in o) { const m = this.objs.get(id); if (m) m.dg = null; }
+    this.apply(o, del.length ? del : null, rt, true);
+    return del.length;
+  }
+
+  applyRec(id, rec, rt) {
+    const s = this.scene;
+    {
       let m = this.objs.get(id);
       const isNew = !m;
       if (isNew) {
-        if (!rec.k) continue; // fark geldi ama nesne yok (olmamalı)
+        if (!rec.k) { this.orphans = (this.orphans || 0) + 1; return; } // fark geldi ama nesne yok: oluşturma kaybolmuş (özet onarır)
         m = this.create(rec.k, rec);
         this.objs.set(id, m);
       }
@@ -338,6 +434,7 @@ export class MirrorReader {
       }
       if (m.dz != null) m.setDepth(m.y + m.dz);
       if (m.nk === 'i') this.classify(m);
+      this.track(id, m, rec);
     }
   }
 

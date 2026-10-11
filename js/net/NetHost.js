@@ -12,7 +12,7 @@ import { Player } from '../entities/Player.js';
 import { Inventory } from '../systems/Inventory.js';
 import { useSelected } from '../systems/PlayerActions.js';
 import { iconCacheEntries } from '../textures.js';
-import { MirrorWriter } from './mirror.js';
+import { MirrorWriter, hashStr, setHash, packBits, invSig } from './mirror.js';
 import { openRoom, getTurn, iceConfig } from './transport.js';
 import { RoomPanel, inviteLink, packIcons, byPath } from './NetUI.js';
 import { netLog, reasonText, workerInterval, pairText } from './diag.js';
@@ -33,6 +33,8 @@ export const PLAYER_COLORS = [0xffffff, 0x8fd3ff, 0xffa8a8, 0xb8f5a0];
 const SNAP_DT = 1 / 12;
 const FAST_DT = 1 / 20;
 const FS_DT = 0.25;                         // özellik HUD durumları
+const DIGEST_DT = 5;                        // sn: kendini onaran durum özeti (bkz. sendDigest)
+const RSYNC_MIN = 1.5;                      // sn: aynı misafirden iki yeniden eşitleme isteği arası en az
 const GLOBAL_SFX = new Set(['alarm', 'dawn']); // host'ta bağlam dışında çalınınca herkese duyurulur
 const MOVE_SLACK = 1.35;                    // misafir hız sınırı payı (yemek hızı + ağ dalgalanması)
 const MOVE_BURST = 170;                     // px: birikebilecek en büyük hareket bütçesi (yuvarlanma + gecikme patlaması)
@@ -63,6 +65,10 @@ export class NetHost {
     this.code = null;
     this.mirror = new MirrorWriter(scene, (o) => this.skip(o), (o) => this.playerSolid(o));
     this.farmSig = new Map();
+    this.farmRecs = new Map(); // anahtar → misafirlere gönderilmiş son tarla kaydı (yeniden eşitleme için)
+    this.digestT = 1;
+    this.digestDt = DIGEST_DT; // test: kısaltılabilir
+    this.heals = { req: 0, m: 0, f: 0, s: 0, i: 0 };
     this.resKey = '';
     this.lastQuests = '';
     this.fastT = 0;
@@ -156,6 +162,7 @@ export class NetHost {
     }
     if (!this.guests.size) lines.push(['Misafir', 'yok']);
     if (this.lastDrop) lines.push(['Son kopma', `${this.lastDrop.name}: ${reasonText(this.lastDrop.reason)} (${new Date(this.lastDrop.at).toLocaleTimeString()})`]);
+    lines.push(['Eşitleme onarımı', `${this.heals.req} istek · ${this.heals.m} nesne · ${this.heals.f} tarla · ${this.heals.s} özellik · ${this.heals.i} envanter`]);
     lines.push(['Kopma sayısı', Object.values(this.drops || {}).reduce((a, b) => a + b, 0)]);
     lines.push(['ICE sunucuları', iceConfig().iceServers.map((x) => [].concat(x.urls)[0].replace(/\?.*$/, '')).join(', ')]);
     return { lines, advice };
@@ -644,6 +651,9 @@ export class NetHost {
       case 'ui':
         this.onUi(g, m);
         return;
+      case 'rsync':
+        this.onResync(g, m);
+        return;
       case 'ping':
         this.send(g, { t: 'pong', c: m.c });
         return;
@@ -867,7 +877,14 @@ export class NetHost {
     if (this.hist) this.recordHistory();
     if (!this.guests.size) return;
     this.snapT -= dt;
-    if (this.snapT <= 0) { this.snapT = SNAP_DT; this.sendSnapshot(); }
+    if (this.snapT <= 0) {
+      this.snapT = SNAP_DT;
+      this.sendSnapshot();
+      // Özet hemen anlık görüntünün ardından (aynı sıralı kanalda): misafir onu aldığında bu ana kadarki tüm farkları
+      // uygulamış olur → iki tarafın özeti birebir aynı olmalı
+      this.digestT -= SNAP_DT;
+      if (this.digestT <= 0) { this.digestT = this.digestDt; this.sendDigest(); }
+    }
     this.fastT -= dt;
     if (this.fastT <= 0) { this.fastT = FAST_DT; this.sendFast(); }
     this.fsT -= dt;
@@ -1032,9 +1049,9 @@ export class NetHost {
     for (const [key, p] of plots) {
       seen.add(key);
       const rec = this.plotRec(p), sig = rec.join('|');
-      if (full || this.farmSig.get(key) !== sig) { add.push(rec); this.farmSig.set(key, sig); }
+      if (full || this.farmSig.get(key) !== sig) { add.push(rec); this.farmSig.set(key, sig); this.farmRecs.set(key, rec); }
     }
-    if (!full) for (const key of [...this.farmSig.keys()]) if (!seen.has(key)) { del.push(key); this.farmSig.delete(key); }
+    if (!full) for (const key of [...this.farmSig.keys()]) if (!seen.has(key)) { del.push(key); this.farmSig.delete(key); this.farmRecs.delete(key); }
     return { add, del };
   }
 
@@ -1042,6 +1059,39 @@ export class NetHost {
     const out = [];
     this.scene.resources.getChildren().forEach((r, i) => { if (r.depleted) out.push(i); });
     return out;
+  }
+
+  // ---------------- Kendini onaran eşitleme ----------------
+  // Kaynak durumu (tükenmiş = 1) bit kümesi olarak her özette TAM gider (~60 krk): misafir doğrudan uygular.
+  // Aynalanan nesneler, tarla, ortak özellik durumu ve envanter için yalnızca özet gider; misafir kendi hesapladığıyla
+  // uyuşmazsa 'rsync' ile o bölümün tamamını ister (onResync). Bant genişliği: ~150 bayt / 5 sn / misafir.
+  resBits() {
+    const list = this.scene.resources.getChildren();
+    return { r: packBits(list.map((r) => !!r.depleted)), rn: list.length };
+  }
+
+  farmDigest() { return setHash(this.farmSig.values()); }
+
+  sendDigest() {
+    const base = { t: 'dg', ...this.resBits(), m: this.mirror.digest(), f: this.farmDigest(), s: this.lastFs ? hashStr(this.lastFs) : 0 };
+    for (const g of this.guests.values()) {
+      if (g.invDirty) this.sendMe(g); // envanter özeti gönderilmiş durumu anlatsın
+      this.send(g, { ...base, i: hashStr(invSig(g.inv)) });
+    }
+  }
+
+  onResync(g, m) {
+    const now = performance.now();
+    if (g.rsyncAt && now - g.rsyncAt < RSYNC_MIN * 1000) return;
+    g.rsyncAt = now;
+    this.heals.req++;
+    const parts = [];
+    // Yanıt, şimdiye kadar gönderilmiş (ve sıralı kanalda bundan önce teslim edilecek) durumun tamamı
+    if (m.m) { this.send(g, { t: 'rso', o: this.mirror.full(), ht: Math.round(performance.now()) }); this.heals.m++; parts.push('nesne'); }
+    if (m.f) { this.send(g, { t: 'rsf', fa: [...this.farmRecs.values()] }); this.heals.f++; parts.push('tarla'); }
+    if (m.s && this.lastFs) { this.send(g, { t: 'fs', s: JSON.parse(this.lastFs) }); this.heals.s++; parts.push('özellik'); }
+    if (m.i) { g.invDirty = true; this.sendMe(g); this.heals.i++; parts.push('envanter'); }
+    if (parts.length) netLog('host', 'resync', `${g.name}: ${parts.join(', ')}`);
   }
 
   common() {
@@ -1057,6 +1107,7 @@ export class NetHost {
     this.mirror.prev.clear();
     this.mirror.pos.clear();
     this.farmSig.clear();
+    this.farmRecs.clear();
     this.mirror.diff();
     this.farmDiff(false);
     this.resKey = this.resList().join(',');

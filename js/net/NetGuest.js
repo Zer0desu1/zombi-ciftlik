@@ -7,7 +7,7 @@ import { audio } from '../audio.js';
 import { iconURL } from '../textures.js';
 import { features } from '../features/index.js';
 import { regrowResource, depleteResource } from '../systems/MapBuilder.js';
-import { MirrorReader, Interp, NetClock } from './mirror.js';
+import { MirrorReader, Interp, NetClock, hashStr, setHash, unpackBits, invSig } from './mirror.js';
 import { joinRoom, getTurn, setTurn, iceConfig } from './transport.js';
 import { PROTO } from './NetHost.js';
 import { RoomPanel, unpackIcons, pathOf } from './NetUI.js';
@@ -35,6 +35,7 @@ const MODAL_SEL = { inventory: '#modal-inventory', dialog: '#modal-dialog', shop
 const nameStyle = { fontFamily: 'Outfit, sans-serif', fontSize: '7px', color: '#ffffff', stroke: '#000', strokeThickness: 2, resolution: 4 };
 const BOW_CHARGE = 0.4;
 const HEAR = 230; // px: ortam seslerinin duyulduğu mesafe
+const RSYNC_GAP = 2000; // ms: iki yeniden eşitleme isteği arası en az
 
 export class NetGuest {
   static async join(scene, code, name, onStatus) {
@@ -71,6 +72,8 @@ export class NetGuest {
     this.Lbuf = [];          // [ht, ışık listesi] — oynatma zamanına göre seçilir
     this.rt = null;
     this.fs = {};
+    this.fsKey = 0;          // son alınan ortak özellik durumunun özeti (host lastFs ile karşılaştırılır)
+    this.heals = { res: 0, m: 0, f: 0, s: 0, i: 0, req: 0, digests: 0 }; // kendini onaran eşitleme sayaçları
     this.groanT = 3;
     this.charge = null;
     this.lastSeen = performance.now();
@@ -249,6 +252,7 @@ export class NetGuest {
       ['Host sekmesi', this.peerHidden ? 'arka planda' : 'açık'],
       ['TURN', getTurn() ? 'kullanıcı TURN ✔' : 'yok (STUN + PeerJS genel TURN)'],
       ['En büyük mesaj', c ? `${c.stats.maxMsg} krk giden · ${c.stats.chunked} parçalı · tampon tepe ${c.stats.peakBuf} B${inf.maxMsgSize ? ` · SCTP maxMsg ${inf.maxMsgSize}` : ''}` : '—'],
+      ['Eşitleme onarımı', `${this.heals.digests} özet · ${this.heals.req} istek · ${this.heals.res} kaynak · ${this.heals.m} nesne · ${this.heals.f} tarla · ${this.heals.s} özellik · ${this.heals.i} envanter`],
       ['ICE sunucuları', iceConfig().iceServers.map((x) => [].concat(x.urls)[0].replace(/\?.*$/, '')).join(', ')]
     ];
     let advice = '';
@@ -274,7 +278,10 @@ export class NetGuest {
       case 's': if (this.started) this.applySnap(m); return;
       case 'f': if (this.started) this.applyFast(m); return;
       case 'me': if (this.started) this.applyMe(m); return;
-      case 'fs': if (this.started) this.applyFeatureState(m.s); return;
+      case 'fs': if (this.started) { this.fsKey = hashStr(JSON.stringify(m.s)); this.applyFeatureState(m.s); } return;
+      case 'dg': if (this.started) this.onDigest(m); return;
+      case 'rso': if (this.started && m.o) { const n = this.mirror.applyFull(m.o, this.rt ?? 0); this.heals.m++; netLog('misafir', 'resync', `nesneler yeniden eşitlendi (${n} fazla vekil silindi)`); } return;
+      case 'rsf': if (this.started && Array.isArray(m.fa)) { this.applyFarmFull(m.fa); this.heals.f++; netLog('misafir', 'resync', 'tarla yeniden eşitlendi'); } return;
       case 'ui': this.onUi(m); return;
       case 'toast': s.hud.toast(m.m, m.ty); return;
       case 'notice': s.hud.notice(m.m); return;
@@ -350,6 +357,8 @@ export class NetGuest {
       s.hud.toast('Yeniden bağlandın ✔', 'ok');
     }
     s.player.setPosition(w.x, w.y);
+    if (w.snap?.fs) this.fsKey = hashStr(JSON.stringify(w.snap.fs));
+    this.rsyncAt = 0;
     this.applySnap(w.snap);
     this.quests = w.quests || [];
     s.hud.renderQuests();
@@ -541,29 +550,92 @@ export class NetGuest {
   }
 
   // ---------------- Anlık görüntü uygulama ----------------
+  // Bölümler birbirinden yalıtılır: eskiden aynalama / tarla kısmındaki tek bir istisna aynı mesajdaki kaynak listesini
+  // (rs) da düşürüyordu; rs yalnızca host'ta DEĞİŞİNCE gittiği için ağaç/kaya misafirde kalıcı olarak yanlış kalıyordu.
   applySnap(d) {
     const s = this.scene;
-    this.mirror.apply(d.o, d.x, this.rt ?? 0);
-    if (d.pl) this.applyPlayers(d.pl, null);
-    if (d.tm) {
+    const part = (name, fn) => {
+      try { fn(); } catch (e) {
+        this.snapErrs = (this.snapErrs || 0) + 1;
+        console.warn('Anlık görüntü bölümü uygulanamadı', name, e);
+        const now = performance.now();
+        if (!this.snapErrAt || now - this.snapErrAt > 5000) { this.snapErrAt = now; netLog('misafir', 'handler-error', `s.${name}: ${e?.message || e}`); }
+      }
+    };
+    part('o', () => this.mirror.apply(d.o, d.x, this.rt ?? 0));
+    if (d.pl) part('pl', () => this.applyPlayers(d.pl, null));
+    if (d.tm) part('tm', () => {
       const t = s.timeSys;
       t.minutes = d.tm[0]; t.day = d.tm[1]; t.weatherDim = d.tm[2];
       t.wasNight = t.isNight;
       if (this.night !== t.isNight) { this.night = t.isNight; audio.setMusic(t.isNight ? 'night' : 'day'); }
-    }
-    if (d.wv) { s.waves.wave = d.wv[0]; s.waves.active = !!d.wv[1]; this.remaining = d.wv[2]; }
-    if (d.sh) { s.shelter.hp = d.sh[0]; s.shelter.maxHp = d.sh[1]; }
-    if (d.fa) for (const r of d.fa) this.applyPlot(r);
-    if (d.fd) for (const key of d.fd) { const p = s.farm.plots.get(key); if (p) s.farm.removePlot(p); }
-    if (d.rs) {
+    });
+    if (d.wv) part('wv', () => { s.waves.wave = d.wv[0]; s.waves.active = !!d.wv[1]; this.remaining = d.wv[2]; });
+    if (d.sh) part('sh', () => { s.shelter.hp = d.sh[0]; s.shelter.maxHp = d.sh[1]; });
+    if (d.fa) for (const r of d.fa) part('fa', () => this.applyPlot(r));
+    if (d.fd) part('fd', () => { for (const key of d.fd) { const p = s.farm.plots.get(key); if (p) s.farm.removePlot(p); } });
+    if (d.rs) part('rs', () => {
       const dep = new Set(d.rs);
-      s.resources.getChildren().forEach((r, i) => {
-        if (dep.has(i) && !r.depleted) depleteResource(r);
-        else if (!dep.has(i) && r.depleted) regrowResource(r);
-      });
+      s.resources.getChildren().forEach((r, i) => this.setDepleted(r, dep.has(i)));
+    });
+    if (d.fx) part('fx', () => this.applyFx(d.fx));
+    if (d.fs) part('fs', () => this.applyFeatureState(d.fs));
+  }
+
+  // Kaynağın tükenmiş/ayakta durumunu host'unkine getir; değiştiyse true
+  setDepleted(r, dep) {
+    if (dep && !r.depleted) { depleteResource(r); return true; }
+    if (!dep && r.depleted) { regrowResource(r); return true; }
+    return false;
+  }
+
+  // ---------------- Kendini onaran eşitleme (bkz. NetHost.sendDigest) ----------------
+  farmDigest() {
+    const sigs = [];
+    for (const p of this.scene.farm.plots.values()) {
+      const c = p.crop;
+      sigs.push([p.tx, p.ty, p.watered ? 1 : 0, p.fert || 0, p.dryDays || 0, c ? c.type : '', c ? c.stage : 0, c?.dead ? 1 : 0].join('|'));
     }
-    if (d.fx) this.applyFx(d.fx);
-    if (d.fs) this.applyFeatureState(d.fs);
+    return setHash(sigs);
+  }
+
+  onDigest(d) {
+    if (!this.welcomed) return; // yeniden bağlanırken: tam görüntü (welcome) zaten gelecek
+    const s = this.scene, h = this.heals;
+    h.digests++;
+    // 1) Kaynaklar: tam durum bit kümesi → doğrudan uygula
+    if (typeof d.r === 'string') {
+      const list = s.resources.getChildren(), n = Math.min(list.length, d.rn | 0);
+      if (d.rn !== list.length && !this.rnWarned) { this.rnWarned = true; netLog('misafir', 'handler-error', `kaynak sayısı farklı: host ${d.rn}, misafir ${list.length}`); }
+      const bits = unpackBits(d.r, n);
+      let fixed = 0;
+      for (let i = 0; i < n; i++) { try { if (this.setDepleted(list[i], bits[i])) fixed++; } catch (e) { console.warn('Kaynak düzeltilemedi', i, e); } }
+      if (fixed) { h.res += fixed; netLog('misafir', 'resync', `${fixed} ağaç/kaya host'a göre düzeltildi`); }
+    }
+    // 2) Özetler: uyuşmayan bölümün tamamını iste
+    const req = {};
+    const same = (a, b) => Array.isArray(a) && Array.isArray(b) && a[0] === b[0] && a[1] === b[1];
+    if (d.m && !same(d.m, this.mirror.digest())) req.m = 1;
+    if (d.f && !same(d.f, this.farmDigest())) req.f = 1;
+    if (d.s && d.s !== this.fsKey) req.s = 1;
+    if (d.i != null && d.i !== hashStr(invSig(s.inventory))) req.i = 1;
+    this.lastMismatch = Object.keys(req);
+    if (!this.lastMismatch.length) return;
+    const now = performance.now();
+    if (this.rsyncAt && now - this.rsyncAt < RSYNC_GAP) return;
+    this.rsyncAt = now;
+    h.req++;
+    if (req.s) h.s++;
+    if (req.i) h.i++;
+    netLog('misafir', 'resync-req', this.lastMismatch.join(','));
+    this.send({ t: 'rsync', ...req });
+  }
+
+  // Tam tarla listesi: listede olmayan tarlalar silinir
+  applyFarmFull(list) {
+    const s = this.scene, keep = new Set(list.map((r) => s.farm.key(r[0], r[1])));
+    for (const [key, p] of [...s.farm.plots]) if (!keep.has(key)) { try { s.farm.removePlot(p); } catch (e) { console.warn(e); } }
+    for (const r of list) { try { this.applyPlot(r); } catch (e) { console.warn('Tarla uygulanamadı', r, e); } }
   }
 
   // Hızlı akış: konumlar + oyuncular + ışıklar (eski/sıra dışı paketler atılır)

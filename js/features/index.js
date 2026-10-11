@@ -18,6 +18,7 @@ import monsters from './monsters.js';
 import predators from './predators.js';
 import events from './events.js';
 import zones from './zones.js';
+import storage from './storage.js';
 
-registerFeatures([mobile, world, farming, animals, combat, wildlife, wildstock, monsters, predators, zombies, defense, town, settlement, events, progression, juice, harvest, director, zones]);
+registerFeatures([mobile, world, farming, animals, combat, wildlife, wildstock, monsters, predators, zombies, defense, town, settlement, events, storage, progression, juice, harvest, director, zones]);
 export { features } from './registry.js';
