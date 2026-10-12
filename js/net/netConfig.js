@@ -3,7 +3,7 @@ export const NET_CONFIG = {
   // Kısa ömürlü TURN kimliği veren uç nokta (bkz. server/turn-worker.js — Cloudflare Worker).
   // Metered.ca'nın "credentials" API adresi de doğrudan yazılabilir (…/api/v1/turn/credentials?apiKey=…).
   // Test için URL'den geçersiz kılınabilir: ?turnApi=https://…
-  turnEndpoint: '',
+  turnEndpoint: 'https://zombi-ciftlik-turn.zombi-ciftlik.workers.dev',
 
   // Kendi PeerServer'ın (sinyal sunucusu). null → PeerJS'in ücretsiz genel sunucusu (0.peerjs.com).
   // Örnek: { host: 'sinyal.alanadin.com', port: 443, path: '/', secure: true }

@@ -1,10 +1,12 @@
 name = "zombi-ciftlik-turn"
 main = "turn-worker.js"
 compatibility_date = "2025-01-01"
+workers_dev = true
+preview_urls = false
 
 [vars]
 # Cloudflare panelinde Realtime → TURN Server → oluşturduğun anahtarın "Turn Token ID"si
-TURN_KEY_ID = ""
+TURN_KEY_ID = "25961ef01006c296dddd59602329fd09"
 # Oyunun yayınlandığı adres(ler); virgülle ayır
-ALLOWED_ORIGINS = "https://zer0desu1.github.io"
+ALLOWED_ORIGINS = "https://zer0desu1.github.io,http://localhost:8080"
 # Gizli anahtar buraya YAZILMAZ: npx wrangler secret put TURN_KEY_API_TOKEN
