@@ -362,8 +362,12 @@ function gainSoul(z) {
 
 // Açık panel oyuncu başına (PS.panel; kayda yazılmaz) — co-op'ta host ve misafir aynı anda açabilir
 function openNecro(scene) {
-  if (!isNecro(scene.player)) { scene.hud.toast('Nekromansi yalnızca Nekromant sınıfına açık.', 'info'); return; }
   const body = el('div', 'nc-wrap');
+  if (!isNecro(scene.player)) {
+    body.innerHTML = `<p>Nekromansi yalnızca <b>💀 Nekromant</b> sınıfına açık.</p><p class="muted">Yeni oyun başlatırken ana menüden Nekromant'ı seçersen asayla başlar, zombi cesetlerini gölge asker olarak diriltir ve burada ordunu güçlendirirsin.</p>`;
+    scene.hud.openPanel('💀 Nekromansi', body);
+    return;
+  }
   const ps = PS;
   scene.hud.openPanel('💀 Nekromansi', body, () => { ps.panel = null; });
   PS.panel = body;
