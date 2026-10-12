@@ -7,7 +7,9 @@ export default {
   async fetch(req, env) {
     const origin = req.headers.get('Origin') || '';
     const allowed = (env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
-    const ok = !allowed.length || allowed.includes(origin);
+    // Yerel geliştirme/test sunucuları (her port) her zaman izinli
+    const local = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+    const ok = !allowed.length || allowed.includes(origin) || local;
     const cors = {
       'Access-Control-Allow-Origin': ok && origin ? origin : allowed[0] || '*',
       'Access-Control-Allow-Methods': 'GET, OPTIONS',
