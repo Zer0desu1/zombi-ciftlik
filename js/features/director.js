@@ -181,7 +181,8 @@ function renderObjective(s) {
       : `🚁 <b>SON GECE!</b><span>Şafağa kadar dayan, helikopter geliyor</span>`;
   } else if (o) {
     const p = Math.min(o.goal, Math.max(0, o.prog(s, st)));
-    html = `🎯 <b>${o.text}</b>${o.goal > 1 ? ` <i>${p}/${o.goal}</i>` : ''}<span>${o.hint}</span>`;
+    html = `🎯 <b>${o.text}</b>${o.goal > 1 ? ` <i>${p}/${o.goal}</i>` : ''}<span>${o.hint}</span>`
+      + (s.net?.isGuest ? '' : '<button class="dr-skip" type="button" title="Rehber adımlarını ve ipuçlarını atla (adım ödülleri verilmez)">Rehberi atla ⏭</button>');
   } else if (st.tower < STAGES.length) {
     html = `📡 <b>Radyo Kulesi ${st.tower}/${STAGES.length}</b><span>Sonraki: ${costText(STAGES[st.tower])}</span>`;
   }
@@ -198,6 +199,20 @@ function checkObjectives(s) {
     // Ortak hedef: ödül ve bildirim her oyuncuya
     s.rewardAll(o.reward || 0, `✅ Hedef tamam: ${o.text}${o.reward ? ` · +${o.reward} 🪙` : ''}`, 'ok');
   }
+}
+
+// Rehberi atla: kalan adımlar ödülsüz tamamlanır, ipuçları bir daha gösterilmez; tercih sonraki yeni oyunlara da geçer
+function skipGuide(s) {
+  if (s.net?.isGuest) return;
+  for (const o of OBJECTIVES) if (!st.done.includes(o.id)) st.done.push(o.id);
+  Object.keys(TIPS).forEach((id) => seenTips.add(id));
+  saveJSON(TIP_KEY, [...seenTips]);
+  tipQueue = [];
+  document.getElementById('dr-tip')?.classList.remove('show');
+  prefs.skipGuide = true;
+  saveJSON(PREF_KEY, prefs);
+  audio.sfx('click');
+  renderObjective(s);
 }
 
 // Gösterilecek hedef konumu: önce adım hedefi, sonra kule (kurtarma çağrılana kadar)
@@ -345,7 +360,15 @@ function openHelp(s) {
   arrowBtn.onclick = () => { prefs.arrow = !prefs.arrow; saveJSON(PREF_KEY, prefs); audio.sfx('click'); syncArrow(); };
   const resetBtn = el('button', '', '💡 İpuçlarını yeniden göster');
   resetBtn.onclick = () => { seenTips.clear(); saveJSON(TIP_KEY, []); audio.sfx('click'); resetBtn.textContent = '✓ İpuçları sıfırlandı'; resetBtn.disabled = true; };
-  row.append(arrowBtn, resetBtn);
+  const guideBtn = el('button', '', '');
+  const syncGuide = () => { guideBtn.textContent = prefs.skipGuide ? '🎯 Yeni oyunda rehber: Kapalı' : '🎯 Yeni oyunda rehber: Açık'; };
+  syncGuide();
+  guideBtn.onclick = () => {
+    if (!prefs.skipGuide && currentObjective()) skipGuide(s);
+    else { prefs.skipGuide = !prefs.skipGuide; saveJSON(PREF_KEY, prefs); audio.sfx('click'); }
+    syncGuide();
+  };
+  row.append(arrowBtn, resetBtn, guideBtn);
   body.appendChild(row);
   s.hud.openPanel('❓ Yardım', body);
 }
@@ -439,6 +462,9 @@ export default {
         background: var(--glass-strong); border: 1px solid rgba(255,209,102,.35); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
         transition: opacity .25s, transform .25s; text-align: center; }
       #dr-objective.show { opacity: 1; transform: translateX(-50%); }
+      #dr-objective .dr-skip { pointer-events: auto; margin-top: 6px; padding: 3px 10px; font-size: 11px; border-radius: 8px; opacity: .8; }
+      #dr-objective .dr-skip:hover { opacity: 1; }
+      body.is-touch #dr-objective .dr-skip { padding: 6px 12px; font-size: 12px; }
       #dr-objective b { font-weight: 600; } #dr-objective i { font-style: normal; color: var(--accent); margin-left: 4px; font-weight: 600; }
       #dr-objective span { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
       .dr-horde { position: absolute; z-index: 30; padding: 6px 12px; border-radius: 99px; font-weight: 700; font-size: 14px; pointer-events: none;
@@ -474,6 +500,8 @@ export default {
     `);
     featureLayer()?.querySelector('#dr-objective')?.remove();
     featureLayer()?.appendChild(el('div', '', '')).setAttribute('id', 'dr-objective');
+    // Kart her yarım saniyede yeniden çizildiği için tıklama kutuya bağlanır
+    document.getElementById('dr-objective')?.addEventListener('click', (e) => { if (e.target.closest('.dr-skip')) skipGuide(scene); });
     featureLayer()?.querySelector('#dr-tip')?.remove();
     featureLayer()?.appendChild(el('div', '', '')).setAttribute('id', 'dr-tip');
     scene.featureMenu.push({ id: 'help', icon: '❓', label: 'Yardım', key: 'H', open: (s) => openHelp(s) });
@@ -596,7 +624,8 @@ export default {
 
   begin(scene, isNew) {
     applyPerks(scene);
-    if (isNew) {
+    if (isNew && prefs.skipGuide && !scene.net?.isGuest) skipGuide(scene);
+    else if (isNew) {
       scene.time.delayedCall(3500, () => scene.hud.toast('🎯 Ekranın üstündeki hedefleri ve sarı oku takip et. Ana hedef: Radyo Kulesi\'ni kurup kurtarma çağırmak.', 'info'));
       tip(scene, 'move');
     }
@@ -648,7 +677,7 @@ export default {
   netState(scene) {
     const box = document.getElementById('dr-objective');
     const t = targetPos(scene);
-    return { h: box?.innerHTML || '', s: box?.classList.contains('show') ? 1 : 0, t: t ? [Math.round(t.x), Math.round(t.y)] : null };
+    return { h: (box?.innerHTML || '').replace(/<button class="dr-skip"[\s\S]*?<\/button>/, ''), s: box?.classList.contains('show') ? 1 : 0, t: t ? [Math.round(t.x), Math.round(t.y)] : null };
   },
   netApply(scene, v) {
     const box = document.getElementById('dr-objective');
