@@ -7,7 +7,11 @@
 //     türüne göre güçlüdür (iri → dayanıklı, koşucu → hızlı). Sınır 3, Savaş becerisi seviyesiyle artar (en çok 8).
 //     Şafakta güneşte erirler; kaydedilmezler. Ödül/XP sahibin bağlamında (asOwner).
 //   • Simülasyon host'ta; gölgeler sıradan Arcade sprite olduğundan mirror.js ile misafire aynalanır.
+//   • Nekromansi (💀 menü): nekromantın ya da gölgelerinin öldürdüğü zombiler Ruh Özü (🔮) verir; ruhla ordu
+//     büyüklüğü, gölge gücü/dayanıklılığı/çevikliği, asa ve "Sonsuz Gece" (gölgeler şafakta erimez) yükseltilir.
+//     Ruh ve yükseltmeler oyuncu başına (PS), kayıtta saklanır.
 import { ITEMS } from '../config.js';
+import { el } from '../ui/dom.js';
 import { addCanvas, R, makeHumanoid, basePal } from '../textures.js';
 import { audio } from '../audio.js';
 import { Actor } from '../entities/Actor.js';
@@ -18,7 +22,7 @@ const CORPSE_TTL = 8;        // sn: ceset bu süre "taze" (dirilebilir)
 const RAISE_R = 72;          // px: oyuncuya bu yakınlıktaki ceset diriltilir
 const RAISE_EN = 6, SUMMON_EN = 18, BOLT_EN = 1;
 const BOLT_RANGE = 120, BOLT_DMG = 1.5;
-const MAX_CAP = 8;
+const MAX_CAP = 13;
 const TINT = 0x8a62e0;       // gölge tonu (doku rengiyle çarpılır → koyu mor)
 const BASE = { hp: 14, dmg: 2, speed: 62, cd: 0.9, reach: 12, scale: 1 };
 // Dirilen zombinin türüne göre çarpanlar (bilinmeyen tür → sıradan)
@@ -31,6 +35,21 @@ const KIND_MUL = {
   boss: { hp: 4, dmg: 2.5, speed: 0.7, scale: 1.6 },
   summon: { hp: 0.7, dmg: 0.8 }
 };
+
+// Nekromansi yükseltmeleri: seviye başına ruh bedeli (dizinin uzunluğu = en yüksek seviye)
+const UPGRADES = {
+  army:  { icon: '👥', name: 'Ordu',         desc: (l) => `Asker sınırı +${l}`,                              cost: [10, 20, 35, 50, 70] },
+  power: { icon: '⚔️', name: 'Karanlık Güç', desc: (l) => `Gölge hasarı +%${l * 20}`,                        cost: [8, 16, 28, 40, 55] },
+  vigor: { icon: '🛡️', name: 'Dayanıklılık', desc: (l) => `Gölge canı +%${l * 25}`,                          cost: [8, 16, 28, 40, 55] },
+  haste: { icon: '💨', name: 'Çeviklik',     desc: (l) => `Gölge hızı +%${l * 10}, saldırı hızı +%${l * 8}`, cost: [10, 22, 36] },
+  staff: { icon: '🔮', name: 'Asa Ustalığı', desc: (l) => `Büyü hasarı +%${l * 30}, diriltme/çağırma daha ucuz`, cost: [12, 25, 40] },
+  night: { icon: '🌙', name: 'Sonsuz Gece',  desc: () => 'Gölgeler şafakta erimez (sayfa yenilenene kadar kalır)', cost: [80] }
+};
+// Zombi türüne göre ruh (bilinmeyen tür 1)
+const SOUL = { runner: 1, spitter: 2, bloater: 2, armored: 3, brute: 3, boss: 20 };
+const upLv = (k) => PS?.up?.[k] || 0;
+const raiseCost = () => Math.max(2, RAISE_EN - upLv('staff'));
+const summonCost = () => Math.max(8, SUMMON_EN - 3 * upLv('staff'));
 
 // Sahne başına durum
 let S = null;
@@ -51,7 +70,7 @@ export const isNecro = (p) => p?.cls === 'necro';
 const anyNecro = (scene) => players(scene).some(isNecro);
 function capOf(scene) {
   const lv = scene.prog?.lv?.combat || 1;
-  return Math.min(MAX_CAP, 3 + Math.floor((lv - 1) / 2));
+  return Math.min(MAX_CAP, 3 + Math.floor((lv - 1) / 2) + upLv('army'));
 }
 const mine = (scene, key) => S.shadows.filter((o) => o.ownerKey === key && !o.dead);
 
@@ -135,19 +154,35 @@ class Shade extends Actor {
   }
 }
 
+// Asker gücü: dirildiği tür × Savaş seviyesi × sahibinin (o anki bağlam PS) yükseltmeleri
 function statsFor(scene, kind) {
   const m = KIND_MUL[kind] || {};
   const lv = scene.prog?.lv?.combat || 1;
   const k = 1 + 0.1 * (lv - 1);
   return {
-    hp: BASE.hp * (m.hp ?? 1) * k, dmg: BASE.dmg * (m.dmg ?? 1) * k, speed: BASE.speed * (m.speed ?? 1),
-    cd: BASE.cd * (m.cd ?? 1), reach: BASE.reach, scale: m.scale ?? BASE.scale
+    hp: BASE.hp * (m.hp ?? 1) * k * (1 + 0.25 * upLv('vigor')),
+    dmg: BASE.dmg * (m.dmg ?? 1) * k * (1 + 0.2 * upLv('power')),
+    speed: BASE.speed * (m.speed ?? 1) * (1 + 0.1 * upLv('haste')),
+    cd: BASE.cd * (m.cd ?? 1) * (1 - 0.08 * upLv('haste')), reach: BASE.reach, scale: m.scale ?? BASE.scale
   };
+}
+
+// Yükseltme alınınca sahibinin mevcut askerleri de güçlenir (can oranı korunur)
+function refreshMine(scene, key) {
+  for (const sh of mine(scene, key)) {
+    const ratio = sh.hp / Math.max(1, sh.maxHp);
+    sh.st = { ...statsFor(scene, sh.kind), scale: sh.st.scale };
+    sh.maxHp = Math.round(sh.st.hp);
+    sh.hp = Math.max(1, Math.round(sh.maxHp * ratio));
+    sh.persist = upLv('night') > 0;
+  }
 }
 
 function spawnShade(scene, x, y, tex, kind, ownerKey) {
   if (!scene.textures.exists(tex)) tex = 'necro_shadow';
   const sh = new Shade(scene, x, y, tex, statsFor(scene, kind), ownerKey);
+  sh.kind = kind;
+  sh.persist = upLv('night') > 0;
   S.shadows.push(sh);
   if (!scene.extraTargets.includes(sh)) scene.extraTargets.push(sh);
   // Yerden yükselme
@@ -252,8 +287,8 @@ function useStaff(scene, ctx) {
     const fresh = S.corpses.filter((c) => now - c.t < CORPSE_TTL * 1000);
     const c = nearest(fresh, p.x, p.y, RAISE_R) || nearest(fresh.filter((q) => dist(q, p) < BOLT_RANGE), ctx.wx, ctx.wy, 36);
     if (c) {
-      if (p.energy < RAISE_EN) { audio.sfx('error'); return; }
-      p.energy -= RAISE_EN;
+      if (p.energy < raiseCost()) { audio.sfx('error'); return; }
+      p.energy -= raiseCost();
       p.actionCd = 0.5;
       removeCorpse(scene, c);
       spawnShade(scene, c.x, c.y, c.tex, c.kind, key);
@@ -266,8 +301,8 @@ function useStaff(scene, ctx) {
   const z = nearest(targets, ctx.wx, ctx.wy, 30);
   if (z || n >= cap) { bolt(scene, p, z, ctx.wx, ctx.wy); return; }
   // 3) Boşta: yerden temel gölge çağır
-  if (p.energy < SUMMON_EN) { audio.sfx('error'); scene.hud.notice?.('Gölge çağırmak için enerji yetmiyor'); return; }
-  p.energy -= SUMMON_EN;
+  if (p.energy < summonCost()) { audio.sfx('error'); scene.hud.notice?.('Gölge çağırmak için enerji yetmiyor'); return; }
+  p.energy -= summonCost();
   p.actionCd = 0.9;
   const a = Phaser.Math.Angle.Between(p.x, p.y, ctx.wx, ctx.wy);
   spawnShade(scene, p.x + Math.cos(a) * 14, p.y + Math.sin(a) * 10 + 4, 'necro_shadow', 'summon', key);
@@ -286,7 +321,7 @@ function bolt(scene, p, z, wx, wy) {
     onComplete: () => { b.destroy(); scene.spawnParticles?.(p.x + Math.cos(a) * len, p.y + Math.sin(a) * len, 0x7a4fd0, 4); }
   });
   audio.sfx('hex');
-  if (z) { const r = rollDamage(scene, 'staff', BOLT_DMG); hitTarget(scene, z, r.dmg, r.crit, p, 'staff'); }
+  if (z) { const r = rollDamage(scene, 'staff', BOLT_DMG * (1 + 0.3 * upLv('staff'))); hitTarget(scene, z, r.dmg, r.crit, p, 'staff'); }
 }
 
 // ---------- Cesetler ----------
@@ -318,6 +353,63 @@ function applyClass(scene) {
   giveKit(scene);
 }
 
+// ---------- Nekromansi: ruh ve yükseltmeler ----------
+// zombieKilled öldüren oyuncunun bağlamında yayılır (gölge vuruşları asOwner ile sahibin bağlamında): PS = öldüren
+function gainSoul(z) {
+  if (PS?.cls !== 'necro') return;
+  PS.souls = (PS.souls || 0) + (z.isBoss ? SOUL.boss : SOUL[z.kind] || 1);
+}
+
+// Açık panel oyuncu başına (PS.panel; kayda yazılmaz) — co-op'ta host ve misafir aynı anda açabilir
+function openNecro(scene) {
+  if (!isNecro(scene.player)) { scene.hud.toast('Nekromansi yalnızca Nekromant sınıfına açık.', 'info'); return; }
+  const body = el('div', 'nc-wrap');
+  const ps = PS;
+  scene.hud.openPanel('💀 Nekromansi', body, () => { ps.panel = null; });
+  PS.panel = body;
+  audio.sfx('click');
+  renderNecro(scene);
+}
+
+function renderNecro(scene) {
+  const body = PS?.panel;
+  if (!body) return;
+  const souls = PS.souls || 0;
+  body.innerHTML = `<p class="nc-souls">🔮 Ruh Özü: <b>${souls}</b> <span class="muted">· senin ya da gölgelerinin öldürdüğü her zombi ruh bırakır (iri/zırhlı 3, boss 20)</span></p>
+    <p class="muted">Ordu: ${mine(scene, keyOf(scene, scene.player)).length}/${capOf(scene)} gölge · diriltme ${raiseCost()} ⚡ · çağırma ${summonCost()} ⚡</p>`;
+  for (const [k, u] of Object.entries(UPGRADES)) {
+    const lv = upLv(k), max = u.cost.length, next = u.cost[lv];
+    const row = el('div', 'nc-row', `<span class="ic">${u.icon}</span>
+      <div class="tx"><b>${u.name}</b><span class="lv">${lv}/${max}</span><span class="muted">${lv ? u.desc(lv) : 'Henüz yok'}${lv < max ? ` → ${u.desc(lv + 1)}` : ''}</span></div>`);
+    const b = el('button', 'nc-buy', lv >= max ? 'Tamam' : `🔮 ${next}`);
+    if (lv >= max || souls < next) b.disabled = true;
+    else b.addEventListener('click', () => buyUpgrade(scene, k));
+    row.appendChild(b);
+    body.appendChild(row);
+  }
+}
+
+function buyUpgrade(scene, k) {
+  const u = UPGRADES[k], lv = upLv(k), cost = u.cost[lv];
+  if (!PS || cost == null || (PS.souls || 0) < cost) { audio.sfx('error'); return; }
+  PS.souls -= cost;
+  PS.up = { ...(PS.up || {}), [k]: lv + 1 };
+  refreshMine(scene, keyOf(scene, scene.player));
+  audio.sfx('quest');
+  scene.spawnParticles?.(scene.player.x, scene.player.y - 6, 0x7a4fd0, 10);
+  scene.hud.toast(`${u.icon} ${u.name} ${lv + 1}. seviye: ${u.desc(lv + 1)}`, 'ok');
+  renderNecro(scene);
+}
+
+const NC_CSS = `
+.nc-wrap { display: flex; flex-direction: column; gap: 8px; min-width: min(420px, 86vw); }
+.nc-souls { font-size: 15px; } .nc-souls b { color: #c9a6ff; }
+.nc-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: rgba(122, 79, 208, .12); border: 1px solid rgba(122, 79, 208, .3); }
+.nc-row .ic { font-size: 22px; width: 28px; text-align: center; flex: none; }
+.nc-row .tx { flex: 1; min-width: 0; } .nc-row .tx > span { display: block; font-size: 12px; }
+.nc-row .tx > .lv { display: inline; margin-left: 6px; color: #c9a6ff; font-weight: 600; }
+.nc-buy { flex: none; min-width: 64px; }`;
+
 // ---------- HUD: aktif gölge sayısı ----------
 function chip(text) {
   const box = document.getElementById('hud-extra');
@@ -327,7 +419,7 @@ function chip(text) {
   if (!e) { e = document.createElement('span'); e.id = 'nc-chip'; e.title = 'Gölge askerler'; e.style.cssText = 'font-weight:600;white-space:nowrap'; box.appendChild(e); }
   if (e.textContent !== text) e.textContent = text;
 }
-const chipText = (scene) => (isNecro(scene.player) ? `💀 ${mine(scene, keyOf(scene, scene.player)).length}/${capOf(scene)}` : '');
+const chipText = (scene) => (isNecro(scene.player) ? `💀 ${mine(scene, keyOf(scene, scene.player)).length}/${capOf(scene)} · 🔮 ${PS?.souls || 0}` : '');
 
 export default {
   id: 'necro',
@@ -338,14 +430,17 @@ export default {
     S = { shadows: [], corpses: [], hudT: 0, host: null };
     PS = S.host = { cls: prefClass(), kit: false };
     if (scene.player) scene.player.cls = PS.cls;
-    const onKill = (z) => addCorpse(scene, z);
+    const onKill = (z) => { addCorpse(scene, z); gainSoul(z); renderNecro(scene); };
     scene.events.on('zombieKilled', onKill);
     scene.timeSys.on('dawn', () => {
       if (!S.shadows.length) return;
-      S.shadows.slice().forEach((sh) => dissolve(scene, sh, true));
-      scene.toastAll?.('☀️ Gölge askerler güneşte eridi.', 'info');
+      const melt = S.shadows.filter((sh) => !sh.persist);
+      melt.forEach((sh) => dissolve(scene, sh, true));
+      if (melt.length) scene.toastAll?.('☀️ Gölge askerler güneşte eridi.', 'info');
     });
-    scene.necro = { CLASSES, isNecro, capOf: () => capOf(scene), get shadows() { return S.shadows; }, get corpses() { return S.corpses; } };
+    scene.necro = { CLASSES, isNecro, capOf: () => capOf(scene), get ps() { return PS; }, upgrades: UPGRADES, get shadows() { return S.shadows; }, get corpses() { return S.corpses; } };
+    scene.featureMenu.push({ id: 'necro', icon: '💀', label: 'Nekromansi', open: (s) => openNecro(s) });
+    if (!document.getElementById('nc-css')) document.head.appendChild(Object.assign(document.createElement('style'), { id: 'nc-css', textContent: NC_CSS }));
     scene.events.once('shutdown', () => { scene.events.off('zombieKilled', onKill); chip(''); });
   },
 
@@ -367,9 +462,9 @@ export default {
     if (S.hudT <= 0) { S.hudT = 0.4; chip(chipText(scene)); }
   },
 
-  save() { return { cls: S.host?.cls === 'necro' ? 'necro' : 'knight' }; },
+  save() { return { cls: S.host?.cls === 'necro' ? 'necro' : 'knight', souls: S.host?.souls || 0, up: S.host?.up || {} }; },
   load(scene, d) {
-    S.host = { cls: d?.cls === 'necro' ? 'necro' : 'knight', kit: true };
+    S.host = { cls: d?.cls === 'necro' ? 'necro' : 'knight', kit: true, souls: d?.souls || 0, up: d?.up || {} };
     PS = S.host;
     if (scene.player) scene.player.cls = PS.cls;
   },
@@ -379,8 +474,8 @@ export default {
     get: () => PS,
     set: (_s, v) => { PS = v; },
     fresh: () => ({ cls: null, kit: false }),
-    save: (v) => ({ cls: v?.cls === 'necro' ? 'necro' : 'knight', kit: true }),
-    load: (_s, d) => ({ cls: d?.cls === 'necro' ? 'necro' : 'knight', kit: true }),
+    save: (v) => ({ cls: v?.cls === 'necro' ? 'necro' : 'knight', kit: true, souls: v?.souls || 0, up: v?.up || {} }),
+    load: (_s, d) => ({ cls: d?.cls === 'necro' ? 'necro' : 'knight', kit: true, souls: d?.souls || 0, up: d?.up || {} }),
     apply: (s) => {
       if (!PS) return;
       if (!PS.cls) PS.cls = s.player?.helloCls === 'necro' ? 'necro' : 'knight';

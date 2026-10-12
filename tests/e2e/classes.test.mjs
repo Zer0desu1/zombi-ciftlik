@@ -73,7 +73,7 @@ test('sınıf: şövalye kılıçla, nekromant asayla başlar; asa diriltir, gö
   });
   assert.equal(summon.cap, 3);
   assert.equal(summon.n, 3, 'sınırda çağırma büyü atışına döner');
-  await page.waitForFunction(() => (document.getElementById('nc-chip')?.textContent || '') === '💀 3/3', null, { timeout: 3000 });
+  await page.waitForFunction(() => (document.getElementById('nc-chip')?.textContent || '').startsWith('💀 3/3'), null, { timeout: 3000 });
   if (SHOT) { await page.waitForTimeout(600); await page.screenshot({ path: `${SHOT}/necro.png` }); }
 
   // Kayıt → sınıf
@@ -144,4 +144,48 @@ test('sınıf co-op: misafir nekromant asayla katılır, asası host\'ta misafir
   assert.equal(fs.cls, 'necro');
   assertNoErrors(assert, hostErr, 'host');
   assertNoErrors(assert, guestErr, 'misafir');
+});
+
+test('nekromansi: öldürme ruh verir, panelden yükseltme alınır, ordu/güç artar, Sonsuz Gece şafakta korur, kayda yazılır', { timeout: 90000 }, async (t) => {
+  const { page, errors, url } = await setup(t);
+  await startAs(page, url, 'necro');
+  const r = await page.evaluate(async () => {
+    const s = game.scene.getScene('Game'), p = s.player;
+    const capBefore = s.necro.capOf();
+    // Öldürme → ruh (iri 3)
+    s.spawnZombie(p.x + 40, p.y, 'brute').takeDamage(9999, p);
+    const soulsAfterKill = s.necro.ps.souls;
+    // Bir gölge çağır (güç karşılaştırması için)
+    s.necro.corpses.splice(0).forEach((c) => c.wisp?.destroy());
+    s.selectSlot(s.inventory.slots.findIndex((x) => x?.id === 'staff'));
+    p.actionCd = 0; p.energy = p.maxEnergy;
+    const { useSelected } = await import('/js/systems/PlayerActions.js');
+    useSelected(s, p.x + 20, p.y);
+    const sh = s.necro.shadows[0];
+    const before = { hp: sh.maxHp, dmg: sh.st.dmg };
+    // Panel: menüden aç, ruh ver, Ordu + Güç + Sonsuz Gece al (butonlara tıklayarak)
+    s.necro.ps.souls = 500;
+    s.featureMenu.find((m) => m.id === 'necro').open(s);
+    const click = (i) => document.querySelectorAll('.nc-row .nc-buy')[i].click();
+    click(0); click(0); click(1); click(2); click(5);
+    return {
+      capBefore, soulsAfterKill, capAfter: s.necro.capOf(), up: { ...s.necro.ps.up }, souls: s.necro.ps.souls,
+      before, after: { hp: sh.maxHp, dmg: sh.st.dmg, persist: sh.persist }, rows: document.querySelectorAll('.nc-row').length
+    };
+  });
+  assert.equal(r.soulsAfterKill, 3, 'iri zombi 3 ruh');
+  assert.equal(r.rows, 6, 'panelde 6 yükseltme');
+  assert.deepEqual(r.up, { army: 2, power: 1, vigor: 1, night: 1 });
+  assert.equal(r.souls, 500 - 10 - 20 - 8 - 8 - 80);
+  assert.equal(r.capAfter, r.capBefore + 2, 'ordu +2');
+  assert.ok(r.after.dmg > r.before.dmg && r.after.hp > r.before.hp && r.after.persist, `mevcut asker güçlendi: ${JSON.stringify(r)}`);
+  // Sonsuz Gece: şafakta erimez
+  await page.evaluate(() => game.scene.getScene('Game').timeSys.emit('dawn'));
+  await page.waitForTimeout(600);
+  assert.equal(await page.evaluate(() => game.scene.getScene('Game').necro.shadows.length), 1, 'Sonsuz Gece gölgeyi korur');
+  // Kayıt
+  const saved = await page.evaluate(() => { const s = game.scene.getScene('Game'); s.hud.closeAll(); s.saveGame(true); return JSON.parse(localStorage.getItem('zombi-ciftlik-save-v1')).features.necro; });
+  assert.deepEqual({ souls: saved.souls, up: saved.up }, { souls: r.souls, up: r.up });
+  if (SHOT) { await page.evaluate(() => { const s = game.scene.getScene('Game'); s.featureMenu.find((m) => m.id === 'necro').open(s); }); await page.waitForTimeout(300); await page.screenshot({ path: `${SHOT}/necro-panel.png` }); }
+  assertNoErrors(assert, errors);
 });
