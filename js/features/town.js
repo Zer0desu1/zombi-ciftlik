@@ -460,14 +460,38 @@ const canMarry = (n) => (n.key === 'survivor' || !!REL[n.key]) && !n.child && !n
 const GENDER_WORD = { f: 'kadın', m: 'erkek' };
 
 // ---- Oyuncu evliliği ----
-// scene.town.spouse: oyuncunun eşi olan NPC'nin adı; eşin partner alanı oyuncunun adını tutar (scene.town.playerName)
+// Eş bilgisi oyuncu başınadır (co-op'ta herkes ayrı evlenebilir): anahtar host için HOST_KEY, misafir için adı.
+//   t.spouses[k]  = oyuncunun eşi olan NPC'nin adı (eşin partner alanı oyuncunun adını tutar)
+//   t.babyDays[k] = oyuncunun son bebeğinin günü
+//   t.couples[k]  = oyuncunun evlendiği diğer oyuncunun anahtarı (iki yönlü)
+// scene.town.spouse / lastBaby o anki oyuncunun (misafir bağlamında misafirin) kaydına bakan erişimcilerdir.
+const HOST_KEY = '@host';
+const curKey = (scene) => (scene.net?.ctx ? scene.net.ctx.name : HOST_KEY);
+const hostLabel = (scene) => scene.town?.playerName || prefName() || scene.net?.name || 'Çiftçi';
+const labelOf = (scene, k) => (k === HOST_KEY ? hostLabel(scene) : k);
 const isSpouse = (scene, n) => !!scene.town?.spouse && n?.npcName === scene.town.spouse;
 const spouseNpc = (scene) => (scene.town?.spouse ? scene.npcs.find((n) => n.npcName === scene.town.spouse) || null : null);
-const playerLabel = (scene) => scene.town?.playerName || prefName() || 'Çiftçi';
+const playerLabel = (scene) => labelOf(scene, curKey(scene));
 const playerGenderOf = (scene) => (scene.player?.gender === 'f' ? 'f' : 'm');
+// Herhangi bir oyuncunun eşi olan NPC → o oyuncunun anahtarı
+const spouseKeyOf = (scene, n) => Object.keys(scene.town.spouses).find((k) => scene.town.spouses[k] === n?.npcName) || null;
+const coupleOf = (scene, k = curKey(scene)) => scene.town.couples[k] || null;
+const isMarried = (scene, k) => !!(scene.town.spouses[k] || scene.town.couples[k]);
+
+function installSpouseAccessors(t, scene) {
+  t.spouses = {}; t.babyDays = {}; t.couples = {};
+  Object.defineProperty(t, 'spouse', {
+    get: () => t.spouses[curKey(scene)] || null,
+    set: (v) => { if (v) t.spouses[curKey(scene)] = v; else delete t.spouses[curKey(scene)]; }
+  });
+  Object.defineProperty(t, 'lastBaby', {
+    get: () => t.babyDays[curKey(scene)] || 0,
+    set: (v) => { t.babyDays[curKey(scene)] = Number(v) || 0; }
+  });
+}
 
 function canWooPlayer(scene, npc) {
-  return canMarry(npc) && !npc.partner && !scene.town.spouse && npc.gender !== playerGenderOf(scene);
+  return canMarry(npc) && !npc.partner && !scene.town.spouse && !coupleOf(scene) && npc.gender !== playerGenderOf(scene);
 }
 
 function proposePlayer(scene, npc) {
@@ -477,7 +501,7 @@ function proposePlayer(scene, npc) {
     if (hud.modal === 'dialog' && hud.npc === npc) hud.renderDialog(txt);
     else hud.toast(`${npc.npcName}: ${txt}`, ok ? 'ok' : 'info');
   };
-  if (scene.town.spouse) { say('Senin zaten bir eşin var.'); return false; }
+  if (scene.town.spouse || coupleOf(scene)) { say('Senin zaten bir eşin var.'); return false; }
   if (npc.gender === playerGenderOf(scene)) { say('Seni iyi bir dost olarak görüyorum.'); return false; }
   if (h < PLAYER_MARRY_HEARTS) {
     say(`Seni daha yakından tanımak isterim… Her gün konuş, hediye getir. (Dostluğunuz en az ${PLAYER_MARRY_HEARTS}♥ olmalı, şu an ${h}♥)`);
@@ -490,13 +514,163 @@ function proposePlayer(scene, npc) {
 
 function marryPlayer(scene, npc) {
   const t = scene.town;
-  t.playerName = t.playerName || prefName() || 'Çiftçi';
+  if (!scene.net?.ctx) t.playerName = t.playerName || prefName() || scene.net?.name || 'Çiftçi';
   t.spouse = npc.npcName;
-  npc.partner = t.playerName;
+  npc.partner = playerLabel(scene);
   audio.sfx('quest');
   scene.spawnParticles(npc.x, npc.y - 8, 0xff8fb0, 12);
   scene.spawnParticles(scene.player.x, scene.player.y - 8, 0xff8fb0, 12);
-  scene.hud.banner('💍 Evlendiniz!', `${t.playerName} ve ${npc.npcName} artık bir aile. Şafaklarda bir bebekleri olabilir.`);
+  scene.hud.banner('💍 Evlendiniz!', `${npc.partner} ve ${npc.npcName} artık bir aile. Şafaklarda bir bebekleri olabilir.`);
+}
+
+// ---- Oyuncu–oyuncu evliliği (co-op) ----
+// Host otoriter: teklif/kabul host'ta ilgili oyuncunun bağlamında çalışır; misafirin paneli host'taki kopyadan gelir.
+const PLAYER_WOO_R = 40;   // teklif için en fazla uzaklık (px, ~2.5 kare)
+const COUPLE_HEAL_R = 48;  // evli oyuncular bu kadar yakınken saniyede COUPLE_HEAL can yeniler
+const COUPLE_HEAL = 1;
+
+// Çevrimiçi oyuncular: [{ key, label, player, g? }]
+function onlinePlayers(scene) {
+  const net = scene.net;
+  if (!net?.isHost) return [];
+  const out = [{ key: HOST_KEY, label: hostLabel(scene), player: scene.netHostPlayer || scene.player }];
+  for (const g of net.guests.values()) out.push({ key: g.name, label: g.name, player: g.player, g });
+  return out;
+}
+
+// fn'i k anahtarlı oyuncunun bağlamında çalıştır (banner/panel o oyuncunun ekranına gider).
+// Host'a giden kısım o anki misafir bağlamı bittikten sonra çalışır (giveItem bildirimindeki gibi).
+function runAs(scene, k, fn) {
+  const net = scene.net;
+  if (k === HOST_KEY) {
+    if (net?.ctx) queueMicrotask(() => { if (!net.closed && !net.ctx && scene.hud) fn(); });
+    else fn();
+    return;
+  }
+  const o = onlinePlayers(scene).find((x) => x.key === k);
+  if (o?.g) net.withGuest(o.g, fn);
+}
+
+function proposeToPlayer(scene, toKey) {
+  const t = scene.town, me = curKey(scene), hud = scene.hud;
+  const to = onlinePlayers(scene).find((o) => o.key === toKey);
+  if (!to || toKey === me) { hud.toast('Oyuncu bulunamadı (ayrılmış olabilir).', 'warn'); return false; }
+  if (isMarried(scene, me)) { hud.toast('Senin zaten bir eşin var.', 'warn'); return false; }
+  if (isMarried(scene, toKey)) { hud.toast(`${to.label} zaten evli.`, 'warn'); return false; }
+  t.proposals[toKey] = me;
+  hud.closeAll();
+  hud.toast(`💍 ${to.label} oyuncusuna evlenme teklif ettin. Cevabı bekleniyor…`, 'ok');
+  const fromLabel = playerLabel(scene);
+  runAs(scene, toKey, () => {
+    const body = el('div', 'town-propose', '<p>💍 <b></b> sana evlenme teklif ediyor!</p><p class="muted">Kabul edersen birbirinize yakınken canınız yavaşça dolar ve şafaklarda bir bebeğiniz olabilir.</p>');
+    body.querySelector('b').textContent = fromLabel; // oyuncu adı: HTML olarak yorumlanmasın
+    const row = el('div', 'town-propose-btns');
+    const yes = el('button', 'accent', '💍 Kabul et'), no = el('button', 'ghost', 'Reddet');
+    yes.addEventListener('click', () => { audio.sfx('click'); answerProposal(scene, me, true); });
+    no.addEventListener('click', () => { audio.sfx('click'); answerProposal(scene, me, false); });
+    row.append(yes, no);
+    body.appendChild(row);
+    scene.hud.openPanel('Evlilik teklifi', body);
+    audio.sfx('quest');
+  });
+  return true;
+}
+
+// Teklifi alan oyuncunun bağlamında çağrılır
+function answerProposal(scene, fromKey, ok) {
+  const t = scene.town, me = curKey(scene);
+  scene.hud.closeAll();
+  if (t.proposals[me] !== fromKey) return false;
+  delete t.proposals[me];
+  const from = onlinePlayers(scene).find((o) => o.key === fromKey);
+  const myLabel = playerLabel(scene);
+  if (!ok) {
+    if (from) runAs(scene, fromKey, () => scene.hud.toast(`${myLabel} teklifini kabul etmedi.`, 'info'));
+    return false;
+  }
+  if (!from) { scene.hud.toast('Teklif eden oyuncu ayrılmış.', 'warn'); return false; }
+  if (isMarried(scene, me) || isMarried(scene, fromKey)) { scene.hud.toast('Biriniz artık evli.', 'warn'); return false; }
+  marryPlayers(scene, fromKey, me);
+  return true;
+}
+
+function marryPlayers(scene, a, b) {
+  const t = scene.town;
+  t.couples[a] = b; t.couples[b] = a;
+  const la = labelOf(scene, a), lb = labelOf(scene, b);
+  onlinePlayers(scene).forEach((o) => { if (o.key === a || o.key === b) scene.spawnParticles(o.player.x, o.player.y - 8, 0xff8fb0, 12); });
+  audio.sfx('quest');
+  const sub = (other) => `${other} ile artık bir ailesiniz. Birbirinize yakınken canınız dolar; şafaklarda bir bebeğiniz olabilir.`;
+  runAs(scene, a, () => scene.hud.banner('💍 Evlendiniz!', sub(lb)));
+  runAs(scene, b, () => scene.hud.banner('💍 Evlendiniz!', sub(la)));
+  scene.toastAll(`💍 ${la} ve ${lb} evlendi!`, 'ok');
+}
+
+// Oyuncu çiftleri: ikisi de çevrimiçiyken şafakta bebek (engeller NPC çiftleriyle aynı)
+function couplesBirth(scene, force = false) {
+  const t = scene.town, online = onlinePlayers(scene), seen = new Set(), born = [];
+  for (const a of online) {
+    const b = online.find((o) => o.key === t.couples[a.key]);
+    if (!b || seen.has(a.key)) continue;
+    seen.add(a.key); seen.add(b.key);
+    if (!force && (coupleBlock(scene, a.key, b.key) || Math.random() >= BABY_CHANCE)) continue;
+    const [mom, dad] = a.player?.gender === 'f' || b.player?.gender !== 'f' ? [a, b] : [b, a];
+    const baby = birth(scene, mom.label, dad.label);
+    t.babyDays[a.key] = t.babyDays[b.key] = today(scene);
+    const msg = () => scene.hud.banner('👶 Ailen büyüyor!', `${baby.npcName} dünyaya geldi. ${GROW_DAYS} gün sonra büyüyecek.`);
+    runAs(scene, a.key, msg); runAs(scene, b.key, msg);
+    born.push(baby);
+  }
+  return born;
+}
+
+function coupleBlock(scene, a, b) {
+  if (survivors(scene).length >= MAX_POP) return 'kalabalık';
+  const last = Math.max(scene.town.babyDays[a] || 0, scene.town.babyDays[b] || 0);
+  if (last && today(scene) - last < BABY_GAP) return 'erken';
+  return pantryShort(scene) ? 'kiler' : null;
+}
+
+// Evli oyuncular birbirine yakınken yavaş can yenileme (host'ta, saniyede bir)
+function coupleHeal(scene) {
+  const t = scene.town, online = onlinePlayers(scene);
+  for (const a of online) {
+    const b = online.find((o) => o.key === t.couples[a.key]), p = a.player;
+    if (!b || !p?.alive || !b.player?.alive || p.hp >= p.maxHp) continue;
+    if (Phaser.Math.Distance.Between(p.x, p.y, b.player.x, b.player.y) > COUPLE_HEAL_R) continue;
+    p.hp = Math.min(p.maxHp, p.hp + COUPLE_HEAL);
+  }
+}
+
+// E / mobil etkileşim: yakındaki evli olmayan takım arkadaşı → evlenme teklifi + eşya ver paneli
+function playerWooInteraction(scene) {
+  const me = scene.player, hud = scene.hud;
+  if (!me?.alive || hud.modal || !scene.net?.isHost || !scene.net.guests.size) return null;
+  const myKey = curKey(scene);
+  if (isMarried(scene, myKey)) return null;
+  let best = null, bd = PLAYER_WOO_R;
+  for (const o of onlinePlayers(scene)) {
+    if (o.key === myKey || !o.player?.alive || isMarried(scene, o.key)) continue;
+    const d = Phaser.Math.Distance.Between(me.x, me.y, o.player.x, o.player.y);
+    if (d < bd) { bd = d; best = o; }
+  }
+  if (!best) return null;
+  // "Eşya ver" etkileşiminin (dist+12) hemen önüne geçer; panelde ikisi de var
+  return {
+    dist: bd + 11, label: `💍 ${best.label}`,
+    run: () => {
+      const body = el('div', 'town-propose');
+      const p = el('p');
+      p.textContent = `${best.label} ile ne yapmak istersin?`;
+      const row = el('div', 'town-propose-btns');
+      const woo = el('button', 'accent', '💍 Evlenme teklif et'), give = el('button', '', '🎁 Eşya ver');
+      woo.addEventListener('click', () => { audio.sfx('click'); proposeToPlayer(scene, best.key); });
+      give.addEventListener('click', () => { audio.sfx('click'); hud.closeAll(); hud.toggleInventory(); });
+      row.append(woo, give);
+      body.append(p, row);
+      hud.openPanel(best.label, body);
+    }
+  };
 }
 
 // Oyuncu + eşinden bebek (şafakta şansla ya da test için zorla)
@@ -533,7 +707,8 @@ function pantryShort(scene) {
 
 // Çiftin neden bebek düşünmediği (null = engel yok)
 function babyBlock(scene, a) {
-  const b = isSpouse(scene, a) ? { lastBaby: scene.town.lastBaby || 0 } : partnerOf(scene, a);
+  const pk = spouseKeyOf(scene, a);
+  const b = pk ? { lastBaby: scene.town.babyDays[pk] || 0 } : partnerOf(scene, a);
   if (!b) return `${a.partner} köyde olmadığı için bebek düşünmüyoruz`;
   const pop = survivors(scene).length;
   if (pop >= MAX_POP) return `Köy çok kalabalık (${pop}/${MAX_POP}), şimdilik bebek düşünmüyoruz`;
@@ -548,7 +723,7 @@ function babyBlock(scene, a) {
 function familyMeta(scene, n) {
   if (!n.partner) return '';
   const block = babyBlock(scene, n);
-  const who = isSpouse(scene, n) ? `💍 Eşin (${n.partner})` : `💞 Eşi: ${n.partner}`;
+  const who = isSpouse(scene, n) ? `💍 Eşin (${n.partner})` : spouseKeyOf(scene, n) ? `💍 ${n.partner} ile evli` : `💞 Eşi: ${n.partner}`;
   return `${who} · 👶 ${block || `Bir bebek düşünüyoruz (her şafak %${Math.round(BABY_CHANCE * 100)} şans)`}`;
 }
 
@@ -585,9 +760,11 @@ function pair(scene, a, b) {
 function fixPartners(scene) {
   const all = people(scene);
   const t = scene.town;
-  if (t.spouse && !all.some((o) => o.npcName === t.spouse)) t.spouse = null; // oyuncunun eşi ayrıldı
+  // Eşi ayrılmış oyuncuların kaydını temizle (her oyuncu için)
+  Object.keys(t.spouses).forEach((k) => { if (!all.some((o) => o.npcName === t.spouses[k])) delete t.spouses[k]; });
   all.forEach((s) => {
-    if (isSpouse(scene, s)) { s.partner = playerLabel(scene); return; }
+    const pk = spouseKeyOf(scene, s);
+    if (pk) { s.partner = labelOf(scene, pk); return; }
     if (s.partner && !all.some((o) => o !== s && o.npcName === s.partner)) s.partner = null;
   });
 }
@@ -627,6 +804,9 @@ function familyDawn(scene) {
     a.lastBaby = b.lastBaby = day;
   });
   playerBirth(scene);
+  // Co-op: çevrimiçi misafirler de NPC eşlerinden bebek sahibi olabilir; oyuncu çiftleri ayrıca
+  scene.net?.eachGuest?.(() => playerBirth(scene));
+  if (scene.net?.isHost) couplesBirth(scene);
 }
 
 // ---------------- Hayatta kalanlar ----------------
@@ -999,6 +1179,9 @@ function placeProps(scene) {
 
 // ---------------- Özellik modülü ----------------
 const CSS = `
+.town-propose p { margin: 0 0 8px; line-height: 1.4; }
+.town-propose-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.town-propose-btns button { flex: 1 1 140px; }
 .town-hearts { margin: 2px 0 4px; font-size: 13px; letter-spacing: 1px; line-height: 1.2; }
 .th-full { color: #ff5c8a; text-shadow: 0 0 4px rgba(255,92,138,.5); }
 .th-empty { color: rgba(255,255,255,.18); }
@@ -1038,12 +1221,17 @@ export default {
   textures(scene) { makeTextures(scene); },
 
   init(scene) {
-    scene.town = { rel: {}, board: { day: 0, tasks: [] }, everArrived: false, lastCounts: {}, giftMode: false, faintedTonight: false, minShelter: 1, spouse: null, playerName: null, lastBaby: 0 };
+    scene.town = { rel: {}, board: { day: 0, tasks: [] }, everArrived: false, lastCounts: {}, giftMode: false, faintedTonight: false, minShelter: 1, playerName: null, proposals: {} };
+    installSpouseAccessors(scene.town, scene);
     // Karakter seçimi (ana menü): cihazdaki tercih hemen uygulanır; kayıt yüklenirse kayıttaki cinsiyet geçerli olur
     scene.player?.setGender?.(prefGender());
     installCharPick(scene, (g) => { if (!scene.started) scene.player?.setGender?.(g); });
     // Testler / diğer modüller için
-    scene.town.api = { marryPlayer: (n) => marryPlayer(scene, n), proposePlayer: (n) => proposePlayer(scene, n), playerBirth: (force) => playerBirth(scene, force), hire: (n, j) => hire(scene, n, j) };
+    scene.town.api = {
+      marryPlayer: (n) => marryPlayer(scene, n), proposePlayer: (n) => proposePlayer(scene, n), playerBirth: (force) => playerBirth(scene, force), hire: (n, j) => hire(scene, n, j),
+      proposeToPlayer: (k) => proposeToPlayer(scene, k), couplesBirth: (force) => couplesBirth(scene, force), HOST_KEY
+    };
+    scene.addInteraction(playerWooInteraction);
     REL_KEYS.forEach((k) => relOf(scene, k));
     syncHunterShop();
     injectCSS('town', CSS);
@@ -1127,7 +1315,7 @@ export default {
       survivors(scene).forEach((s) => removeSurvivor(scene, s));
       people(scene).forEach((n) => { n.partner = null; n.lastBaby = 0; });
       scene.town.everArrived = false;
-      scene.town.spouse = null; scene.town.lastBaby = 0;
+      Object.assign(scene.town, { spouses: {}, babyDays: {}, couples: {}, proposals: {} });
       scene.town.playerName = prefName() || scene.net?.name || null;
       scene.player?.setGender?.(prefGender());
     }
@@ -1138,9 +1326,14 @@ export default {
   },
 
   // Gece nöbeti ilanı için sığınağın gece içindeki en düşük can oranı
-  update(scene) {
+  update(scene, dt) {
     const t = scene.town, sh = scene.shelter;
     if (scene.waves.active && sh?.maxHp) t.minShelter = Math.min(t.minShelter, sh.hp / sh.maxHp);
+    // Evli oyuncuların yakınlık can yenilemesi (saniyede bir)
+    if (scene.net?.isHost && Object.keys(t.couples).length) {
+      t.healT = (t.healT || 0) + (dt || 0);
+      if (t.healT >= 1) { t.healT = 0; coupleHeal(scene); }
+    }
   },
 
   save(scene) {
@@ -1152,8 +1345,12 @@ export default {
       // Oyuncu karakteri + evliliği
       playerGender: scene.player?.gender === 'f' ? 'f' : 'm',
       playerName: t.playerName || null,
-      spouse: t.spouse || null,
-      lastBaby: t.lastBaby || 0,
+      spouse: t.spouses[HOST_KEY] || null,       // eski kayıt alanları (host oyuncusu)
+      lastBaby: t.babyDays[HOST_KEY] || 0,
+      // Co-op: oyuncu başına eş / bebek günü (misafirler adıyla) ve oyuncu çiftleri
+      spouses: { ...t.spouses },
+      babyDays: { ...t.babyDays },
+      couples: { ...t.couples },
       // Ana NPC'lerin eş bilgisi (eş adı + son bebek günü)
       main: Object.fromEntries(people(scene).filter((n) => REL[n.key] && n.partner).map((n) => [n.key, { partner: n.partner, lastBaby: n.lastBaby || 0 }])),
       survivors: survivors(scene).map((s) => ({
@@ -1179,10 +1376,16 @@ export default {
     // Eski kayıtlarda cinsiyet yok → erkek
     scene.player?.setGender?.(data.playerGender === 'f' ? 'f' : 'm');
     t.playerName = typeof data.playerName === 'string' && data.playerName ? data.playerName : null;
-    t.lastBaby = Number(data.lastBaby) || 0;
-    t.spouse = null;
+    const strMap = (o) => Object.fromEntries(Object.entries(o && typeof o === 'object' ? o : {}).filter(([k, v]) => k && typeof v === 'string' && v));
+    t.spouses = {}; t.couples = {}; t.proposals = {};
+    t.babyDays = Object.fromEntries(Object.entries(data.babyDays && typeof data.babyDays === 'object' ? data.babyDays : {}).map(([k, v]) => [k, Number(v) || 0]));
+    if (data.lastBaby && t.babyDays[HOST_KEY] == null) t.babyDays[HOST_KEY] = Number(data.lastBaby) || 0;
     survivors(scene).forEach((s) => removeSurvivor(scene, s));
-    t.spouse = typeof data.spouse === 'string' && data.spouse ? data.spouse : null; // eş aşağıda yüklenir; fixPartners en sonda
+    // Eşler aşağıda yüklenir; fixPartners en sonda (eski kayıt: tek "spouse" alanı → host oyuncusu)
+    t.spouses = strMap(data.spouses);
+    if (typeof data.spouse === 'string' && data.spouse && !t.spouses[HOST_KEY]) t.spouses[HOST_KEY] = data.spouse;
+    const cp = strMap(data.couples);
+    Object.entries(cp).forEach(([a, b]) => { if (cp[b] === a && a !== b) t.couples[a] = b; }); // yalnızca iki yönlü kayıtlar
     const main = data.main && typeof data.main === 'object' ? data.main : {};
     people(scene).forEach((n) => {
       if (!REL[n.key]) return;

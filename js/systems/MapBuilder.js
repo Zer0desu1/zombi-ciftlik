@@ -21,7 +21,6 @@ export const QUARRY_ZONE = { x: 98, y: 62, w: 9, h: 7 };
 export const GROVE_ZONE = { x: 60, y: 64, w: 18, h: 8 };
 export const CAMP_ZONE = { x: 116, y: 60, w: 6, h: 5 };
 const HAMLET_ZONE = { x: 42, y: 68, w: 16, h: 6 };
-const HAMLET_HOUSES = [[44, 70], [52, 70]];
 // Yaban hayvanı çayırları: ağaç/kaya konmaz (wildlife/predators isterse scene.wildAreas'tan okur)
 export const MEADOWS = [
   { id: 'ne_meadow', x: 98, y: 4, w: 24, h: 15 },
@@ -141,10 +140,7 @@ export function buildWorld(scene) {
   addBlock(mx, my, 'market', 44, 10, 2, 24, 16);
   const fx = FORGE_TILE.x * TILE + 24, fy = FORGE_TILE.y * TILE + 20;
   addBlock(fx, fy, 'forge', 44, 22, 2, 14, 18);
-  // Dekoratif evler
-  [[14, 27], [20, 27], [48, 31], [53, 13]].forEach(([tx, ty]) => addBlock(tx * TILE + 24, ty * TILE + 22, 'house', 40, 20, 4, 22, 20));
-  // Güney mezrası (sürüm 3): terk edilmiş iki ev
-  HAMLET_HOUSES.forEach(([tx, ty]) => addBlock(tx * TILE + 24, ty * TILE + 22, 'house', 40, 20, 4, 22, 20));
+  // İşlevsiz dekoratif evler kaldırıldı (alanları ayrılmış kalır; harita dizilimi değişmesin)
 
   const fz = FARM_ZONE;
 
@@ -277,7 +273,6 @@ export function buildWorld(scene) {
     { id: 'quarry', name: 'Taş Ocağı', ...QUARRY_ZONE },
     { id: 'grove', name: 'Yaşlı Koru', ...GROVE_ZONE },
     { id: 'camp', name: 'Terk Edilmiş Kamp', ...CAMP_ZONE },
-    { id: 'hamlet', name: 'Güney Mezrası', ...HAMLET_ZONE },
     ...NEW_LAKES.map((l, i) => ({ id: `lake${i + 2}`, name: 'Göl Kıyısı', x: l.x - 2, y: l.y - 2, w: l.w + 4, h: l.h + 4 }))
   ];
   // Yaban hayvanları için geniş, açık alanlar (tile): çayırlar (ağaçsız) + koru (yırtıcılar için)
@@ -408,7 +403,6 @@ function paintGround(scene, data, used, buildings) {
   };
   if (lake) trail(7 * TILE + 6, 24 * TILE + 4, 7 * TILE + 6, lake.y - 8);
   trail((RUINS_ZONE.x - 1) * TILE + 6, 24 * TILE + 4, (RUINS_ZONE.x - 1) * TILE + 6, (RUINS_ZONE.y + 4) * TILE);
-  buildings.forEach((b) => { if (b.texture.key === 'house') trail(b.x - 3, b.y + b.height / 2 + 4, b.x - 3, b.y + b.height / 2 + 22); });
   // Sürüm 3: doğu yolundan kampa ve taş ocağına, güney yolundan güney göllerine
   trail((ROAD_E.x + 1) * TILE + 4, (CAMP_ZONE.y + 3) * TILE + 6, CAMP_ZONE.x * TILE - 4, (CAMP_ZONE.y + 3) * TILE + 6);
   trail((ROAD_E.x - 1) * TILE + 6, (QUARRY_ZONE.y + 3) * TILE + 6, (QUARRY_ZONE.x + QUARRY_ZONE.w) * TILE + 6, (QUARRY_ZONE.y + 3) * TILE + 6);
@@ -490,8 +484,6 @@ function placeBushes(scene, data, used, reserved) {
   const rng = new Phaser.Math.RandomDataGenerator(['zombi-ciftlik-cali']);
   scene.decorBushes = [];
   const add = (x, y) => scene.decorBushes.push(scene.add.image(x, y, 'bush').setDepth(y + 7));
-  [[14, 27], [20, 27], [48, 31], [53, 13]].forEach(([tx, ty]) => { add(tx * TILE + 2, ty * TILE + 36); add(tx * TILE + 47, ty * TILE + 38); });
-  HAMLET_HOUSES.forEach(([tx, ty]) => { add(tx * TILE + 2, ty * TILE + 36); add(tx * TILE + 47, ty * TILE + 38); });
   let n = Math.round(48 * AREA_K), tries = 0;
   while (n > 0 && tries++ < 1750 * AREA_K) {
     const tx = rng.between(1, MAP_W - 2), ty = rng.between(2, MAP_H - 2);

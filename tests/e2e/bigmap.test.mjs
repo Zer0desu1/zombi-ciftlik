@@ -126,7 +126,7 @@ test('büyük harita: sınırlar, eski dizilim, eski kayıt, zombi mesafesi', { 
   assert.ok(info.zoneX > 128 * 16, 'keşif bölgeleri yeni haritanın sağında');
   assert.equal(info.lakes, 4, 'eski göl + 3 yeni göl');
   assert.equal(info.waterBodies, 8);
-  assert.ok(['quarry', 'grove', 'camp', 'hamlet'].every((id) => info.pois.includes(id)), `ilgi noktaları (${info.pois})`);
+  assert.ok(['quarry', 'grove', 'camp'].every((id) => info.pois.includes(id)), `ilgi noktaları (${info.pois})`);
   assert.ok(info.wild >= 3, 'yaban hayvanı alanları');
   assert.ok(info.statics < 900, `statik gövde sayısı makul (${info.statics})`);
 
