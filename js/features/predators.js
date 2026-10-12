@@ -246,7 +246,7 @@ class Beast extends Actor {
     const feet = this.y + this.k.fh / 2 - 1;
     this.shadow.setPosition(this.x, feet).setDepth(feet - 1).setScale(this.k.fw / 12, 1).setAlpha(this.alpha);
     this.setDepth(feet);
-    if (this.label?.active) this.label.setPosition(this.x, this.y - this.k.fh / 2 - 3).setVisible(this.visible);
+    if (this.label?.active) this.label.setPosition(this.x, this.y - this.k.fh / 2 - 3).setVisible(this.visible && !this.rider);
   }
 
   setLabel(text, color = '#ffffff') {
@@ -691,16 +691,21 @@ function petAction(scene, b) {
     audio.sfx('eat');
   } };
   const stay = b.state !== 'stay';
-  return { label: `${b.k.icon} ${b.petName}: ${stay ? 'Bekle' : 'Takip et'}`, run: () => {
-    b.state = stay ? 'stay' : 'follow';
-    b.stayAt = stay ? { x: b.x, y: b.y } : null;
-    b.target = null;
-    b.halt();
-    b.setFlipX(p.x < b.x);
-    b.petLabel();
-    audio.sfx('click');
-    scene.hud.toast(stay ? `${b.petName} burada bekleyecek.` : `${b.petName} seni takip ediyor.`, 'info');
-  } };
+  // Binek modülü varsa panel: 🐎 Bin + Bekle/Takip (riding.js)
+  if (scene.riding) return { label: `${b.k.icon} ${b.petName}: Bin / ${stay ? 'Bekle' : 'Takip et'}`, run: () => scene.riding.openPanel(b) };
+  return { label: `${b.k.icon} ${b.petName}: ${stay ? 'Bekle' : 'Takip et'}`, run: () => setStay(scene, b, stay) };
+}
+
+function setStay(scene, b, stay) {
+  const p = scene.player;
+  b.state = stay ? 'stay' : 'follow';
+  b.stayAt = stay ? { x: b.x, y: b.y } : null;
+  b.target = null;
+  b.halt();
+  b.setFlipX(p.x < b.x);
+  b.petLabel();
+  audio.sfx('click');
+  scene.hud.toast(stay ? `${b.petName} burada bekleyecek.` : `${b.petName} seni takip ediyor.`, 'info');
 }
 
 // ---------- Doğum / ölüm ----------
@@ -791,7 +796,7 @@ export default {
       wild: [], pets: [], wildGroup: scene.add.group(), petGroup: scene.add.group(),
       kills: 0, pending: null, hinted: new Set(), warnAt: new Map(), netDots: [], forceTame: false, kinds: KINDS,
       spawn: (kind, o) => spawnGroup(scene, kind, o), tame: (b) => tryTame(scene, b),
-      makePet: (b, ownerKey, o) => makePet(scene, b, ownerKey, o), tameChance
+      makePet: (b, ownerKey, o) => makePet(scene, b, ownerKey, o), tameChance, setStay: (b, stay) => setStay(scene, b, stay)
     };
     if (!scene.huntables) scene.huntables = [];
 
@@ -821,7 +826,7 @@ export default {
       let best = null, bd = TAME_RANGE;
       const key = keyOf(s, p);
       for (const b of ps.pets) {
-        if (b.downed || b.ownerKey !== key) continue;
+        if (b.downed || b.rider || b.ownerKey !== key) continue;
         const d = dist(p, b);
         if (d < bd) { bd = d; best = b; }
       }
@@ -894,6 +899,7 @@ export default {
     for (let i = st.pets.length - 1; i >= 0; i--) {
       const b = st.pets[i];
       if (!b.active) { st.pets.splice(i, 1); removeTargetable(scene, b); continue; }
+      if (b.rider) continue; // binek: riding.js binicinin altına yerleştirir, kendi başına saldırmaz
       tickPet(scene, b, dt);
     }
     // monsters her kare huntables'ı yeniden kurar; o modül yoksa / eski sürümse bizimkiler eksik kalmasın

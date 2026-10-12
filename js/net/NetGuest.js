@@ -12,6 +12,7 @@ import { joinRoom, getTurn, setTurn, iceConfig, turnStatus } from './transport.j
 import { PROTO } from './NetHost.js';
 import { RoomPanel, unpackIcons, pathOf } from './NetUI.js';
 import { netLog, reasonText, workerInterval, pairText } from './diag.js';
+import { prefClass } from '../ui/charPick.js';
 
 const SILENT_MS = 12000;           // host'tan bu kadar veri gelmezse kopmuş say
 const SILENT_HIDDEN_MS = 45000;    // host (ya da biz) arka plandayken
@@ -87,7 +88,7 @@ export class NetGuest {
 
   hello() {
     this.welcomeWait = performance.now();
-    this.send({ t: 'hello', name: this.name, v: PROTO, sid: this.sid, gender: this.scene.player?.gender || 'm' });
+    this.send({ t: 'hello', name: this.name, v: PROTO, sid: this.sid, gender: this.scene.player?.gender || 'm', cls: prefClass() }); // sınıf: features/necro.js
     if (document.visibilityState === 'hidden') this.send({ t: 'vis', h: 1 });
   }
 

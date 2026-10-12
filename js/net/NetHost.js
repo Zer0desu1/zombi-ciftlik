@@ -299,7 +299,7 @@ export class NetHost {
           if (old) { old.gender = (m.gender === 'f' ? 'f' : 'm'); old.player.setGender?.(old.gender); g = this.takeover(old, conn); return; } // karakter cinsiyeti (town/charPick)
           if (this.guests.size >= MAX_GUESTS) { conn.send({ t: 'full' }); setTimeout(() => conn.close('manual'), 300); return; }
           if (this.scene.gameOver) { conn.send({ t: 'over', stats: null }); setTimeout(() => conn.close('manual'), 300); return; }
-          g = this.addGuest(conn, m.name, m.sid, (m.gender === 'f' ? 'f' : 'm'));
+          g = this.addGuest(conn, m.name, m.sid, (m.gender === 'f' ? 'f' : 'm'), m.cls === 'necro' ? 'necro' : 'knight');
         } catch (e) {
           console.warn('Misafir eklenemedi', e);
           netLog('host', 'handler-error', `hello: ${e?.message || e}`);
@@ -353,7 +353,7 @@ export class NetHost {
     this.sendMe(g, true);
   }
 
-  addGuest(conn, rawName, sid, gender = 'm') {
+  addGuest(conn, rawName, sid, gender = 'm', cls = 'knight') {
     const s = this.scene;
     const base = String(rawName || 'Misafir').trim().slice(0, 14) || 'Misafir';
     let name = base;
@@ -370,6 +370,7 @@ export class NetHost {
       lastSeen: performance.now(), ping: 0, tx: p.x, ty: p.y, flip: false, moving: false, angle: 0, hint: '', hintT: 0, sentTp: -1, gender
     };
     p.setGender?.(gender);
+    p.helloCls = cls; // seçtiği sınıf (yeni misafir; kayıtlıysa kayıttaki geçerli — features/necro.js)
     p.netRemote = {
       hurt: (dmg, src) => this.send(g, { t: 'hurt', d: r1(dmg), x: src ? r1(src.x) : null, y: src ? r1(src.y) : null }),
       send: (m) => this.send(g, m) // özellik modüllerinin misafire özel mesajları (balık, buz yavaşlatma…)
@@ -689,7 +690,8 @@ export class NetHost {
     const s = this.scene, p = g.player, now = performance.now();
     const dt = Math.min(1.5, Math.max(0, (now - (g.mvAt || now)) / 1000));
     g.mvAt = now;
-    const speed = PLAYER_STATS.speed * PLAYER_STATS.touchSpeedMul * (1 + (p.buffSpeed || 0)) * MOVE_SLACK; // dokunmatik misafir daha hızlı
+    // dokunmatik misafir daha hızlı; binekteyken binek çarpanı (inince kısa süre eski hız: MOVE_BURST karşılar)
+    const speed = PLAYER_STATS.speed * PLAYER_STATS.touchSpeedMul * (1 + (p.buffSpeed || 0)) * Math.max(1, p.mountMul || 1) * MOVE_SLACK;
     g.mvBudget = Math.min(MOVE_BURST, (g.mvBudget ?? MOVE_BURST) + speed * dt);
     const dist = Math.hypot(x - g.tx, y - g.ty);
     if (dist > g.mvBudget) { this.correct(g, 'hız'); return false; }

@@ -79,18 +79,19 @@ export class Player extends Actor {
       this.facing.copy(v);
       v.scale(mag);
       // buffSpeed: yemek güçlendirmesi (harvest modülü)
-      const speed = PLAYER_STATS.speed * (this.energy <= 0 ? 0.6 : 1) * (this.speedMul ?? 1) * (1 + (this.buffSpeed || 0));
+      // mountMul: binek hızı (riding modülü)
+      const speed = PLAYER_STATS.speed * (this.energy <= 0 ? 0.6 : 1) * (this.speedMul ?? 1) * (1 + (this.buffSpeed || 0)) * (this.mountMul || 1);
       this.setVelocity(v.x * speed, v.y * speed);
       if (vx !== 0) this.setFlipX(vx < 0);
     } else {
       this.setVelocity(0, 0);
     }
-    this.walk(moving);
+    this.walk(moving && !this.mounted); // binekteyken binici yürümez
   }
 
   // Kaçış yuvarlanması: hareket yönüne (yoksa bakılan yöne) kısa atılma + dokunulmazlık
   dodge() {
-    if (!this.alive) return false;
+    if (!this.alive || this.mounted) return false;
     if (this.rollT > 0 || this.rollCd > 0) {
       if (this.rollCd < 0.25) this.dodgeBuf = 0.25;
       return false;

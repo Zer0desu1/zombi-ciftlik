@@ -53,6 +53,11 @@ test('yırtıcılar: av, evcilleştirme, takip, kayıt', { timeout: 60000 }, asy
   // Mermi isabeti (scene.bullets çakışması)
   const shot = await page.evaluate(async () => {
     const s = game.scene.getScene('Game');
+    // Atış hattı temiz olsun: öldürülen kurdun sürü arkadaşları / geyik / slime / ağaç mermiyi önce yutmasın
+    const near = (o) => Math.abs(o.y - s.player.y) < 40 && o.x > s.player.x - 10 && o.x < s.player.x + 120;
+    s.predators.wild.filter(near).forEach((w) => w.setPosition(w.x, w.y + 300));
+    [s.wildlife?.group, s.monsters?.group, s.zombies].forEach((g) => g?.getChildren?.().filter(near).forEach((o) => o.setPosition(o.x, o.y + 300)));
+    s.resources.getChildren().filter(near).forEach((r) => r.destroy());
     const [b] = s.predators.spawn('bear', { at: { x: s.player.x + 60, y: s.player.y }, n: 1, fade: false });
     b.state = 'cower'; b.cowerT = 99; b.setVelocity(0, 0);
     const hp = b.hp;
@@ -110,7 +115,8 @@ test('yırtıcılar: av, evcilleştirme, takip, kayıt', { timeout: 60000 }, asy
     s.player.setPosition(pet.x - 10, pet.y);
     const act = s.bestInteraction();
     const label = act?.label;
-    act?.run();
+    act?.run(); // panel: 🐎 Bin + Bekle/Takip (riding.js)
+    [...document.querySelectorAll('#modal-feature .feature-body button')].find((b) => /Bekle/.test(b.textContent))?.click();
     return { label, state: pet.state };
   });
   assert.match(stay.label || '', /Bekle/, `komut etiketi (${stay.label})`);
