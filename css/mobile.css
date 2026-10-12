@@ -29,6 +29,16 @@ body.is-touch {
   touch-action: manipulation; overscroll-behavior: none;
   -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; -webkit-user-select: none;
 }
+/* Telefonda yalnız yatay: dikey tutulunca her şeyin üstünde "çevir" ekranı */
+#rotate-overlay { display: none; }
+body.rotate-needed #rotate-overlay {
+  display: flex; position: fixed; inset: 0; z-index: 9999; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  background: #1a2a1a; color: #f4f1ea; text-align: center; padding: 24px;
+}
+#rotate-overlay .rot-icon { font-size: 64px; animation: rotHint 1.8s ease-in-out infinite; }
+#rotate-overlay p { font-size: 20px; font-weight: 700; }
+#rotate-overlay span { font-size: 14px; opacity: 0.7; }
+@keyframes rotHint { 0%, 20% { transform: rotate(0deg); } 50%, 80% { transform: rotate(-90deg); } 100% { transform: rotate(0deg); } }
 body.is-touch #keys, body.is-touch #hint, body.is-touch #quest-tracker { display: none !important; }
 body.is-touch .slot:hover { background: rgba(255, 255, 255, 0.06); }
 body.is-touch .slot .key { display: none; }

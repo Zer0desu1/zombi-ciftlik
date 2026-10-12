@@ -205,19 +205,49 @@ export class HUD {
       this.armToast(same);
       return;
     }
+    // Ekran kalabalıklaşmasın: aynı anda en fazla 2 (dokunmatik) / 3 bildirim.
+    // Doluysa bilgi notları atılır, önemliler (ok/warn) kısa bir kuyrukta sırasını bekler.
+    // Gece dalgası sırasında ve art arda gelen bilgi notları gösterilmez.
+    const now = performance.now();
+    this.toastQueue ||= [];
+    if (this.toastQueue.some((q) => q.html === html)) return;
+    if (type === 'info') {
+      if (this.scene.waves?.active || now - (this.lastInfoAt || 0) < 4000) return;
+    }
+    const visible = [...this.e.toasts.children].filter((n) => !n.classList.contains('out')).length;
+    if (visible >= (touch ? 2 : 3)) {
+      if (type === 'info') return;
+      this.toastQueue.push({ html, type });
+      if (this.toastQueue.length > 3) {
+        const i = this.toastQueue.findIndex((q) => q.type === 'ok');
+        this.toastQueue.splice(i >= 0 ? i : 0, 1);
+      }
+      return;
+    }
+    this.showToast(html, type);
+  }
+
+  showToast(html, type) {
+    if (type === 'info') this.lastInfoAt = performance.now();
     const t = el('div', `toast ${type}`);
     t.innerHTML = `<span>${html}</span>`;
     t.dataset.msg = html;
+    t.dataset.ty = type;
     this.e.toasts.appendChild(t);
     this.armToast(t);
-    // Dar ekranda en fazla 3 bildirim üst üste
-    while (this.e.toasts.children.length > (touch ? 3 : 5)) this.e.toasts.firstChild.remove();
+    while (this.e.toasts.children.length > 4) this.e.toasts.firstChild.remove();
   }
 
   armToast(t) {
     clearTimeout(t._out); clearTimeout(t._rm);
-    t._out = setTimeout(() => t.classList.add('out'), 2600);
-    t._rm = setTimeout(() => t.remove(), 3000);
+    const ms = t.dataset.ty === 'warn' ? 3200 : t.dataset.ty === 'info' ? 2000 : 2400;
+    t._out = setTimeout(() => {
+      t.classList.add('out');
+      // Biri çıkarken kuyruktaki sıradaki bildirim gelsin
+      const next = this.toastQueue?.shift();
+      if (next) setTimeout(() => this.showToast(next.html, next.type), 250);
+    }, ms);
+    t._rm = setTimeout(() => t.remove(), ms + 400);
   }
 
   // Aynı uyarıyı kısa sürede tekrar tekrar göstermemek için
@@ -556,6 +586,7 @@ export class HUD {
     g.querySelector('.go-score').innerHTML = `<div class="score">0</div>${stats.newBest ? '<div class="best">🎉 Yeni rekor!</div>' : ''}<div class="muted">${stats.newBest ? '' : `Rekor: ${r.bestScore ?? 0} · `}${DIFFICULTIES[stats.difficulty]?.name || ''}</div>`;
     countUp(g.querySelector('.go-score .score'), stats.score ?? 0);
     this.bannerQueue.length = 0;
+    if (this.toastQueue) this.toastQueue.length = 0;
     g.classList.add('show');
     g.querySelector('button').onclick = () => { g.classList.remove('show'); onRestart(); };
   }

@@ -673,13 +673,11 @@ function deliverCarry(n, icon, chest) {
   const store = n.scene.storage;
   if (chest && !chest.alive) chest = null;
   if (!chest && store) chest = store.forCarry(n.x, n.y, n.carry);
-  const parts = [], stored = [];
+  const parts = [];
   const name = (id, q) => `${q} ${ITEMS[id].name.toLocaleLowerCase('tr')}`;
   let carry = n.carry;
   if (chest) {
-    const r = store.depositCarry(chest, carry);
-    Object.entries(r.stored).forEach(([id, q]) => stored.push(name(id, q)));
-    carry = r.left;
+    carry = store.depositCarry(chest, carry).left;
   }
   Object.entries(carry).forEach(([id, q]) => {
     if (!ITEMS[id] || q <= 0) return;
@@ -687,11 +685,10 @@ function deliverCarry(n, icon, chest) {
     parts.push(name(id, q));
   });
   n.carry = {};
-  if (stored.length) n.scene.hud.toast(`${icon || '📦'} ${n.npcName} ${stored.join(', ')} köy sandığına koydu`, 'info');
   if (!parts.length) return;
   const d = n.shelter.door;
   n.scene.spawnParticles(d.x, d.y, 0xffe08a, 6);
-  n.scene.hud.toast(`${icon || '📦'} ${n.npcName} ${parts.join(', ')} getirdi${chest ? ' (sandık dolu)' : ''}`, 'ok');
+  n.scene.hud.toast(`${icon || '📦'} ${n.npcName} ${parts.join(', ')} getirdi${chest ? ' (sandık dolu)' : ''}`, 'info');
 }
 
 // Ekilebilir tohumlar (eşya kimliği → ekin). Özellik modülleri ITEMS/CROPS'a sonradan ekin

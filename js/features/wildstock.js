@@ -295,10 +295,6 @@ export default {
     scene.addInteraction(interaction);
     scene.minimapDots = scene.minimapDots || [];
     scene.minimapDots.push((s) => s.wildstock.list.filter((a) => a.mode !== 'gone').map((a) => ({ x: a.x, y: a.y, color: a.tame ? '#ffe08a' : '#f4f1ea', r: 1 })));
-    // Ağıl kurulunca peşteki hayvanlar hemen yola çıkar
-    scene.events.on('penBuilt', () => {
-      if (st.list.some((a) => a.mode === 'follow')) scene.time.delayedCall(800, () => scene.hud.toast('🪢 Peşindeki hayvanlar ağıla yürüyor.', 'info'));
-    });
     scene.events.once('shutdown', () => { st.list = []; });
   },
 

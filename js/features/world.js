@@ -318,7 +318,6 @@ function setWeather(scene, type, silent) {
     if (type === 'rain') scene.toastAll(snow ? '❄️ Kar yağıyor. Tarla nemli kalacak.' : '🌧️ Yağmur yağıyor: tarlan kendiliğinden sulanıyor!', 'info');
     else if (type === 'storm') scene.toastAll('⛈️ Fırtına! Tarla sulandı ama bu gece zombiler daha hızlı.', 'warn');
     else if (type === 'fog') scene.toastAll('🌫️ Sisli bir gün. Zombiler seni zor fark eder.', 'info');
-    else if (Math.random() < 0.3) scene.toastAll(`${w.icon} Hava açık. Ekinlerini sulamayı unutma.`, 'info');
   }
 }
 

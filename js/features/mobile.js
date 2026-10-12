@@ -1,7 +1,7 @@
 // 'mobile' özellik modülü — dokunmatik/dikey ekran deneyimi + masaüstü özellik dock'u.
 // Sözleşme için registry.js'e bak.
 import { ZOOM, TILE, ITEMS } from '../config.js';
-import { isTouch, pickZoom, installDevice, onTouchChange } from '../ui/device.js';
+import { isTouch, pickZoom, installDevice, onTouchChange, onRotateChange, needsRotate } from '../ui/device.js';
 import { applySettings } from '../ui/mobileSettings.js';
 import { TouchControls, autoTarget, installTapFilter } from '../ui/TouchControls.js';
 import { openMobileMenu, DesktopDock, installSheetSwipe } from '../ui/MenuDock.js';
@@ -41,6 +41,13 @@ function setupGlobals() {
     if (!on) { s.marker?.setVisible(false); s.ghost?.setVisible(false); }
   });
   installSheetSwipe(() => current);
+  // Telefon dikey tutulunca tek oyunculuda oyun durur, yataya dönünce devam eder (co-op'ta dünya akmaya devam eder)
+  onRotateChange((rot) => {
+    const s = current;
+    if (!s?.sys || s.net) return;
+    if (rot && s.sys.isActive()) { ctrl?.releaseAll(); s.scene.pause(); s.pausedForRotate = true; }
+    else if (!rot && s.pausedForRotate) { s.pausedForRotate = false; s.scene.resume(); }
+  });
   trackHudHeight();
   window.addEventListener('orientationchange', () => setTimeout(() => { if (current) applyZoom(current); }, 250));
 }
@@ -102,6 +109,8 @@ export default {
   },
 
   update(scene, dt) {
+    // Oyun dikey tutulurken başladıysa da dursun (yataya dönünce onRotateChange devam ettirir)
+    if (!scene.net && needsRotate()) { ctrl?.releaseAll(); scene.scene.pause(); scene.pausedForRotate = true; return; }
     this.slow += dt;
     if (this.slow >= 1) {
       this.slow = 0;

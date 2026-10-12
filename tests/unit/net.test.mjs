@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Interp, NetClock } from '../../js/net/mirror.js';
-import { normalizeCode, parseTurn, encodeTurn, decodeTurn } from '../../js/net/transport.js';
+import { normalizeCode, parseTurn, encodeTurn, decodeTurn, parseIceResponse } from '../../js/net/transport.js';
 
 test('Interp: iki örnek arasında doğrusal, sonda bekler, sıra dışı örneği atar, büyük sıçramayı enterpole etmez', () => {
   const ip = new Interp();
@@ -69,4 +69,19 @@ test('TURN ayarı: ana makine adı genişletilir, JSON kabul edilir, davet kodla
   assert.throws(() => parseTurn('turn:x.example:3478', '', ''));
   assert.throws(() => parseTurn('stun:x.example:3478', 'u', 'p'), /turn/);
   assert.equal(parseTurn('', 'u', 'p'), null);
+});
+
+test('parseIceResponse: Cloudflare/Metered yanıtları, :53 ve STUN atılır, ttl okunur', () => {
+  const cf = parseIceResponse({ ttl: 600, iceServers: [
+    { urls: ['stun:stun.cloudflare.com:3478'] },
+    { urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'turn:turn.cloudflare.com:53?transport=udp', 'turns:turn.cloudflare.com:443?transport=tcp'], username: 'u', credential: 'p' }
+  ] });
+  assert.deepEqual(cf.servers, [{ urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'turns:turn.cloudflare.com:443?transport=tcp'], username: 'u', credential: 'p' }]);
+  assert.ok(cf.exp > Date.now() + 590e3 && cf.exp < Date.now() + 610e3);
+  const old = parseIceResponse({ iceServers: { urls: ['turn:a:3478'], username: 'x', credential: 'y' } });
+  assert.equal(old.servers[0].urls[0], 'turn:a:3478');
+  const metered = parseIceResponse([{ urls: 'stun:s:80' }, { urls: 'turn:m:80', username: 'a', credential: 'b' }]);
+  assert.deepEqual(metered.servers[0].urls, ['turn:m:80']);
+  assert.equal(parseIceResponse({ iceServers: [{ urls: 'stun:x' }] }), null);
+  assert.equal(parseIceResponse(null), null);
 });

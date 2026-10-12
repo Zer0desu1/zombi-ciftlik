@@ -58,6 +58,9 @@ Kurulacak bir bağımlılık yok. Phaser 3.80.1 CDN'den (cdnjs), fontlar Google 
 - **Teşhis:** Oda panelinde **📶 Bağlantı**: ICE durumu, seçilen aday çifti (host / srflx / relay), ping, son mesajdan beri geçen
   süre, yeniden bağlanma sayısı, son kopma nedeni, sinyal sunucusu durumu. **📋 Günlüğü kopyala** son 20 bağlantı olayını
   (localStorage `zombi-ciftlik-net-log`) ortam bilgisiyle panoya kopyalar.
+- **Yerleşik TURN (yayın):** `js/net/netConfig.js` → `turnEndpoint` doluysa oyun bağlanmadan önce oradan kısa ömürlü TURN kimliği alır
+  (Cloudflare Worker: `server/turn-worker.js`, kurulum `server/README-TURN.md`); oyuncu ayar yapmaz, host açıkken kimlik kendiliğinden yenilenir.
+  Alınamazsa eski düzende (STUN + genel TURN) devam edilir. Durum 📶 Bağlantı → "Yerleşik TURN" satırında.
 - **TURN (farklı ağlar / mobil veri):** Varsayılan ICE: Google + Cloudflare STUN ve PeerJS'in genel TURN'ü (garanti değil).
   Kendi TURN'ünü 📶 Bağlantı → TURN alanlarından (ya da ana menü → Çok Oyunculu → Gelişmiş) gir: adres alanına ana makine
   (`standard.relay.metered.ca`), `turn:` URL listesi ya da sağlayıcının verdiği iceServers JSON'u yapıştırılabilir. Ayarlıysa davet

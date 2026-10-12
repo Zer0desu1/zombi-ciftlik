@@ -33,6 +33,24 @@ export let isTouch = compute();
 
 export const isPortrait = () => window.innerHeight >= window.innerWidth;
 
+// Telefon (kısa kenarı < 600px dokunmatik ekran) yalnız yatay oynanır; dikey tutulunca "çevir" ekranı çıkar
+const isPhone = () => { try { return Math.min(screen.width, screen.height) < 600; } catch { return false; } };
+// ?portrait=1 (ve e2e testleri) dikey düzeni açık bırakır
+const allowPortrait = (() => { try { return /[?&](portrait|e2e)=/.test(location.search); } catch { return false; } })();
+export const needsRotate = () => !allowPortrait && isTouch && isPhone() && isPortrait();
+const rotateFns = new Set();
+export function onRotateChange(fn) { rotateFns.add(fn); return () => rotateFns.delete(fn); }
+let rotateShown = false;
+
+// Android'de ilk dokunuşta tam ekran + yatay kilit dener (iOS desteklemez; orada çevir ekranı yeter)
+function tryLockLandscape() {
+  if (!isTouch || !isPhone()) return;
+  const lock = () => screen.orientation?.lock?.('landscape').catch(() => {});
+  const de = document.documentElement;
+  if (document.fullscreenElement || !de.requestFullscreen) { lock(); return; }
+  de.requestFullscreen({ navigationUI: 'hide' }).then(lock).catch(() => {});
+}
+
 // Dokunmatik ekranda kamera yakınlığı: portrede daha geniş görüş; alçak yatay ekranda 2
 export function pickZoom(base = 3) {
   const w = window.innerWidth, h = window.innerHeight;
@@ -48,6 +66,12 @@ function syncBody() {
   b.classList.toggle('touch-capable', touchCapable);
   b.classList.toggle('portrait', isPortrait());
   b.classList.toggle('landscape', !isPortrait());
+  const rot = needsRotate();
+  b.classList.toggle('rotate-needed', rot);
+  if (rot !== rotateShown) {
+    rotateShown = rot;
+    rotateFns.forEach((fn) => { try { fn(rot); } catch (e) { console.warn('yön dinleyicisi', e); } });
+  }
 }
 
 const changeFns = new Set();
@@ -70,6 +94,7 @@ export function installDevice() {
   window.addEventListener('resize', syncBody);
   window.addEventListener('orientationchange', () => setTimeout(syncBody, 120));
   onSettingsChange(refreshTouch);
+  document.addEventListener('touchend', tryLockLandscape, { once: true, capture: true });
   // Emülasyon / tablet klavye-kılıf değişimi: birincil işaretçi değişirse yeniden değerlendir
   try { window.matchMedia('(pointer: coarse)').addEventListener?.('change', refreshTouch); } catch { /* eski tarayıcı */ }
   if (touchCapable) {

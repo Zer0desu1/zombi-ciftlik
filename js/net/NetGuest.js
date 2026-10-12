@@ -8,7 +8,7 @@ import { iconURL } from '../textures.js';
 import { features } from '../features/index.js';
 import { regrowResource, depleteResource } from '../systems/MapBuilder.js';
 import { MirrorReader, Interp, NetClock, hashStr, setHash, unpackBits, invSig } from './mirror.js';
-import { joinRoom, getTurn, setTurn, iceConfig } from './transport.js';
+import { joinRoom, getTurn, setTurn, iceConfig, turnStatus } from './transport.js';
 import { PROTO } from './NetHost.js';
 import { RoomPanel, unpackIcons, pathOf } from './NetUI.js';
 import { netLog, reasonText, workerInterval, pairText } from './diag.js';
@@ -253,7 +253,8 @@ export class NetGuest {
       ['TURN', getTurn() ? 'kullanıcı TURN ✔' : 'yok (STUN + PeerJS genel TURN)'],
       ['En büyük mesaj', c ? `${c.stats.maxMsg} krk giden · ${c.stats.chunked} parçalı · tampon tepe ${c.stats.peakBuf} B${inf.maxMsgSize ? ` · SCTP maxMsg ${inf.maxMsgSize}` : ''}` : '—'],
       ['Eşitleme onarımı', `${this.heals.digests} özet · ${this.heals.req} istek · ${this.heals.res} kaynak · ${this.heals.m} nesne · ${this.heals.f} tarla · ${this.heals.s} özellik · ${this.heals.i} envanter`],
-      ['ICE sunucuları', iceConfig().iceServers.map((x) => [].concat(x.urls)[0].replace(/\?.*$/, '')).join(', ')]
+      ['ICE sunucuları', iceConfig().iceServers.map((x) => [].concat(x.urls)[0].replace(/\?.*$/, '')).join(', ')],
+      ['Yerleşik TURN', turnStatus()]
     ];
     let advice = '';
     if (this.drops >= 2 && inf.pair && inf.pair.local !== 'relay' && inf.pair.remote !== 'relay' && !getTurn())

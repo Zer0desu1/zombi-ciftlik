@@ -11,8 +11,10 @@
 //   hızlı (güvenilmez) kanalda tampon doluysa konum paketi atılır (yenisi zaten gelir).
 // - ICE 'disconnected' hemen kopma sayılmaz (10 sn bekler); 'failed' → temiz yeniden bağlanma (PeerJS ICE restart
 //   desteklemiyor). Sinyal sunucusu kopması veri kanallarını etkilemez: geri çekilerek peer.reconnect().
-// - Birden fazla STUN (Google, Cloudflare) + PeerJS'in genel TURN'ü + kullanıcı TURN'ü (ayar / davet linki).
+// - Birden fazla STUN (Google, Cloudflare) + yerleşik TURN (NET_CONFIG.turnEndpoint'ten kısa ömürlü kimlik)
+//   + kullanıcı TURN'ü (ayar / davet linki) + PeerJS'in genel TURN'ü (son çare).
 import { netLog, selectedPair } from './diag.js';
+import { NET_CONFIG } from './netConfig.js';
 
 export const PEERJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js';
 const ID_PREFIX = 'hasat-hayatta-kal-v1-';     // genel PeerJS sunucusunda başka uygulamalarla çakışmasın
@@ -111,9 +113,49 @@ export function turnLabel(cfg = getTurn()) {
   } catch (e) { console.warn('TURN parametresi geçersiz', e); }
 })();
 
+// ---------------- Yerleşik TURN (uç noktadan kısa ömürlü kimlik) ----------------
+// Kabul edilen yanıtlar: iceServers dizisi (Metered), { iceServers: [...] } ya da { iceServers: {…} } (Cloudflare),
+// isteğe bağlı { ttl } saniye. Yalnızca turn:/turns: adresleri alınır; tarayıcıların zaman aşımına uğradığı :53 atılır.
+export function parseIceResponse(body) {
+  const list = Array.isArray(body) ? body : [].concat(body?.iceServers || []);
+  const servers = list
+    .map((x) => ({ ...x, urls: [].concat(x?.urls || []).filter((u) => /^turns?:/i.test(u) && !/:53(\?|$)/.test(u)) }))
+    .filter((x) => x.urls.length && x.username && x.credential)
+    .map((x) => ({ urls: x.urls, username: String(x.username), credential: String(x.credential) }));
+  if (!servers.length) return null;
+  const ttl = Number(body?.ttl) > 0 ? Number(body.ttl) : 6 * 3600;
+  return { servers, exp: Date.now() + ttl * 1000 };
+}
+
+const turnEndpoint = () => qs().get('turnApi') || NET_CONFIG.turnEndpoint || '';
+let managed = null, managedReq = null;
+const managedFresh = () => managed && managed.exp - Date.now() > 15 * 60 * 1000;
+
+// Uç noktadan TURN kimliği al (önbellekli). Asla hata fırlatmaz: alınamazsa yerleşik TURN'süz devam edilir.
+export function ensureManagedTurn() {
+  const url = turnEndpoint();
+  if (!url || managedFresh()) return Promise.resolve(managed);
+  if (managedReq) return managedReq;
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = setTimeout(() => ctl?.abort(), 5000);
+  managedReq = fetch(url, { signal: ctl?.signal, cache: 'no-store' })
+    .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+    .then((body) => {
+      const cfg = parseIceResponse(body);
+      if (!cfg) throw new Error('yanıtta turn: sunucusu yok');
+      managed = cfg;
+      netLog('ağ', 'turn-ok', turnLabel(cfg));
+      return managed;
+    })
+    .catch((e) => { netLog('ağ', 'turn-fail', e?.message || String(e)); return managed; })
+    .finally(() => { clearTimeout(timer); managedReq = null; });
+  return managedReq;
+}
+export const turnStatus = () => (!turnEndpoint() ? 'ayarlanmamış (netConfig.js)' : managed ? `${turnLabel(managed)}${managedFresh() ? '' : ' (yenileniyor)'}` : 'alınamadı');
+
 export function iceConfig() {
   const user = getTurn();
-  const iceServers = [...STUN, ...(user ? user.servers : []), PEERJS_TURN];
+  const iceServers = [...STUN, ...(managed ? managed.servers : []), ...(user ? user.servers : []), PEERJS_TURN];
   const cfg = { iceServers, sdpSemantics: 'unified-plan' };
   if (qs().get('relay') === '1') cfg.iceTransportPolicy = 'relay'; // teşhis: yalnızca TURN üzerinden
   return cfg;
@@ -402,8 +444,15 @@ function keepSignal(peer, role, onState) {
   return state;
 }
 
+// PeerJS + yerleşik TURN kimliği birlikte hazırlanır (TURN alınamasa da bağlanmaya devam edilir)
+async function prepare() {
+  const [Peer] = await Promise.all([loadPeerJS(), ensureManagedTurn()]);
+  return Peer;
+}
+
 function openPeer(Peer, id) {
-  const peer = id ? new Peer(id, { debug: 0, config: iceConfig() }) : new Peer({ debug: 0, config: iceConfig() });
+  const opts = { debug: 0, config: iceConfig(), ...(NET_CONFIG.peerServer || {}) };
+  const peer = id ? new Peer(id, opts) : new Peer(opts);
   return withTimeout(new Promise((resolve, reject) => {
     peer.once('open', () => resolve(peer));
     peer.once('error', reject);
@@ -411,7 +460,7 @@ function openPeer(Peer, id) {
 }
 
 async function hostPeer(onConn, { preferCode, onStatus } = {}) {
-  const Peer = await loadPeerJS();
+  const Peer = await prepare();
   let peer = null, code = null, lastErr = null;
   // Önce önceki oda kodunu geri almayı dene (sayfa yenilendiyse misafirler aynı koda döner).
   // Eski oturum sinyal sunucusunda hâlâ kayıtlıysa 'unavailable-id' gelir: kısa bekleyip tekrar.
@@ -455,12 +504,17 @@ async function hostPeer(onConn, { preferCode, onStatus } = {}) {
   handle.signalOk = () => !!(peer.open && !peer.disconnected && !peer.destroyed);
   // rebind: oyun yeniden başlayınca aynı oda (aynı kod) yeni oturuma devredilir
   handle.rebind = (fn) => { handler = fn; };
-  handle.close = () => { try { peer.destroy(); } catch { /* yok say */ } };
+  // Host saatlerce açık kalabilir: TURN kimliği eskimeden yenilenir; PeerJS yeni bağlantılarda options.config'i okur
+  const refresh = setInterval(() => {
+    if (!turnEndpoint() || managedFresh()) return;
+    ensureManagedTurn().then(() => { if (!peer.destroyed) peer.options.config = iceConfig(); });
+  }, 5 * 60 * 1000);
+  handle.close = () => { clearInterval(refresh); try { peer.destroy(); } catch { /* yok say */ } };
   return handle;
 }
 
 async function joinPeer(code, { onStatus } = {}) {
-  const Peer = await loadPeerJS();
+  const Peer = await prepare();
   const peer = await openPeer(Peer, null);
   keepSignal(peer, 'misafir');
   const destroy = () => setTimeout(() => { try { peer.destroy(); } catch { /* yok say */ } }, 200);

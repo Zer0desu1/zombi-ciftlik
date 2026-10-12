@@ -179,7 +179,6 @@ export class GameScene extends Phaser.Scene {
       this.difficulty = this.difficulty || DIFFICULTIES.normal;
       START_INVENTORY.forEach(([id, n]) => this.inventory.add(id, n));
       this.hud.toast('Hoş geldin! Köy boş: tarlanı sıfırdan kur, gece sığınağı savun.', 'info');
-      this.time.delayedCall(1800, () => this.hud.toast('Haritada hayatta kalanlar var. Kimini köye davet et, kimini zombilerden kurtar (❗).', 'info'));
     }
     features.forEach((f) => f.begin?.(this, !data));
     this.started = true;
@@ -400,7 +399,6 @@ export class GameScene extends Phaser.Scene {
     const p = this.player;
     p.energy = Math.max(p.energy, p.maxEnergy * 0.8);
     this.shelter.repair(this.shelter.maxHp * 0.1);
-    this.hud.toast(`${day}. gün başladı. Ekinlerini sulamayı unutma!`, 'info');
     this.time.delayedCall(500, () => this.saveGame(false));
   }
 

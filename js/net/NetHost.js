@@ -13,7 +13,7 @@ import { Inventory } from '../systems/Inventory.js';
 import { useSelected } from '../systems/PlayerActions.js';
 import { iconCacheEntries } from '../textures.js';
 import { MirrorWriter, hashStr, setHash, packBits, invSig } from './mirror.js';
-import { openRoom, getTurn, iceConfig } from './transport.js';
+import { openRoom, getTurn, iceConfig, turnStatus } from './transport.js';
 import { RoomPanel, inviteLink, packIcons, byPath } from './NetUI.js';
 import { netLog, reasonText, workerInterval, pairText } from './diag.js';
 
@@ -165,6 +165,7 @@ export class NetHost {
     lines.push(['Eşitleme onarımı', `${this.heals.req} istek · ${this.heals.m} nesne · ${this.heals.f} tarla · ${this.heals.s} özellik · ${this.heals.i} envanter`]);
     lines.push(['Kopma sayısı', Object.values(this.drops || {}).reduce((a, b) => a + b, 0)]);
     lines.push(['ICE sunucuları', iceConfig().iceServers.map((x) => [].concat(x.urls)[0].replace(/\?.*$/, '')).join(', ')]);
+    lines.push(['Yerleşik TURN', turnStatus()]);
     return { lines, advice };
   }
 

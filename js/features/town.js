@@ -1116,8 +1116,7 @@ export default {
       payWages(scene);
       familyDawn(scene);
       const doc = npcByKey(scene, 'doctor');
-      if (doc?.treatedTonight) { scene.toastAll(`Selin gece sığınakta yaralıları ${doc.treatedTonight} kez tedavi etti ✚`, 'info'); doc.treatedTonight = 0; }
-      scene.time.delayedCall(2500, () => scene.toastAll('📋 İlan panosunda yeni görevler var', 'info'));
+      if (doc?.treatedTonight) { doc.treatedTonight = 0; }
     });
   },
 
@@ -1136,7 +1135,6 @@ export default {
     syncRecipes(scene);
     syncGather(scene);
     applyFriendPerks(scene);
-    if (isNew) scene.time.delayedCall(4200, () => scene.hud.toast('Yeni: Doktor Selin ve Avcı Murat kasabada. ❤️ İlişkiler ve 📋 İlan Panosu menüde.', 'info'));
   },
 
   // Gece nöbeti ilanı için sığınağın gece içindeki en düşük can oranı
