@@ -60,7 +60,8 @@ export class Player extends Actor {
     // Klavye yoksa dokunmatik joystick (analog, 0..1 büyüklük)
     let mag = 1;
     const vm = this.scene.virtualMove;
-    if (!vx && !vy && vm && (vm.x || vm.y)) { vx = vm.x; vy = vm.y; mag = Math.max(0.35, Math.min(1, Math.hypot(vx, vy))); }
+    // Telefonda kamera daha uzak (zoom 2): aynı hız ekranda yavaş görünür, joystick biraz daha hızlı yürütür
+    if (!vx && !vy && vm && (vm.x || vm.y)) { vx = vm.x; vy = vm.y; mag = Math.max(0.35, Math.min(1, Math.hypot(vx, vy))) * PLAYER_STATS.touchSpeedMul; }
     this.moveInput.set(vx, vy);
 
     // Yuvarlanırken girdi yok sayılır, sabit hızla kayılır

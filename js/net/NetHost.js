@@ -689,7 +689,7 @@ export class NetHost {
     const s = this.scene, p = g.player, now = performance.now();
     const dt = Math.min(1.5, Math.max(0, (now - (g.mvAt || now)) / 1000));
     g.mvAt = now;
-    const speed = PLAYER_STATS.speed * (1 + (p.buffSpeed || 0)) * MOVE_SLACK;
+    const speed = PLAYER_STATS.speed * PLAYER_STATS.touchSpeedMul * (1 + (p.buffSpeed || 0)) * MOVE_SLACK; // dokunmatik misafir daha hızlı
     g.mvBudget = Math.min(MOVE_BURST, (g.mvBudget ?? MOVE_BURST) + speed * dt);
     const dist = Math.hypot(x - g.tx, y - g.ty);
     if (dist > g.mvBudget) { this.correct(g, 'hız'); return false; }

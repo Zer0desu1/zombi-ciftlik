@@ -42,13 +42,46 @@ const rotateFns = new Set();
 export function onRotateChange(fn) { rotateFns.add(fn); return () => rotateFns.delete(fn); }
 let rotateShown = false;
 
+// ---------------- Tam ekran ----------------
+// iPhone Safari öğe tam ekranını desteklemez: orada tuş gizli kalır (ana ekrana ekleyince zaten tam ekran)
+const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement || null;
+export const fullscreenSupported = () => !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+const lockLandscape = () => { if (isTouch && isPhone()) screen.orientation?.lock?.('landscape').catch(() => {}); };
+
+export function toggleFullscreen() {
+  const de = document.documentElement;
+  if (fsEl()) {
+    (document.exitFullscreen || document.webkitExitFullscreen)?.call(document)?.catch?.(() => {});
+    return;
+  }
+  const req = de.requestFullscreen || de.webkitRequestFullscreen;
+  if (!req) return;
+  Promise.resolve(req.call(de, { navigationUI: 'hide' })).then(lockLandscape).catch(() => {});
+}
+
+function installFullscreenButton() {
+  if (!fullscreenSupported() || document.getElementById('btn-fs')) return;
+  const b = document.createElement('button');
+  b.id = 'btn-fs';
+  b.type = 'button';
+  const sync = () => {
+    const on = !!fsEl();
+    b.textContent = on ? '🗗' : '⛶';
+    b.title = b.ariaLabel = on ? 'Tam ekrandan çık' : 'Tam ekran';
+  };
+  b.addEventListener('click', (e) => { e.stopPropagation(); toggleFullscreen(); });
+  b.addEventListener('pointerdown', (e) => e.stopPropagation());
+  document.addEventListener('fullscreenchange', sync);
+  document.addEventListener('webkitfullscreenchange', sync);
+  sync();
+  document.body.appendChild(b);
+}
+
 // Android'de ilk dokunuşta tam ekran + yatay kilit dener (iOS desteklemez; orada çevir ekranı yeter)
 function tryLockLandscape() {
   if (!isTouch || !isPhone()) return;
-  const lock = () => screen.orientation?.lock?.('landscape').catch(() => {});
-  const de = document.documentElement;
-  if (document.fullscreenElement || !de.requestFullscreen) { lock(); return; }
-  de.requestFullscreen({ navigationUI: 'hide' }).then(lock).catch(() => {});
+  if (fsEl()) { lockLandscape(); return; }
+  toggleFullscreen();
 }
 
 // Dokunmatik ekranda kamera yakınlığı: portrede daha geniş görüş; alçak yatay ekranda 2
@@ -95,6 +128,8 @@ export function installDevice() {
   window.addEventListener('orientationchange', () => setTimeout(syncBody, 120));
   onSettingsChange(refreshTouch);
   document.addEventListener('touchend', tryLockLandscape, { once: true, capture: true });
+  if (document.body) installFullscreenButton();
+  else document.addEventListener('DOMContentLoaded', installFullscreenButton, { once: true });
   // Emülasyon / tablet klavye-kılıf değişimi: birincil işaretçi değişirse yeniden değerlendir
   try { window.matchMedia('(pointer: coarse)').addEventListener?.('change', refreshTouch); } catch { /* eski tarayıcı */ }
   if (touchCapable) {

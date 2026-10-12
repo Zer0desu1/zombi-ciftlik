@@ -111,4 +111,4 @@ export const START_INVENTORY = [
   ['seed_wheat', 10], ['seed_carrot', 5], ['wood', 4]
 ];
 
-export const PLAYER_STATS = { maxHp: 100, maxEnergy: 100, speed: 70, startCoins: 60 };
+export const PLAYER_STATS = { maxHp: 100, maxEnergy: 100, speed: 70, startCoins: 60, touchSpeedMul: 1.35 };

@@ -8,7 +8,7 @@ import { vibrate, settings, onSettingsChange } from './mobileSettings.js';
 const REACH = 40;      // PlayerActions ile aynı erişim
 const JOY_R = 64;      // joystick taban yarıçapı (128px çap; gerçek değer CSS'ten ölçülür)
 const DEAD = 0.18;     // ölü bölge (yarıçap oranı)
-const FULL = 0.8;      // bu orandan sonra tam hız (başparmağı kenara itmek gerekmez)
+const FULL = 0.65;     // bu orandan sonra tam hız (başparmağı kenara itmek gerekmez)
 const PAD_DEAD = 0.12; // D-pad merkezindeki boş bölge (genişlik oranı)
 // Basılı tutunca yoklama aralığı: asıl hız actionCd ile sınırlanır, kısa aralık bekleme biter bitmez vurdurur
 const REPEAT_MS = 50;
@@ -294,7 +294,7 @@ export class TouchControls {
     this.knob.style.transform = `translate(${dx}px, ${dy}px)`;
     const m = Math.min(1, d / R);
     if (m < DEAD) { this.setMove(0, 0); return; }
-    // Ölü bölge sonrası 0..1; yarıçapın %80'inde tam hız (başparmağı kenara itmek gerekmez)
+    // Ölü bölge sonrası 0..1; yarıçapın %65'inde tam hız (başparmağı kenara itmek gerekmez)
     const mag = Math.min(1, (m - DEAD) / (FULL - DEAD));
     this.setMove((dx / d) * mag, (dy / d) * mag);
   }
